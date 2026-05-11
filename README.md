@@ -477,6 +477,9 @@ Annuaire Civium
 | **Annuaire de membres** | Des individus | Annuaire des professionnels d'un secteur |
 | **Annuaire de services** | Des services/plugins Civium | Registre de Services Civium (RSC) |
 | **Annuaire mixte** | Réseaux + membres + services | Annuaire territorial général |
+| **Registre des Réseaux Malveillants (RRM)** | Réseaux au comportement malveillant avéré | RRM Global Civium, RRM thématiques |
+
+Le RRM est un type d'annuaire spécialisé dont le fonctionnement détaillé est décrit dans la section [Protection contre les réseaux Civium malveillants](#protection-contre-les-réseaux-civium-malveillants).
 
 ### Qui peut créer un annuaire
 
@@ -601,11 +604,22 @@ Civium protège contre les menaces suivantes :
 | Écoute des communications | Chiffrement de bout en bout (E2E) |
 | Usurpation d'identité | Clés cryptographiques Ed25519, signatures |
 | Accès non autorisé aux données | Permissions granulaires, validation obligatoire |
-| Réseau malveillant | Validation explicite avant toute connexion |
+| Réseau malveillant avant connexion | Validation explicite, handshake cryptographique |
+| Réseau connecté devenu malveillant | Zero trust continu, enforcement APC, suspension immédiate |
+| Scraping via connexion légitime | Rate limiting inter-réseaux, détection d'anomalies |
+| Injection de contenu malveillant | Contenu entrant sandboxé, validation stricte |
+| Réseau honeypot | Vérification croisée des annuaires, signalement collectif |
+| Usurpation d'identité de réseau | CID ancré cryptographiquement, impossible à forger |
 | Admin abusif | Garde-fou majoritaire, journal immuable |
 | Fuite de métadonnées | Minimisation des données exposées par défaut |
 | Attaque sur le nœud | Chiffrement au repos, clés locales |
 | Déni de service | Architecture P2P sans point central d'attaque |
+| Plugin malveillant | Sandbox WASM, capabilities minimales, signature pinned |
+| Attaque supply chain | Builds reproductibles, hash des manifestes, RSC signé |
+| Attaque Sybil (DHT) | Preuve d'identité cryptographique, admission contrôlée |
+| Eclipse attack (DHT) | Diversification des pairs, détection d'anomalies de routage |
+| Compromission de clé | Révocation signée diffusée, re-keying, notification aux pairs |
+| Escalade inter-plugins | Isolation mémoire totale, communication uniquement via CIL |
 
 ### Chiffrement
 
@@ -717,7 +731,395 @@ Tout accès d'un service (plugin, API, MCP, SaaS) aux données du réseau est **
 #### Immuabilité des décisions
 Les décisions de gouvernance (votes, exclusions, connexions) sont enregistrées dans un **journal immuable** signé cryptographiquement — impossible à modifier rétrospectivement.
 
-### Divulgation responsable
+### Sécurité des plugins
+
+Puisque tout service Civium — y compris les fonctions de base — est un plugin, la sécurité du système de plugins est critique. Une faille dans un plugin peut compromettre l'ensemble du réseau qui l'a installé.
+
+#### Isolation mémoire totale
+
+Chaque plugin s'exécute dans son propre sandbox WASM. Les plugins ne partagent aucun espace mémoire entre eux ni avec le cœur Civium.
+
+```
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ Plugin A     │  │ Plugin B     │  │ Plugin C     │
+│ (sandbox)    │  │ (sandbox)    │  │ (sandbox)    │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                 │
+       └─────────────────┴─────────────────┘
+                         │
+                    Civium CIL
+               (seul point de contact)
+```
+
+Les plugins ne peuvent pas se parler directement. Toute communication inter-plugins passe par le CIL, qui applique les permissions et l'audit.
+
+#### Limites de ressources
+
+Chaque plugin est soumis à des quotas d'exécution configurables par le réseau :
+
+| Ressource | Limite par défaut | Configurable |
+|---|---|---|
+| CPU | temps d'exécution max par appel | oui |
+| Mémoire | heap WASM plafonné | oui |
+| Stockage | quota de données locales | oui |
+| Réseau | accès uniquement via CIL | non (structurel) |
+| Fréquence | rate limit sur les appels API | oui |
+
+Un plugin qui dépasse ses quotas est suspendu et l'admin est alerté.
+
+#### Intégrité et supply chain
+
+Un plugin n'est pas identifié seulement par son numéro de version — il est **ancré à un hash cryptographique** de son code :
+
+```json
+{
+  "id": "com.example.mon-plugin",
+  "version": "1.2.0",
+  "hash": "sha256:e3b0c44298fc1c149afb...",
+  "signature": "Ed25519:<sig de l'éditeur>"
+}
+```
+
+- Le hash change à chaque modification, même mineure
+- La signature est vérifiée par rapport à la clé publique de l'éditeur enregistrée au RSC
+- Les **builds reproductibles** sont exigés pour les plugins certifiés : n'importe qui peut recompiler le source et obtenir le même hash
+- Une mise à jour de plugin = un nouveau hash = une nouvelle validation governance
+
+#### Principe de moindre privilège
+
+Un plugin ne peut déclarer que des capabilities existantes dans le vocabulaire Civium. Il ne peut pas demander de permissions non définies. Le CIL refuse toute tentative d'accès hors manifeste, même depuis le code WASM.
+
+```
+Plugin tente d'accéder à messages.prive
+  │
+  ▼
+CIL vérifie le manifeste
+  │
+  ├── capability déclarée ? non
+  │
+  ▼
+Accès bloqué — événement de sécurité journalisé
+```
+
+#### Validation governance des mises à jour
+
+L'installation d'une mise à jour de plugin suit le même processus que l'installation initiale. Un réseau ne peut pas se faire pousser silencieusement une mise à jour. Chaque mise à jour est :
+- Soumise à la gouvernance du réseau (admin ou vote selon configuration)
+- Journalisée avec l'ancien et le nouveau hash
+- Révocable : retour à la version précédente possible à tout moment
+
+---
+
+### Sécurité du réseau P2P
+
+L'architecture P2P introduit des menaces spécifiques absentes des architectures client-serveur.
+
+#### Attaque Sybil
+
+Une attaque Sybil consiste à créer un grand nombre de fausses identités pour influencer le DHT ou le routage. Civium s'en protège par :
+
+- **Identité ancrée cryptographiquement** : chaque CID est dérivé d'une clé Ed25519 — générer des identités en masse est coûteux
+- **Admission contrôlée** : rejoindre un réseau exige une invitation ou une validation — un attaquant ne peut pas auto-déclarer sa présence
+- **Réputation des pairs** : les nœuds maintenus depuis longtemps sont pondérés plus fortement dans le routage DHT
+
+#### Eclipse attack
+
+Une eclipse attack consiste à encercler un nœud de pairs malveillants pour lui couper l'accès au réseau honnête. Civium s'en protège par :
+
+- **Diversification géographique et topologique** des pairs connus (table de routage Kademlia)
+- **Connexions sortantes prioritaires** : un nœud maintient des connexions vers des pairs qu'il a lui-même choisis, pas seulement vers ceux qui se sont connectés à lui
+- **Détection d'anomalies** : si un nœud ne reçoit plus de messages de pairs connus depuis X minutes, une alerte est déclenchée et des pairs de secours sont contactés
+
+#### Routage et confidentialité des métadonnées
+
+Le DHT révèle par construction qui cherche quoi. Civium limite ce risque :
+
+- Les requêtes DHT utilisent des **identifiants temporaires** distincts du CID du membre
+- La résolution d'un CID vers une adresse peut passer par des **nœuds relais de confiance** (cercle 2+) pour masquer l'origine de la requête
+- Les métadonnées de connexion (qui est connecté à qui) ne sont pas stockées en clair dans le DHT
+
+---
+
+### Protection contre les réseaux Civium malveillants
+
+Un réseau Civium connecté est un tiers — pas un allié. Même après validation de la connexion, le principe **zero trust** s'applique en continu : chaque requête est vérifiée, chaque accès est contrôlé, aucune confiance implicite n'est accordée.
+
+#### Zero trust continu
+
+La validation initiale (handshake, APC) établit les droits. Elle ne les garantit pas dans le temps. À chaque requête d'un réseau connecté, le CIL vérifie :
+
+```
+Requête du Réseau B
+        │
+        ▼
+L'APC en vigueur autorise-t-il cette ressource ?    → non → bloqué + journalisé
+        │ oui
+        ▼
+La ressource demandée correspond-elle exactement ?   → non → bloqué + journalisé
+        │ oui
+        ▼
+Le volume de requêtes est-il dans les limites ?      → non → rate limiting déclenché
+        │ oui
+        ▼
+Accès accordé — journalisé
+```
+
+L'APC est re-vérifié cryptographiquement à intervalles réguliers. Si la signature ne correspond plus, la connexion est suspendue automatiquement.
+
+#### Enforcement strict de l'APC
+
+L'Accord de Partage Civium est le seul contrat entre deux réseaux. Tout ce qui n'y est pas explicitement listé est interdit, même si la donnée semble anodine.
+
+```
+APC : annuaire membres (lecture) + événements publics (lecture)
+
+Réseau B tente d'accéder à :
+  ├── annuaire membres     → ✓ autorisé
+  ├── événements publics   → ✓ autorisé
+  ├── liste des documents  → ✗ bloqué (hors APC)
+  ├── profils complets     → ✗ bloqué (hors APC)
+  └── métadonnées réseau   → ✗ bloqué (non déclaré)
+```
+
+#### Rate limiting inter-réseaux
+
+Un réseau connecté ne peut pas émettre un volume illimité de requêtes. Des limites configurables s'appliquent par fenêtre temporelle :
+
+| Limite | Valeur par défaut | Effet si dépassé |
+|---|---|---|
+| Requêtes / minute | 60 | Throttling progressif |
+| Volume de données / heure | configurable | Suspension temporaire |
+| Connexions simultanées | 10 | Refus des nouvelles connexions |
+| Requêtes hors APC | 0 toléré | Alerte immédiate + journalisation |
+
+Un pic de requêtes hors APC — même d'un seul accès — déclenche une alerte : c'est le signal d'un comportement de scraping ou d'exploration.
+
+#### Contenu entrant : jamais exécuté, toujours validé
+
+Tout contenu reçu d'un réseau connecté — texte, fichier, événement, fiche annuaire — est traité comme une entrée non fiable :
+
+- **Pas d'exécution de code** : un plugin partagé par un réseau connecté s'exécute dans un sandbox encore plus restrictif que les plugins locaux
+- **Validation de schéma stricte** : chaque objet reçu est validé contre le schéma attendu — tout surplus est ignoré, pas injecté
+- **Assainissement du contenu riche** : le HTML/Markdown reçu est assaini avant affichage (pas de scripts, pas d'iframes, pas de ressources externes)
+- **Fichiers mis en quarantaine** : les fichiers reçus via une connexion inter-réseaux sont stockés séparément et ne s'exécutent jamais automatiquement
+
+#### Détection de comportement malveillant
+
+Le CIL surveille en continu les patterns anormaux d'un réseau connecté :
+
+| Signal | Interprétation | Réaction automatique |
+|---|---|---|
+| Requêtes hors APC répétées | Tentative d'escalade ou de scraping | Alerte admin + compteur d'incidents |
+| Volume de requêtes > 10× la normale | Scraping ou DoS ciblé | Rate limiting renforcé |
+| Requêtes sur des ressources supprimées | Sondage de l'état interne | Journalisation silencieuse |
+| Accès depuis une clé différente de l'APC | Usurpation ou compromission | Suspension immédiate |
+| Patterns d'énumération | Cartographie des membres | Throttling + alerte |
+
+Les incidents sont comptabilisés par réseau. Au-delà d'un seuil configurable, la connexion est automatiquement suspendue et l'admin est notifié.
+
+#### Suspension et révocation d'une connexion
+
+Un admin peut suspendre ou révoquer une connexion à tout moment, sans délai ni justification :
+
+```
+Suspension  → accès coupé immédiatement, APC en veille, reconnexion possible
+Révocation  → connexion fermée définitivement, CID du réseau ajouté en liste noire
+```
+
+La révocation est irréversible depuis l'interface standard. La réouverture d'une connexion avec un réseau révoqué nécessite une validation collective (vote), pas une décision admin seule.
+
+#### Signalement collectif
+
+Un réseau victime d'un comportement malveillant peut **signaler le réseau fautif** aux annuaires auxquels il appartient. Le signalement contient :
+
+- Le CID du réseau signalé
+- Le type de comportement observé (avec preuves issues du journal)
+- L'horodatage et la signature du réseau signalant
+
+Les annuaires agrègent les signalements. Un réseau cumulant plusieurs signalements vérifiés peut être :
+- Marqué "signalé" dans le catalogue (visible par les réseaux qui envisagent une connexion)
+- Suspendu de l'annuaire par vote de gouvernance de l'annuaire
+- Exclu du maillage P2P par consensus des nœuds
+
+Ce mécanisme de réputation distribuée ne repose sur aucune autorité centrale — c'est la communauté des réseaux qui décide.
+
+#### Registre des Réseaux Malveillants (RRM)
+
+Le **Registre des Réseaux Malveillants** est un type spécialisé d'Annuaire Civium dont la fonction est de centraliser, vérifier et diffuser les signalements de réseaux au comportement malveillant avéré.
+
+```
+Annuaire Civium standard   →  référence des réseaux dignes de confiance
+Registre des Réseaux Malveillants (RRM)  →  référence des réseaux à risque
+```
+
+Comme tout annuaire, le RRM est **décentralisé** : plusieurs RRM peuvent coexister, gouvernés par des communautés différentes. Un réseau choisit à quels RRM il fait confiance.
+
+##### États d'un réseau dans le RRM
+
+```
+[Signalé]  →  [En instruction]  →  [Confirmé]  →  [Exclu]
+    │                │                   │
+    │          Preuves insuffisantes   Appel accepté
+    │                │                   │
+    └────────────────┴───────────────[Classé sans suite]
+```
+
+| État | Signification | Effet par défaut |
+|---|---|---|
+| **Signalé** | Signalement(s) reçu(s), en dessous du seuil | Avertissement affiché lors d'une demande de connexion |
+| **En instruction** | Seuil de signalements atteint, vérification en cours | Avertissement renforcé, connexion soumise à validation collective |
+| **Confirmé** | Comportement malveillant vérifié par le RRM | Connexion bloquée par défaut (override possible par vote) |
+| **Exclu** | Récidive ou gravité maximale | Connexion impossible, CID banni du maillage P2P |
+
+##### Seuil et vérification
+
+Un signalement seul ne suffit pas à lister un réseau. Le RRM exige :
+
+- **Nombre minimum de réseaux signalants indépendants** (configurable, défaut : 3) — des réseaux liés entre eux (même fondateur, même infrastructure) comptent pour un seul
+- **Preuves signées** : chaque signalement doit inclure des extraits de journal signés cryptographiquement par le réseau signalant — pas de signalement sur parole
+- **Ancienneté des signalants** : un réseau créé très récemment a un poids réduit (protection contre les attaques de faux témoins coordonnées)
+- **Diversité géographique / topologique** des signalants (optionnel, pour les RRM à haute exigence)
+
+##### Droit de réponse et appel
+
+Le réseau mis en cause est **notifié dès le premier signalement**. Il peut :
+
+```
+Notification envoyée au réseau signalé
+        │
+        ├── Contester : soumettre une réponse et des contre-preuves
+        │     └── Le RRM instruit les deux versions avant décision
+        │
+        ├── Corriger : démontrer que le comportement a cessé
+        │     └── Peut mener à un retrait du listing (sous surveillance)
+        │
+        └── Ne pas répondre
+              └── L'instruction continue sans la version du signalé
+```
+
+Un réseau confirmé peut faire appel une fois. L'appel est instruit par un collège de membres du RRM distincts de ceux ayant instruit le dossier initial.
+
+##### Intégration dans le workflow de connexion
+
+À chaque demande de connexion entrante, le nœud consulte automatiquement les RRM auxquels il est abonné :
+
+```
+Réseau B envoie CONNECT_REQUEST
+        │
+        ▼
+Consultation des RRM abonnés
+        │
+        ├── CID non listé         → handshake normal
+        ├── CID signalé           → avertissement affiché à l'admin
+        ├── CID en instruction    → avertissement renforcé + validation collective requise
+        ├── CID confirmé          → connexion bloquée (override par vote collectif)
+        └── CID exclu             → connexion refusée, réponse silencieuse
+```
+
+La consultation est asynchrone et mise en cache — elle n'introduit pas de délai perceptible dans le handshake.
+
+##### Fédération des RRM
+
+Les RRM peuvent se fédérer entre eux pour partager leurs listes sans les fusionner :
+
+```
+[RRM Communautés locales]  ←→  [RRM Associations]  ←→  [RRM Global Civium]
+```
+
+Un réseau peut s'abonner à plusieurs RRM avec des niveaux de confiance distincts :
+
+```json
+"rrm_subscriptions": [
+  { "cid": "civium:rrm-global...", "trust": "block_confirmed" },
+  { "cid": "civium:rrm-local...",  "trust": "warn_only" }
+]
+```
+
+`block_confirmed` : bloque automatiquement les réseaux confirmés par ce RRM.
+`warn_only` : affiche seulement un avertissement, quelle que soit la gravité.
+
+##### Protection contre l'abus du RRM lui-même
+
+Le RRM est un outil de protection — il ne doit pas devenir un outil de censure ou de discrimination.
+
+| Risque | Protection |
+|---|---|
+| Signalements coordonnés pour exclure un réseau légitime | Seuil d'indépendance des signalants, pondération par ancienneté |
+| RRM partisan ou corrompu | Chaque réseau choisit librement ses RRM — aucun n'est imposé |
+| Listing permanent sans recours | Appel obligatoire instruit, listing réexaminé périodiquement |
+| Fuite de la liste aux réseaux signalés | Les CID listés sont publics — la liste n'est pas secrète |
+| Un RRM unique dominant | Fédération encouragée, diversité des RRM maintenue |
+
+---
+
+#### Plugins reçus d'un réseau connecté
+
+Quand un réseau expose un plugin à un réseau connecté, ce plugin est traité avec le niveau de méfiance maximal :
+
+```
+Plugin local (installé par le réseau)
+  └── sandbox WASM standard
+  └── capabilities déclarées dans le manifeste
+
+Plugin reçu d'un réseau connecté
+  └── sandbox WASM renforcé (ressources réduites de 50%)
+  └── capabilities limitées aux données partagées dans l'APC
+  └── pas d'accès aux données locales hors APC
+  └── re-validation governance requise à chaque mise à jour
+```
+
+Un réseau peut choisir de refuser tout plugin provenant de réseaux connectés — c'est la configuration par défaut pour les réseaux sensibles.
+
+---
+
+### Révocation et compromission de clé
+
+#### Procédure de révocation
+
+Si une clé privée est compromise, le membre doit agir immédiatement :
+
+```
+1. Générer une nouvelle paire de clés Ed25519
+2. Émettre un message de révocation signé par l'ancienne clé
+   └── horodaté, non rejouable (nonce unique)
+3. Diffuser la révocation dans tous les réseaux du membre
+4. Signer la nouvelle clé publique avec l'ancienne (chaîne de confiance)
+5. Les pairs reçoivent la révocation et mettent à jour leur table de confiance
+```
+
+Passé un délai de grâce configurable (par défaut 24h), tout message signé par l'ancienne clé est rejeté — y compris les messages antérieurs à la révocation présentés avec un horodatage modifié.
+
+#### Révocation sans accès à l'ancienne clé
+
+Si la clé ancienne est irrémédiablement perdue ou volée et que le membre ne peut plus signer avec elle, la **récupération sociale** (schéma de Shamir) permet à M membres de cercle 3 de co-signer une révocation d'urgence sans la clé ancienne. Cette révocation est traitée comme prioritaire par le réseau.
+
+#### Période de grâce et window d'attaque
+
+Entre la compromission et la révocation effective, un attaquant peut se faire passer pour la victime. Civium réduit cette fenêtre par :
+- Alertes de connexion anormale (nouveau device, nouvelle IP, heure inhabituelle)
+- Confirmation 2FA exigée pour les actions critiques (connexion inter-réseaux, modification de gouvernance)
+- Journalisation de toutes les actions signées, consultable après coup pour audit
+
+---
+
+### Processus de sécurité du projet
+
+#### Audit externe
+
+Avant chaque version majeure du protocole, un **audit de sécurité externe indépendant** est conduit. Le rapport est publié intégralement, qu'il soit favorable ou non.
+
+#### Bug bounty
+
+Un programme de **bug bounty** récompense les chercheurs qui signalent des failles de sécurité. Les récompenses sont proportionnelles à la criticité :
+
+| Criticité | Exemple | Récompense |
+|---|---|---|
+| Critique | RCE, contournement du sandbox, compromission de clé | Élevée |
+| Haute | Fuite de données inter-réseaux, bypass de permissions | Significative |
+| Moyenne | Déni de service, fuite de métadonnées | Modérée |
+| Faible | Comportements inattendus sans impact de sécurité direct | Symbolique |
+
+#### Divulgation responsable
 
 Civium est un protocole ouvert. Les failles de sécurité peuvent être signalées via un processus de **divulgation responsable** défini dans la gouvernance du projet. Toute faille confirmée est communiquée à l'ensemble des opérateurs de nœuds avant publication.
 
@@ -960,9 +1362,9 @@ Quelle que soit la méthode de connexion, les données restent sur le nœud du r
 
 ## Services Civium
 
-### Principe : plateforme ouverte et extensible
+### Principe : tout est plugin
 
-Civium n'est pas un ensemble de fonctionnalités figées. C'est une **plateforme de services** : chaque réseau choisit les services qu'il installe, et n'importe qui peut développer et publier un nouveau service à tout moment.
+Civium ne distingue pas de fonctionnalités "natives" séparées du système de plugins. **Tout service — y compris la messagerie, l'agenda ou la gouvernance — est un plugin**, soumis aux mêmes règles, aux mêmes permissions et au même cycle de vie que n'importe quel plugin tiers.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -972,18 +1374,24 @@ Civium n'est pas un ensemble de fonctionnalités figées. C'est une **plateforme
 │  │Messagerie│ │  Agenda  │ │Marketplace│ │ ... + │  │
 │  └──────────┘ └──────────┘ └──────────┘ └───────┘  │
 │                                                     │
-│         ← services installés par le réseau →        │
+│    ← tous des plugins, préinstallés ou ajoutés →    │
 └─────────────────────────────────────────────────────┘
                         ↕
          Registre de Services Civium (RSC)
          (catalogue public de services disponibles)
 ```
 
-### Services natifs (inclus par défaut)
+Cette décision architecturale a trois conséquences directes :
 
-Ces services font partie du cœur de Civium et sont disponibles dès la création d'un réseau :
+- **API prouvée dès le départ** : les plugins officiels utilisent exactement la même API que les plugins tiers — si l'API est insuffisante, Civium lui-même en souffre en premier
+- **Aucun privilège caché** : un développeur tiers peut remplacer, forker ou améliorer n'importe quel service officiel avec les mêmes capacités
+- **Désinstallation possible** : un réseau peut retirer un plugin préinstallé dont il n'a pas besoin, y compris les services de base
 
-| Service | Description |
+### Plugins préinstallés
+
+Ces plugins sont installés par défaut à la création d'un réseau. Ils peuvent être désactivés ou remplacés :
+
+| Plugin | Description |
 |---|---|
 | **Messagerie** | Messages directs et fils de discussion, chiffrés de bout en bout |
 | **Agenda** | Calendrier partagé, événements, invitations |
@@ -993,11 +1401,11 @@ Ces services font partie du cœur de Civium et sont disponibles dès la créatio
 | **Gouvernance** | Votes, sondages, décisions collectives |
 | **Notifications** | Alertes configurables par membre |
 
-### Services étendus (exemples)
+### Plugins additionnels (exemples)
 
-Services additionnels qui peuvent être installés selon les besoins du réseau :
+Plugins installables selon les besoins du réseau, via le RSC ou en import direct :
 
-| Service | Usage type |
+| Plugin | Usage type |
 |---|---|
 | **Marketplace** | Annonces, offres, échanges de biens et services entre membres |
 | **Visioconférence** | Appels et réunions P2P au sein du réseau |
@@ -1173,6 +1581,79 @@ Tout type d'intégration déclare un **manifeste** (`manifest.civium.json`) stan
   "expose_to_connected_networks": false
 }
 ```
+
+### Normalisation des plugins : normer le contrat, pas l'implémentation
+
+#### Principe fondateur
+
+La norme Civium s'applique à **ce que le plugin déclare et comment il communique**, pas à ce qu'il fait en interne. Cette séparation permet une grande diversité d'usages tout en garantissant sécurité, gouvernance et auditabilité.
+
+| Normé par Civium | Libre pour le développeur |
+|---|---|
+| Permissions déclarées (capabilities) | Langage et technologie interne |
+| API surface d'accès aux données | Logique métier |
+| Hooks de cycle de vie | Interface utilisateur (dans un slot défini) |
+| Manifeste lisible par la gouvernance | Hébergement (local, distant, hybride) |
+
+Le CIL n'a besoin de connaître que le manifeste, les hooks et l'API surface. Tout le reste est opaque et libre.
+
+#### Modèle de capabilities atomiques
+
+Plutôt qu'une liste de fonctionnalités figées, Civium définit des **capabilities atomiques** combinables. Un plugin déclare exactement ce dont il a besoin — ni plus :
+
+```json
+"permissions": {
+  "read":     ["membres.annuaire", "agenda.evenements"],
+  "write":    ["agenda.evenements"],
+  "listen":   ["events.nouveau_membre", "votes.resultat"],
+  "emit":     ["notifications.membre"],
+  "forbidden": ["messages", "documents.prive"]
+}
+```
+
+Un plugin qui écoute des événements déclare uniquement `listen`. Un plugin de facturation déclare `read:membres` + `write:documents`. Chaque réseau peut bloquer certaines capabilities dans sa gouvernance. La norme est le **vocabulaire**, pas le catalogue des plugins possibles.
+
+#### Sandbox d'exécution (WASM)
+
+Les plugins natifs sont compilés en **WebAssembly** et s'exécutent dans un bac à sable : ils ne peuvent accéder à rien sauf via l'API Civium injectée selon les capabilities accordées.
+
+```
+Plugin WASM
+  │
+  └── ne voit que civium_api.*  (capabilities accordées)
+  └── ne peut pas faire de syscall direct
+  └── ne peut pas accéder au réseau sauf via le CIL
+```
+
+Le langage et l'architecture interne du plugin sont totalement libres — la contrainte est la frontière, pas l'intérieur.
+
+#### Contrat de cycle de vie
+
+Les **points d'ancrage** sont normés, pas le comportement :
+
+| Hook | Déclencheur |
+|---|---|
+| `on_install()` | Migration de schéma, état initial |
+| `on_event(e)` | Réaction à un événement Civium |
+| `on_request(r)` | Réponse à une action utilisateur |
+| `on_sync()` | Réconciliation CRDT lors de reconnexion |
+| `on_uninstall()` | Nettoyage des données |
+
+Un plugin qui n'implémente pas `on_sync()` ne peut pas être installé sur un réseau qui exige le fonctionnement hors-ligne. La compatibilité est déclarative et vérifiable.
+
+#### Niveaux de compliance
+
+Plutôt qu'une norme unique, trois niveaux permettent d'accueillir les plugins expérimentaux comme les plugins distribués à grande échelle :
+
+| Niveau | Exigences | Débloque |
+|---|---|---|
+| **Minimal** | Manifeste valide + capabilities déclarées | Installation locale, import direct |
+| **Compatible RSC** | + sandbox WASM + hooks de cycle de vie | Publication dans le Registre |
+| **Certifié** | + audit de permissions + tests fournis | Badge de confiance, réseaux sensibles |
+
+La diversité vit au niveau minimal. La confiance se construit vers le haut.
+
+---
 
 ### Registre de Services Civium (RSC)
 
@@ -1670,8 +2151,8 @@ Voir section MVP ci-dessus.
 - [ ] Fédération d'annuaires
 
 ### Phase 2 — Services & Intégrations
-- [ ] Architecture plugin (manifest, CIL)
-- [ ] Services natifs : agenda, documents, fil d'activité
+- [ ] API plugin complète (manifest, CIL, sandbox WASM, hooks)
+- [ ] Plugins préinstallés : agenda, documents, fil d'activité
 - [ ] Connecteurs SaaS (Google Calendar, Stripe...)
 - [ ] Webhooks et API externe
 - [ ] Serveur MCP
