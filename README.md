@@ -11,6 +11,26 @@ Civium n'est pas un réseau social centralisé. C'est un **réseau de réseaux**
 
 ---
 
+## Philosophie
+
+### Souveraineté des données
+Chaque réseau héberge ses données sur ses propres nœuds. Civium ne centralise rien. Les données partagées entre réseaux transitent directement de nœud à nœud, sans passer par un tiers.
+
+### Cercles de confiance progressifs
+L'identité et l'accès se révèlent progressivement selon la relation entre membres et entre réseaux :
+
+- **Cercle 0 — Annuaire** : présence minimale, découverte possible
+- **Cercle 1 — Connaissance** : interaction légère, profil partiel
+- **Cercle 2 — Confiance** : identité vérifiée par des pairs, accès enrichi
+- **Cercle 3 — Intime / Interne** : accès complet, partage profond
+
+Chaque membre définit pour chaque relation le cercle auquel elle appartient. Chaque réseau définit pour chaque réseau connecté le niveau d'accès accordé.
+
+### Validation par les pairs
+Les connexions, les membres et les contenus peuvent être validés par la communauté elle-même, selon les règles de gouvernance du réseau. Pas d'algorithme opaque, pas de modération centralisée.
+
+---
+
 ## Concept central : le Réseau Civium
 
 Un **Réseau Civium** est l'unité de base du protocole. Il peut être instancié par :
@@ -51,44 +71,6 @@ Les réseaux peuvent se connecter entre eux de deux manières :
 - **Connexion partielle** : un réseau expose seulement certaines informations ou services à un autre réseau, avec des permissions granulaires (ex : un réseau professionnel partage son annuaire de compétences mais pas ses discussions internes)
 
 Chaque connexion est **contractualisée** dans le protocole : les deux réseaux définissent explicitement ce qui est partagé, dans quelle direction, et sous quelles conditions.
-
----
-
-## Annuaires Civium
-
-Un **Annuaire Civium** est un registre spécialisé qui peut référencer :
-
-- Des **réseaux Civium** existants (pour permettre leur découverte et leur interconnexion)
-- Des **membres individuels** (pour permettre le contact entre membres de réseaux différents)
-
-Un annuaire peut être :
-- **Public** : visible et accessible à tout réseau Civium
-- **Semi-public** : accessible uniquement aux réseaux connectés à l'annuaire
-- **Privé** : usage interne à un réseau ou un groupe de réseaux partenaires
-
-Exemples d'annuaires : annuaire des professionnels d'un secteur, annuaire des associations d'une ville, annuaire des membres d'une fédération sportive.
-
----
-
-## Gouvernance des réseaux
-
-### Rôles
-
-| Rôle | Description |
-|---|---|
-| **Admin** | Membre désigné qui gère la configuration du réseau, les connexions et les permissions |
-| **Membre** | Participant actif du réseau, avec des droits définis par l'admin |
-| **Collectif de validation** | Groupe de membres habilités à co-valider des décisions stratégiques |
-
-### Modèle de gouvernance mixte
-
-Chaque réseau choisit son modèle de gouvernance pour les décisions importantes (connexion à un autre réseau, admission de nouveaux membres, modification des règles) :
-
-- **Mode admin seul** : l'administrateur décide souverainement
-- **Mode collectif** : une décision requiert la validation d'un quorum de membres désignés (ex : 3 membres sur 5 doivent approuver)
-- **Mode mixte** : l'admin propose, les membres valident (ou inversement)
-
-Ce modèle s'applique notamment aux **connexions inter-réseaux** : un réseau peut exiger que toute nouvelle connexion soit validée collectivement avant d'être établie.
 
 ---
 
@@ -741,26 +723,6 @@ Civium est un protocole ouvert. Les failles de sécurité peuvent être signalé
 
 ---
 
-## Philosophie
-
-### Souveraineté des données
-Chaque réseau héberge ses données sur ses propres nœuds. Civium ne centralise rien. Les données partagées entre réseaux transitent directement de nœud à nœud, sans passer par un tiers.
-
-### Cercles de confiance progressifs
-L'identité et l'accès se révèlent progressivement selon la relation entre membres et entre réseaux :
-
-- **Cercle 0 — Annuaire** : présence minimale, découverte possible
-- **Cercle 1 — Connaissance** : interaction légère, profil partiel
-- **Cercle 2 — Confiance** : identité vérifiée par des pairs, accès enrichi
-- **Cercle 3 — Intime / Interne** : accès complet, partage profond
-
-Chaque membre définit pour chaque relation le cercle auquel elle appartient. Chaque réseau définit pour chaque réseau connecté le niveau d'accès accordé.
-
-### Validation par les pairs
-Les connexions, les membres et les contenus peuvent être validés par la communauté elle-même, selon les règles de gouvernance du réseau. Pas d'algorithme opaque, pas de modération centralisée.
-
----
-
 ## Cas d'usage
 
 ### Famille
@@ -1210,6 +1172,7 @@ Tout type d'intégration déclare un **manifeste** (`manifest.civium.json`) stan
   "offline_capable": true,
   "expose_to_connected_networks": false
 }
+```
 
 ### Registre de Services Civium (RSC)
 
@@ -1458,15 +1421,51 @@ Civium est accessible via **quatre types d'applications**, chacune adaptée à u
 - Pas d'hébergement de réseau (limitation navigateur)
 - WebRTC pour les communications P2P directes en session
 
-**Stack technique :** Progressive Web App (PWA)
-- Installable sur tous les OS depuis le navigateur
-- Service Worker pour le cache hors-ligne
-- WebRTC pour P2P direct entre membres en session
-- Connexion sécurisée au nœud via API Civium (TLS + token signé)
+**Stack technique :** PHP Fat-Free Framework + Alpine.js
 
 ```
-Navigateur  ──[HTTPS + token signé]──  Nœud Civium
-                                       (desktop / VPS / mutualisé)
+Navigateur
+  │
+  ├── Pages & routing ──────→ PHP Fat-Free Framework
+  │   Templates, sessions,     (hébergement Scaleway existant)
+  │   authentification,
+  │   proxy API → nœud Civium
+  │
+  ├── UI dynamique ──────────→ Alpine.js (2 Ko)
+  │   Réactivité dans les       s'intègre dans les templates F3
+  │   templates PHP,            sans build step
+  │   sans SPA complète
+  │
+  └── Temps-réel ────────────→ Connexion directe navigateur
+      WebSocket, WebRTC         ↕ nœud Civium
+                                (bypass PHP — F3 fournit
+                                 uniquement le token signé)
+```
+
+**Pourquoi cette stack :**
+- **PHP F3** : framework existant, zéro changement d'infrastructure sur Scaleway
+- **Alpine.js** : 2 Ko, s'écrit dans les templates PHP sans étape de compilation, gère toute la réactivité UI nécessaire
+- **Vanilla JS** pour le Service Worker (PWA) et les connexions WebSocket/WebRTC — aucune dépendance supplémentaire
+- **Scaleway bas de gamme** : PHP + nginx, empreinte mémoire minimale
+
+**Séparation des responsabilités :**
+
+| Couche | Technologie | Rôle |
+|---|---|---|
+| Routing & pages | PHP Fat-Free | Rendu templates, sessions, auth |
+| API bridge | PHP Fat-Free | Proxy REST vers le nœud Civium, validation tokens |
+| UI réactive | Alpine.js | Composants dynamiques dans les templates |
+| Temps-réel | Vanilla JS | WebSocket et WebRTC directs vers le nœud |
+| Hors-ligne | Service Worker | Cache PWA, fonctionnement sans connexion |
+
+**Flux d'authentification WebSocket :**
+```
+1. Navigateur → PHP F3 : demande de token signé
+2. PHP F3 → Nœud Civium : vérifie la session membre
+3. Nœud Civium → PHP F3 : token WebSocket signé (TTL court)
+4. PHP F3 → Navigateur : retourne le token
+5. Navigateur → Nœud Civium : connexion WebSocket avec token
+   (PHP n'est plus dans la boucle)
 ```
 
 ### Interface CLI
