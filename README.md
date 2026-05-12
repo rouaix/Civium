@@ -1170,6 +1170,106 @@ Entre la compromission et la révocation effective, un attaquant peut se faire p
 
 ---
 
+### Coopération judiciaire et réseaux illicites
+
+Civium est conçu pour protéger la vie privée des membres légitimes — pas pour offrir l'impunité à des activités illégales. Cette section définit le cadre de coopération avec les autorités judiciaires, en maintenant le Privacy by Design pour tous les utilisateurs non visés.
+
+#### Principes
+
+```
+Ce que Civium peut faire :
+  ✓ Fournir des métadonnées sur réquisition judiciaire
+  ✓ Tracer les CID des réseaux illicites signalés
+  ✓ Coopérer avec les forces de l'ordre via le RRM-LEA
+
+Ce que Civium ne peut pas faire (par conception) :
+  ✗ Déchiffrer les messages E2E (clé de paire — personne ne la détient)
+  ✗ Accéder aux données de cercle 3
+  ✗ Surveiller des réseaux sans réquisition judiciaire
+```
+
+Le contenu des communications reste inaccessible même à l'équipe Civium. Pour accéder au contenu, les autorités doivent procéder à la **saisie des appareils** — procédure judiciaire standard, indépendante du protocole.
+
+#### Métadonnées conservées par les opérateurs de nœuds
+
+Les opérateurs de nœuds Civium (dont le nœud officiel Civium) conservent des **journaux de connexion** pendant une durée légalement définie (par défaut : 12 mois, selon la législation applicable) :
+
+| Métadonnée | Description | Conservée |
+|---|---|---|
+| CID source | Identifiant du nœud émetteur | Oui |
+| CID destination | Identifiant du nœud destinataire | Oui |
+| Horodatage | Date et heure de connexion | Oui |
+| Adresse IP | IP du nœud au moment de la connexion | Oui |
+| Volume | Quantité de données échangées | Oui |
+| Contenu | Corps des messages, fichiers | **Non** — E2E, non accessible |
+
+Ces journaux sont chiffrés au repos et ne sont accessibles que sur **réquisition judiciaire** (commission rogatoire, ordonnance de tribunal).
+
+#### RRM-LEA — Registre pour les Forces de l'Ordre
+
+Le **RRM-LEA** (Law Enforcement Authorities) est un type spécialisé de RRM dédié à la coopération judiciaire. Il est distinct du RRM communautaire et réservé aux forces de l'ordre accréditées (police nationale, Europol, INTERPOL, etc.).
+
+```
+Réseau victime ou témoin
+        │
+        ▼
+Signalement au RRM-LEA
+  ├── CID du réseau illicite
+  ├── Nature de l'activité illégale
+  └── Preuves signées (extraits de journal, captures)
+        │
+        ▼
+RRM-LEA instruit le dossier
+  ├── Vérifie l'indépendance des signalants
+  ├── Valide les preuves cryptographiques
+  └── Transmet aux autorités accréditées
+        │
+        ▼
+Autorités judiciaires
+  ├── Réquisition aux opérateurs de nœuds → métadonnées
+  └── Saisie des appareils → contenu (procédure standard)
+```
+
+**Accès au RRM-LEA :**
+- Les forces de l'ordre s'authentifient avec un CID institutionnel vérifié
+- Les signalements sont pseudonymisés : le CID de la victime n'est pas exposé aux autorités sans son consentement explicite
+- Les autorités reçoivent uniquement les CID des réseaux signalés et les preuves jointes
+
+#### Traçabilité des CID
+
+Chaque CID est cryptographiquement lié à une clé publique Ed25519. Un CID seul ne révèle pas l'identité réelle d'un membre — mais il permet de :
+
+- **Relier des activités** : un même CID utilisé dans plusieurs réseaux illicites crée un graphe de relations exploitable
+- **Identifier le nœud d'hébergement** : le DHT résout CID → adresse IP → opérateur de nœud → réquisition judiciaire
+- **Dater les activités** : les journaux de connexion horodatés permettent de reconstituer une chronologie
+
+```
+CID illicite : civium:x7f2...
+        │
+        ▼
+DHT : résolution CID → IP 185.220.xx.xx
+        │
+        ▼
+Réquisition à l'hébergeur → identité de l'abonné
+        │
+        ▼
+Réquisition au nœud Civium → journaux de connexion
+```
+
+L'identité réelle n'est accessible que via les opérateurs de nœuds et les hébergeurs — pas via le protocole Civium lui-même.
+
+#### Obligations des opérateurs de nœuds
+
+Tout opérateur d'un nœud Civium public (accessible depuis internet) est soumis aux obligations légales de son pays :
+
+- **Conservation des journaux** pendant la durée légale applicable
+- **Réponse aux réquisitions judiciaires** dans les délais légaux
+- **Non-divulgation** de l'existence d'une réquisition en cours (si soumis à une obligation de confidentialité judiciaire)
+
+Le nœud officiel Civium est opéré sous juridiction française et respecte le droit européen (RGPD, directive e-Privacy, Convention de Budapest sur la cybercriminalité).
+
+---
+
 ### Processus de sécurité du projet
 
 #### Audit externe
@@ -2240,6 +2340,7 @@ Voir section MVP ci-dessus.
 | **Nœud** | Instance du protocole Civium hébergeant un ou plusieurs réseaux. Peut être un desktop, un serveur, un NAS, un Raspberry Pi |
 | **Nœud maître** | Nœud principal d'un membre, où réside sa clé privée maître. Les autres appareils reçoivent des sous-clés dérivées |
 | **RRM** | Registre des Réseaux Malveillants — type spécialisé d'annuaire listant les réseaux au comportement malveillant avéré |
+| **RRM-LEA** | RRM Law Enforcement Authorities — registre spécialisé pour la coopération judiciaire, accessible aux forces de l'ordre accréditées |
 | **RSC** | Registre de Services Civium — catalogue décentralisé des plugins et services disponibles |
 | **Sous-clé** | Clé dérivée de la clé maître, attribuée à un appareil spécifique. Révocable individuellement sans affecter l'identité principale |
 | **WASM** | WebAssembly — format d'exécution sandboxé utilisé pour les plugins Civium |
