@@ -80,7 +80,7 @@ Chaque connexion est **contractualisée** dans le protocole : les deux réseaux 
 
 La confiance entre membres ne se décrète pas — elle se construit progressivement. Chaque membre gère ses relations via un système de **cercles de confiance** : plus un membre est proche, plus il accède à des informations et des interactions enrichies.
 
-La confiance est **asymétrique par défaut** : je peux te faire confiance au niveau 2 pendant que tu me fais confiance au niveau 1. Chacun est libre de placer l'autre dans le cercle qu'il juge approprié, indépendamment.
+La confiance est **asymétrique par défaut** : je peux te faire confiance au niveau 2 pendant que tu me fais confiance au niveau 1. Chacun est libre de placer l'autre dans le cercle qu'il juge approprié, indépendamment. La première interaction (cercle 0 → 1) est l'unique exception : elle est symétrique automatiquement. Tous les cercles suivants sont asymétriques par défaut.
 
 ### Les quatre cercles
 
@@ -633,12 +633,26 @@ Nœud A  ──[Noise Protocol / TLS 1.3]──  Nœud B
 ```
 
 #### De bout en bout (E2E)
-Les messages privés et les données sensibles sont chiffrés **au niveau applicatif**, en plus du chiffrement de transport. Seuls les destinataires autorisés peuvent déchiffrer.
+Le contenu sensible est chiffré **au niveau applicatif**, en plus du chiffrement de transport. Seuls les destinataires autorisés peuvent déchiffrer.
 
 ```
-Message de daniel → chiffré avec la clé publique de sophie
-                  → seule sophie (clé privée) peut lire
-                  → ni le nœud relais, ni l'admin ne peuvent lire
+Message privé de daniel → chiffré avec la clé publique de sophie
+                        → seule sophie (clé privée) peut lire
+                        → ni le nœud relais, ni l'admin ne peuvent lire
+```
+
+La synchronisation des données entre nœuds repose sur les CRDT, qui opèrent après déchiffrement côté client. Les membres d'un réseau partagent une **clé de groupe** permettant la fusion des états CRDT. L'E2E strict (clé de paire) s'applique aux données de cercle 3 et aux messages privés — ces données ne participent pas aux CRDT et sont résolues à la reconnexion par last-write-wins.
+
+```
+Données de réseau (cercles 0-2) :
+  → clé de groupe partagée entre membres
+  → CRDT : fusion automatique hors-ligne
+  → personne hors du réseau ne peut lire
+
+Données sensibles (cercle 3, messages privés) :
+  → clé de paire (vrai E2E)
+  → pas de CRDT — last-write-wins à la reconnexion
+  → ni le nœud relais, ni l'admin ne peuvent lire
 ```
 
 #### Au repos
@@ -698,10 +712,11 @@ Les données d'un réseau ne sont **jamais accessibles à un autre réseau** san
 
 #### Droit à l'effacement
 
-Un membre peut **supprimer ses données** à tout moment :
-- **Suppression partielle** : retrait de contenus spécifiques
-- **Désinscription d'un réseau** : suppression du profil réseau, les contributions partagées suivent la politique du réseau
-- **Suppression du compte** : effacement de la clé et des données locales — les données déjà partagées et répliquées chez d'autres membres suivent leurs propres politiques de rétention
+Un membre peut **supprimer ses données** à tout moment. L'effacement est **logique** : un événement CRDT `deleted` est diffusé à tous les nœuds, qui masquent la donnée et ne la servent plus. Elle peut subsister physiquement dans des sauvegardes locales des autres membres, mais elle est inaccessible. Ce modèle est conforme au RGPD — la CNIL reconnaît l'effacement effectif dès lors que la donnée n'est plus accessible.
+
+- **Suppression partielle** : retrait de contenus spécifiques — l'événement `deleted` est propagé immédiatement
+- **Désinscription d'un réseau** : suppression du profil réseau et des données personnelles ; les contributions collectives (posts, votes, wiki) suivent la politique de rétention du réseau, communiquée à l'inscription
+- **Suppression du compte** : révocation de la clé, effacement des données locales et propagation `deleted` sur toutes les données personnelles dans tous les réseaux
 
 #### Pseudonymat et anonymat
 
@@ -1026,6 +1041,8 @@ Les RRM peuvent se fédérer entre eux pour partager leurs listes sans les fusio
 [RRM Communautés locales]  ←→  [RRM Associations]  ←→  [RRM Global Civium]
 ```
 
+Le **RRM Global Civium** est lui-même un Réseau Civium — il n'est pas contrôlé par l'équipe Civium et ne constitue pas une autorité centrale. Il est gouverné par sa propre communauté selon les mêmes mécanismes que tout réseau Civium. Son CID est public et connu, ce qui permet à tout réseau de s'y abonner ou de le remplacer par un autre RRM de référence. L'équipe Civium n'y dispose d'aucun pouvoir particulier.
+
 Un réseau peut s'abonner à plusieurs RRM avec des niveaux de confiance distincts :
 
 ```json
@@ -1215,6 +1232,8 @@ Les données de chaque réseau sont stockées localement et synchronisées via d
 - Une synchronisation **sans serveur central**
 - Une **résolution automatique des conflits** lors de la reconnexion
 
+Les CRDT opèrent sur les données après déchiffrement côté client, via la clé de groupe du réseau. Les données E2E strictes (cercle 3, messages privés) n'utilisent pas de CRDT — leur synchronisation repose sur last-write-wins à la reconnexion. Voir la section Chiffrement pour le détail.
+
 ### Couche 3 — ActivityPub (fédération)
 Civium implémente ActivityPub pour **l'interopérabilité** avec l'écosystème décentralisé existant (Mastodon, PeerTube, Pixelfed, etc.). Un Réseau Civium peut ainsi interagir avec des acteurs extérieurs à Civium sans abandonner ses propres règles de gouvernance.
 
@@ -1385,21 +1404,22 @@ Cette décision architecturale a trois conséquences directes :
 
 - **API prouvée dès le départ** : les plugins officiels utilisent exactement la même API que les plugins tiers — si l'API est insuffisante, Civium lui-même en souffre en premier
 - **Aucun privilège caché** : un développeur tiers peut remplacer, forker ou améliorer n'importe quel service officiel avec les mêmes capacités
-- **Désinstallation possible** : un réseau peut retirer un plugin préinstallé dont il n'a pas besoin, y compris les services de base
+- **Désinstallation possible** : un réseau peut retirer un plugin préinstallé dont il n'a pas besoin. Exception : les plugins **système** (Gouvernance et CIL) ne peuvent pas être désinstallés — ils sont requis par le protocole. Le principe "tout est plugin" s'entend au sens de l'API et du sandboxing, pas de la désinstallabilité.
 
 ### Plugins préinstallés
 
-Ces plugins sont installés par défaut à la création d'un réseau. Ils peuvent être désactivés ou remplacés :
+Ces plugins sont installés par défaut à la création d'un réseau :
 
-| Plugin | Description |
-|---|---|
-| **Messagerie** | Messages directs et fils de discussion, chiffrés de bout en bout |
-| **Agenda** | Calendrier partagé, événements, invitations |
-| **Annuaire** | Gestion des membres et de leurs profils |
-| **Documents** | Coffre-fort de fichiers, partage contrôlé |
-| **Fil d'activité** | Actualités et publications au sein du réseau |
-| **Gouvernance** | Votes, sondages, décisions collectives |
-| **Notifications** | Alertes configurables par membre |
+| Plugin | Type | Peut être retiré |
+|---|---|---|
+| **Gouvernance** | Système | Non |
+| **CIL** | Système | Non |
+| **Messagerie** | Standard | Oui |
+| **Agenda** | Standard | Oui |
+| **Annuaire** | Standard | Oui |
+| **Documents** | Standard | Oui |
+| **Fil d'activité** | Standard | Oui |
+| **Notifications** | Standard | Oui |
 
 ### Plugins additionnels (exemples)
 
@@ -1513,6 +1533,8 @@ Cas d'usage : service de visioconférence, moteur de recherche, IA spécialisée
 
 #### Serveur MCP (Model Context Protocol)
 Un plugin Civium peut exposer un **serveur MCP**, permettant à des agents IA (Claude, GPT, Mistral, etc.) d'accéder aux données du réseau de manière structurée et contrôlée. MCP peut également servir de **canal de partage de données entre réseaux Civium**.
+
+**MCP = transport. APC = contrat.** MCP ne définit pas les droits d'accès — c'est l'APC en vigueur entre les deux réseaux qui les définit. Toute requête MCP inter-réseaux est vérifiée par le CIL exactement comme n'importe quelle requête : contrôle de l'APC, rate limiting, audit. Un réseau connecté ne peut accéder via MCP qu'aux ressources explicitement listées dans son APC.
 
 ```
                     ┌─────────────────────────────┐
@@ -1690,21 +1712,28 @@ Quand un réseau expose un service à un réseau connecté, il définit le nivea
 
 ## Identité des membres
 
-### Identifiant initial
+### Identifiant Civium (CID membre)
 
-À la création de son compte, chaque membre choisit librement son **identifiant initial** — son pseudo Civium, unique sur l'ensemble du protocole.
+L'identité principale d'un membre est son **CID** — dérivé de sa clé publique Ed25519 générée à la création du compte. Le CID est l'unique identifiant garanti globalement unique sur le protocole, car son unicité est cryptographique, pas dépendante d'un registre central.
 
 ```
-Identifiant initial :  daniel
+CID membre :  civium:a3f9c2...e71b   (dérivé de la clé publique Ed25519)
 ```
-
-Cet identifiant est ancré sur une clé cryptographique Ed25519 générée lors de la création du compte. La clé garantit l'unicité et la souveraineté : personne d'autre ne peut revendiquer cet identifiant, et le membre en reste propriétaire même s'il change de nœud ou d'hébergement.
 
 ```
 Compte maître
-├── identifiant : daniel
-├── clé privée  : Ed25519 (conservée localement, jamais transmise)
-└── clé publique : diffusée pour vérification
+├── CID       : civium:a3f9c2...e71b  (identité globale, immuable)
+├── clé privée : Ed25519 (conservée localement, jamais transmise)
+└── clé publique : diffusée pour vérification et résolution CID
+```
+
+### Nom affiché
+
+À la création du compte, le membre choisit un **nom affiché** — son pseudo lisible. Ce nom est unique au sein de chaque réseau qu'il rejoint, mais pas garanti globalement : deux membres dans deux réseaux différents peuvent avoir le même pseudo. La recherche inter-réseaux se fait par CID ; la recherche humaine dans un annuaire se fait par nom affiché.
+
+```
+Nom affiché :  daniel   (unique dans chaque réseau, pas globalement)
+CID          :  civium:a3f9c2...e71b   (unique globalement)
 ```
 
 ### Identifiant réseau
