@@ -18,9 +18,85 @@ Souverains, mais cloisonnés. Chaque outil est une île. Pas d'interopérabilit�
 
 ---
 
-## L'ambition : dépasser WeChat, mais autrement
+## L'ambition : remplacer ou se connecter aux grandes plateformes
 
-WeChat est l'exemple le plus avancé de super-app au monde : messagerie, paiements, réseau social, services gouvernementaux, santé, transport, e-commerce — tout dans une seule application, utilisée par plus d'un milliard de personnes.
+Civium a vocation à devenir une **alternative souveraine** aux grandes plateformes centralisées — et, pour les communautés qui ne veulent pas rompre totalement avec elles, un **pont vers ces plateformes**.
+
+### Deux modes de relation avec les plateformes existantes
+
+```
+Mode 1 — Remplacement
+  La communauté quitte la plateforme et migre sur Civium.
+  Ses données, sa gouvernance, ses interactions : 100 % souveraines.
+
+Mode 2 — Pont (bridge)
+  La communauté utilise Civium en interne et reste visible
+  sur les plateformes externes pour toucher une audience plus large.
+  Civium est la source de vérité. Les plateformes sont des miroirs.
+```
+
+### Civium face à chaque grande plateforme
+
+#### Facebook / Meta
+
+Facebook Groups, Pages, Events, Marketplace, Messenger — Civium couvre nativement tout cela :
+
+| Fonctionnalité Facebook | Équivalent Civium |
+|---|---|
+| Groupes | Réseau Civium (avec gouvernance réelle) |
+| Pages (organisations) | Profil annuaire public d'un réseau |
+| Événements | Plugin Agenda |
+| Marketplace | Plugin Marketplace + commission 1% |
+| Messenger | Plugin Messagerie E2E |
+| Fil d'actualité | Plugin Fil d'activité (sans algorithme) |
+| Connexion entre groupes | Connexion inter-réseaux (APC) |
+
+**Pont Facebook :** un plugin connecteur publie automatiquement le contenu public d'un réseau Civium (cercle 0) sur une Page Facebook — pour toucher les membres qui n'ont pas encore migré.
+
+---
+
+#### TikTok
+
+TikTok est une machine à contenu court, algorithmique, conçue pour la dépendance. Civium propose une alternative sans algorithme de manipulation :
+
+| Fonctionnalité TikTok | Équivalent Civium |
+|---|---|
+| Vidéos courtes | Plugin Vidéo (hébergé sur le nœud du créateur) |
+| Fil de contenu | Fil d'activité curé par la communauté, pas par un algorithme |
+| Abonnements | Connexion inter-réseaux (cercle 1) |
+| Commentaires | Réactions et fils dans le plugin Fil d'activité |
+| Monétisation créateur | Transactions directes membres → créateur (1% Civium) |
+| Live streaming | Plugin Visioconférence / Streaming (RSC) |
+
+**Pont TikTok :** un plugin publie automatiquement les vidéos publiques d'un réseau sur TikTok et YouTube simultanément. Le créateur reste propriétaire du contenu sur son nœud Civium.
+
+**Différence fondamentale :** sur TikTok, l'algorithme décide qui voit quoi. Sur Civium, chaque communauté définit ses propres règles de diffusion — ou n'en a pas.
+
+---
+
+#### YouTube
+
+YouTube est la référence mondiale pour la vidéo. Civium ne cherche pas à remplacer YouTube pour la diffusion massive — mais à offrir un espace souverain pour les créateurs et communautés :
+
+| Fonctionnalité YouTube | Équivalent Civium |
+|---|---|
+| Hébergement vidéo | Plugin Vidéo (nœud propre ou hébergeur tiers) |
+| Chaînes | Réseau Civium d'un créateur ou d'une organisation |
+| Abonnés | Membres du réseau (cercle 1) |
+| Commentaires | Fil d'activité |
+| Monétisation | Transactions directes, plugin Marketplace |
+| Playlists | Collections dans le plugin Bibliothèque |
+| Lives | Plugin Streaming (RSC) |
+
+**Pont YouTube :** le plugin connecteur SaaS YouTube synchronise les vidéos publiques (cercle 0) vers YouTube. Le créateur publie une fois sur Civium, la vidéo apparaît sur YouTube automatiquement. Les revenus YouTube restent au créateur — Civium ne prend rien dessus.
+
+**Cas d'usage clé :** une chaîne YouTube éducative migre sur Civium pour héberger ses cours privés (payants, cercle 2), garder YouTube pour la visibilité publique. Les abonnés payants sont dans son réseau Civium — leurs données ne sont pas chez Google.
+
+---
+
+#### WeChat
+
+WeChat est l'exemple le plus avancé de super-app au monde : messagerie, paiements, réseau social, services gouvernementaux, santé, transport, e-commerce — tout centralisé chez Tencent, sous contrôle chinois, sans souveraineté des données.
 
 Civium ne cherche pas à copier WeChat. Il cherche à rendre **possible ce que WeChat ne peut pas faire** :
 
@@ -36,6 +112,24 @@ Civium ne cherche pas à copier WeChat. Il cherche à rendre **possible ce que W
 | **Interopérabilité** | Fermée | Ouverte (ActivityPub, MCP, API) |
 
 WeChat est une super-app. **Civium est un super-protocole** : chaque communauté y assemble sa propre super-app depuis un écosystème ouvert, sans dépendre d'une seule entreprise.
+
+---
+
+### Tableau de synthèse
+
+| Plateforme | Civium peut remplacer | Civium peut s'y connecter |
+|---|---|---|
+| **Facebook Groups** | ✓ Complètement | ✓ Pont publication |
+| **WhatsApp** | ✓ Complètement (E2E natif) | — |
+| **WeChat** | ✓ Complètement + davantage | Pont publication |
+| **TikTok** | ✓ Pour les communautés | ✓ Pont vidéo |
+| **YouTube** | Partiellement (privé/payant) | ✓ Pont vidéo fort |
+| **Slack / Teams** | ✓ Pour les organisations | ✓ Connecteur SaaS |
+| **Notion / Confluence** | ✓ Plugin Documents + Wiki | ✓ Connecteur SaaS |
+| **Eventbrite** | ✓ Plugin Agenda + billetterie | ✓ Connecteur SaaS |
+| **Meetup** | ✓ Annuaire + événements | ✓ Pont publication |
+| **Instagram** | Partiellement (galerie, communauté) | ✓ Pont publication |
+| **LinkedIn** (groupes) | ✓ Pour les réseaux pro | ✓ Connecteur SaaS |
 
 ---
 
