@@ -10,11 +10,30 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 | Phase | Nom | Statut |
 |---|---|---|
-| 0 | MVP | 🔲 Non démarré |
+| — | Site web de présentation | 🔲 Non démarré |
+| 0 | MVP | ⏳ En attente site web |
 | 1 | Gouvernance & Annuaires | ⏳ En attente Phase 0 |
 | 2 | Services & Intégrations | ⏳ En attente Phase 1 |
 | 3 | Applications & Écosystème | ⏳ En attente Phase 2 |
 | 4 | Maturité | ⏳ En attente Phase 3 |
+
+---
+
+## Priorité — Site web de présentation
+
+> Promouvoir le projet et attirer contributeurs, partenaires et premiers utilisateurs avant même la sortie du MVP.
+
+- [ ] Définir le domaine et l'hébergement (civium.net ou civium.fr — Scaleway)
+- [ ] Page d'accueil : accroche, proposition de valeur, visuel du protocole
+- [ ] Section "Pourquoi Civium" (problème → solution → contrôle)
+- [ ] Section "Comment ça marche" (cercles, réseaux, plugins — vulgarisé)
+- [ ] Section "Cas d'usage" (famille, asso, quartier, entreprise)
+- [ ] Feuille de route publique (basée sur ce ROADMAP)
+- [ ] Formulaire d'inscription liste d'attente / newsletter
+- [ ] Lien vers le dépôt GitHub
+- [ ] Page "Contribuer" (comment participer au projet)
+- [ ] SEO de base + Open Graph (partage réseaux sociaux)
+- [ ] Stack : PHP Fat-Free + Alpine.js (cohérent avec l'app web Civium — infra Scaleway existante)
 
 ---
 
