@@ -68,7 +68,7 @@ Facebook Groups, Pages, Events, Marketplace, Messenger — Civium couvre nativem
 | Fil d'actualité | Plugin Fil d'activité (sans algorithme) |
 | Connexion entre groupes | Connexion inter-réseaux (APC) |
 
-**Pont Facebook :** un plugin connecteur publie automatiquement le contenu public d'un réseau Civium (cercle 0) sur une Page Facebook — pour toucher les membres qui n'ont pas encore migré.
+**Pont Facebook :** un plugin connecteur publie automatiquement le contenu public d'un réseau Civium (cercle 0) sur une Page Facebook — pour toucher les membres qui n'ont pas encore migré. *Dépend de l'API Graph Facebook, soumise aux politiques Meta.*
 
 ---
 
@@ -80,12 +80,12 @@ TikTok est une machine à contenu court, algorithmique, conçue pour la dépenda
 |---|---|
 | Vidéos courtes | Plugin Vidéo (hébergé sur le nœud du créateur) |
 | Fil de contenu | Fil d'activité curé par la communauté, pas par un algorithme |
-| Abonnements | Connexion inter-réseaux (cercle 1) |
+| Abonnements | Accès public au réseau d'un créateur (cercle 0 = contenu public, cercle 1 = accès sur invitation) |
 | Commentaires | Réactions et fils dans le plugin Fil d'activité |
 | Monétisation créateur | Transactions directes membres → créateur (1% Civium) |
 | Live streaming | Plugin Visioconférence / Streaming (RSC) |
 
-**Pont TikTok :** un plugin publie automatiquement les vidéos publiques d'un réseau sur TikTok et YouTube simultanément. Le créateur reste propriétaire du contenu sur son nœud Civium.
+**Pont TikTok :** un plugin publie automatiquement les vidéos publiques d'un réseau sur TikTok et YouTube simultanément. Le créateur reste propriétaire du contenu sur son nœud Civium. *Dépend de l'API TikTok, soumise aux politiques ByteDance.*
 
 **Différence fondamentale :** sur TikTok, l'algorithme décide qui voit quoi. Sur Civium, chaque communauté définit ses propres règles de diffusion — ou n'en a pas.
 
@@ -105,7 +105,7 @@ YouTube est la référence mondiale pour la vidéo. Civium ne cherche pas à rem
 | Playlists | Collections dans le plugin Bibliothèque |
 | Lives | Plugin Streaming (RSC) |
 
-**Pont YouTube :** le plugin connecteur SaaS YouTube synchronise les vidéos publiques (cercle 0) vers YouTube. Le créateur publie une fois sur Civium, la vidéo apparaît sur YouTube automatiquement. Les revenus YouTube restent au créateur — Civium ne prend rien dessus.
+**Pont YouTube :** le plugin connecteur SaaS YouTube synchronise les vidéos publiques (cercle 0) vers YouTube. Le créateur publie une fois sur Civium, la vidéo apparaît sur YouTube automatiquement. Les revenus YouTube restent au créateur — Civium ne prend rien dessus. *Dépend de l'API YouTube Data, soumise aux politiques Google.*
 
 **Cas d'usage clé :** une chaîne YouTube éducative migre sur Civium pour héberger ses cours privés (payants, cercle 2), garder YouTube pour la visibilité publique. Les abonnés payants sont dans son réseau Civium — leurs données ne sont pas chez Google.
 
@@ -126,7 +126,7 @@ Civium ne cherche pas à copier WeChat. Il cherche à rendre **possible ce que W
 | **Identité** | Liée à WeChat | Portable, cryptographique, universelle |
 | **Juridiction** | Droit chinois | Droit local de chaque opérateur |
 | **Algorithme** | Opaque, optimisé pour l'engagement | Absent — pas de recommandation |
-| **Interopérabilité** | Fermée | Ouverte (ActivityPub, MCP, API) |
+| **Interopérabilité** | Fermée | Ouverte (MCP, API) — ActivityPub prévu (roadmap) |
 
 WeChat est une super-app. **Civium est un super-protocole** : chaque communauté y assemble sa propre super-app depuis un écosystème ouvert, sans dépendre d'une seule entreprise.
 
@@ -241,13 +241,13 @@ Tout service aujourd'hui centralisé peut devenir un plugin Civium souverain :
 - Concertation citoyenne et budgets participatifs
 - Signalement et suivi de problèmes urbains
 - Démarches administratives (connexion institutions)
-- Vote électronique sécurisé
+- Vote de gouvernance communautaire interne (≠ élections officielles, qui requièrent une certification ANSSI/CNIL hors portée de Civium)
 
 ### Commerce et économie locale
 - Marketplace de produits et services
 - Annuaires professionnels
 - Programmes de fidélité entre réseaux
-- Monnaie locale ou système de points
+- Système de points interne au réseau (équivalent monnaie locale, sans valeur d'échange externe — hors du cadre réglementaire monétaire)
 
 ### Intelligence artificielle
 - Agent IA de réseau (accès via MCP aux données du réseau)
