@@ -4,6 +4,23 @@ Ce document décrit l'ambition à long terme de Civium. Il est séparé de la sp
 
 ---
 
+## Objectif principal
+
+> **Remplacer toutes les grandes applications centralisées — WhatsApp, Facebook, TikTok, YouTube, WeChat, Slack, Notion, Instagram et les autres — par un protocole unique, souverain, où chaque communauté garde le contrôle total de ses données, de ses règles et de ses connexions.**
+
+Ce n'est pas une ambition partielle. Civium n'est pas un outil parmi d'autres, ni une niche pour les technophiles militants. C'est une infrastructure de remplacement — conçue pour être aussi riche, aussi accessible et plus puissante que ce qu'elle remplace, avec un avantage que les plateformes centralisées ne peuvent pas offrir : **le contrôle**.
+
+**Le contrôle, c'est :**
+- Vos données sur votre nœud — personne d'autre n'y a accès sans votre permission explicite
+- Vos règles — chaque communauté définit sa gouvernance, ses cercles de confiance, ses connexions
+- Votre identité — un CID cryptographique qui vous appartient, portable entre tous les réseaux
+- Votre écosystème — vous choisissez vos plugins, vous ne subissez pas les fonctionnalités imposées
+- Votre indépendance — si Civium disparaît demain, votre nœud continue de fonctionner
+
+Les plateformes centralisées vous offrent des outils en échange de vos données, de votre attention et de votre dépendance. **Civium vous offre les mêmes outils sans cette contrepartie.**
+
+---
+
 ## Le problème que Civium résout
 
 Les outils numériques actuels imposent un choix binaire :
@@ -14,7 +31,7 @@ Riches en fonctionnalités, mais vos données leur appartiennent. Votre communau
 **Option B — Les outils auto-hébergés (Nextcloud, Mattermost, Discourse)**
 Souverains, mais cloisonnés. Chaque outil est une île. Pas d'interopérabilité, pas de gouvernance collective, pas de connexion entre communautés.
 
-**Civium est une troisième voie** : des communautés souveraines, interconnectées par choix, avec des outils aussi riches que les plateformes centralisées — sans en subir les contreparties.
+**Civium est la troisième voie** : toutes les fonctionnalités des plateformes centralisées, avec la souveraineté des outils auto-hébergés, et l'interopérabilité que ni l'un ni l'autre ne propose.
 
 ---
 
