@@ -3,6 +3,41 @@
 
 ---
 
+## Table des matières
+
+- [Vision](#vision)
+- [Philosophie](#philosophie)
+- [Concept central : le Réseau Civium](#concept-central--le-réseau-civium)
+- [Architecture : Réseau de réseaux](#architecture--réseau-de-réseaux)
+- [Cercles de confiance entre membres](#cercles-de-confiance-entre-membres)
+- [Gouvernance des réseaux](#gouvernance-des-réseaux)
+- [Annuaires Civium](#annuaires-civium)
+- [Sécurité & vie privée](#sécurité--vie-privée)
+  - [Chiffrement](#chiffrement)
+  - [Gestion des clés](#gestion-des-clés)
+  - [Authentification](#authentification)
+  - [Vie privée](#vie-privée)
+  - [Audit et journalisation](#audit-et-journalisation)
+  - [Sécurité des plugins](#sécurité-des-plugins)
+  - [Sécurité du réseau P2P](#sécurité-du-réseau-p2p)
+  - [Protection contre les réseaux Civium malveillants](#protection-contre-les-réseaux-civium-malveillants)
+  - [Coopération judiciaire et réseaux illicites](#coopération-judiciaire-et-réseaux-illicites)
+  - [Processus de sécurité du projet](#processus-de-sécurité-du-projet)
+- [Cas d'usage](#cas-dusage)
+- [Architecture technique](#architecture-technique)
+- [Pile protocolaire](#pile-protocolaire)
+- [Cycle de vie d'une connexion inter-réseaux](#cycle-de-vie-dune-connexion-inter-réseaux)
+- [Services Civium](#services-civium)
+- [Identité des membres](#identité-des-membres)
+- [Fonctionnalités transversales](#fonctionnalités-transversales)
+- [Applications](#applications)
+- [Ce que Civium n'est pas](#ce-que-civium-nest-pas)
+- [MVP — Produit Minimum Viable](#mvp--produit-minimum-viable)
+- [Feuille de route](#feuille-de-route)
+- [Glossaire](#glossaire)
+
+---
+
 ## Vision
 
 Civium est un **protocole et une plateforme de mise en réseau souverain**. Il permet à tout groupe d'individus — famille, entreprise, association, quartier, école, communauté — de créer son propre réseau privé, de le gérer selon ses règles, et de le connecter librement à d'autres réseaux Civium.
@@ -2084,7 +2119,7 @@ Le compte maître et la liste complète des appartenances ne sont visibles **que
 | Gouvernance configurable | Admin seul, collectif, ou mixte — au choix de chaque réseau |
 | Annuaires hiérarchisables | Public, semi-public, privé — fédérables entre eux |
 | Interopérabilité | ActivityPub prévu (roadmap) — interop Mastodon, PeerTube, etc. |
-| Export total | Export de toutes les données à tout moment, formats ouverts |
+| Export total | Export de toutes les données à tout moment (JSON, CSV, SQLite, ZIP) |
 | Hors-ligne | Fonctions de base accessibles sans connexion |
 
 ---
