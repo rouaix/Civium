@@ -324,18 +324,40 @@ Chaque réseau configure librement quel niveau de décision requiert quel niveau
 [Délibération]  ← période de débat, durée configurable
      │
      ▼
-[Vote]  ← durée configurable (ex : 24h, 7 jours)
+[Vote]  ← fenêtre configurable (ex : 24h, 7 jours)
+     │       votes asynchrones — chaque membre vote quand il peut
+     │       CRDT collecte les votes (dédupliqués par CID membre)
+     │
+     ├── Deadline atteinte ?
+     │     ├── Non → vote encore ouvert
+     │     └── Oui → dépouillement de tous les votes reçus
      │
      ├── Quorum atteint ?
      │     ├── Non → Décision caduque ou prolongation
-     │     └── Oui → Dépouillement
+     │     └── Oui → Résultat calculé
      │
      ├── Résultat
      │     ├── Adopté  → Application automatique ou manuelle
      │     └── Rejeté  → Archivé, nouvelle proposition possible après délai
      │
-     └── [Audit] ← décision enregistrée, immuable, consultable
+     └── [Audit] ← résultat signé cryptographiquement, inscrit dans le journal immuable
 ```
+
+#### Votes hors-ligne
+
+Le vote est **entièrement asynchrone** : un membre peut voter à n'importe quel moment pendant la fenêtre, en ligne ou hors-ligne. Un vote soumis hors-ligne est mis en queue locale et synchronisé via CRDT dès la reconnexion.
+
+```
+Membre hors-ligne pendant le vote :
+  → vote soumis localement, mis en queue
+  → reconnexion avant deadline : vote synchronisé et comptabilisé
+  → reconnexion après deadline  : vote ignoré (fenêtre fermée)
+
+Garantie anti-doublon : 1 vote par membre par CID — le CRDT
+déduplique automatiquement en cas de synchronisation multiple.
+```
+
+Le résultat n'est calculé et signé qu'à la deadline — jamais en temps réel. Cela garantit que les votes de membres temporairement hors-ligne sont bien pris en compte, et que le journal immuable ne contient que des résultats définitifs.
 
 ### Mécanismes de vote
 
@@ -572,14 +594,43 @@ Une recherche dans l'annuaire national peut remonter des résultats des annuaire
 
 ### Annuaire racine Civium
 
-Le **protocole Civium** maintient un **annuaire racine décentralisé** — non contrôlé par une entité centrale — servant de point d'entrée minimal pour la découverte de réseaux et d'annuaires publics. Il fonctionne via le maillage P2P (DHT) et ne stocke que les CID et métadonnées minimales des réseaux qui choisissent d'y figurer.
+Le **protocole Civium** maintient un **annuaire racine** — point d'entrée principal pour la découverte de réseaux. Il est hébergé sur le nœud officiel Civium et fédéré avec les nœuds bootstrap communautaires. Tout nouveau réseau Civium y est **enregistré automatiquement** à sa création.
 
 ```
-Annuaire racine Civium (DHT)
+Annuaire racine Civium
+├── Enregistrement automatique de chaque nouveau réseau
 ├── Liste des annuaires publics
-├── Liste des réseaux publics
+├── Liste des réseaux (visibilité selon politique du réseau)
 └── Points d'entrée pour rejoindre le maillage P2P
 ```
+
+L'enregistrement automatique inscrit le CID du réseau et ses métadonnées minimales (nom public, type, date de création). La **visibilité** dans l'annuaire reste contrôlée par la politique du réseau — un réseau privé est enregistré (son CID est connu du maillage) mais ses informations ne sont pas accessibles publiquement.
+
+```
+Réseau créé → enregistrement automatique dans l'annuaire racine
+                    │
+                    ├── Réseau public    → fiche visible par tous
+                    ├── Réseau semi-ouvert → fiche visible sur demande
+                    └── Réseau privé     → CID enregistré, fiche masquée
+```
+
+### Nœuds bootstrap
+
+Tout nouveau nœud Civium est distribué avec une **liste de nœuds bootstrap officiels** permettant de rejoindre le maillage P2P au premier démarrage. Une fois connecté, le nœud découvre d'autres pairs via le DHT et n'a plus besoin des bootstrap.
+
+```
+Nœuds bootstrap officiels (maintenus par l'équipe Civium) :
+  bootstrap.civium.net:7771
+  bootstrap2.civium.net:7771
+
+Nœuds bootstrap communautaires (opt-in, liste publique) :
+  tout réseau Civium peut s'y ajouter volontairement
+
+Configuration manuelle possible :
+  civium.toml → bootstrap_nodes = ["ip:port", ...]
+```
+
+Les nœuds bootstrap n'ont aucun pouvoir sur le réseau — ils servent uniquement de point d'entrée initial dans le DHT. Leur défaillance n'affecte pas les nœuds déjà connectés.
 
 ---
 
@@ -1234,8 +1285,8 @@ Les données de chaque réseau sont stockées localement et synchronisées via d
 
 Les CRDT opèrent sur les données après déchiffrement côté client, via la clé de groupe du réseau. Les données E2E strictes (cercle 3, messages privés) n'utilisent pas de CRDT — leur synchronisation repose sur last-write-wins à la reconnexion. Voir la section Chiffrement pour le détail.
 
-### Couche 3 — ActivityPub (fédération)
-Civium implémente ActivityPub pour **l'interopérabilité** avec l'écosystème décentralisé existant (Mastodon, PeerTube, Pixelfed, etc.). Un Réseau Civium peut ainsi interagir avec des acteurs extérieurs à Civium sans abandonner ses propres règles de gouvernance.
+### Couche 3 — ActivityPub (fédération) *(roadmap)*
+L'interopérabilité avec le Fediverse (Mastodon, PeerTube, Pixelfed, etc.) via ActivityPub est prévue mais hors scope de la v1. Elle sera spécifiée dans une version ultérieure, une fois la pile de base stable. Le mapping prévu : contenu cercle 0 → public ActivityPub, cercle 1 → followers, cercles 2-3 non fédérés.
 
 ### Couche 4 — Protocole Civium (CP)
 La couche applicative propre à Civium. Elle définit :
@@ -1722,9 +1773,52 @@ CID membre :  civium:a3f9c2...e71b   (dérivé de la clé publique Ed25519)
 
 ```
 Compte maître
-├── CID       : civium:a3f9c2...e71b  (identité globale, immuable)
-├── clé privée : Ed25519 (conservée localement, jamais transmise)
+├── CID        : civium:a3f9c2...e71b  (identité globale, immuable)
+├── clé privée : Ed25519 (conservée sur le nœud principal, jamais transmise)
 └── clé publique : diffusée pour vérification et résolution CID
+```
+
+### Nœud principal et multi-appareils
+
+Le compte maître réside sur un **nœud principal** — le premier nœud Civium sur lequel le compte a été créé. Ce nœud peut être un VPS, un NAS, ou une instance hébergée (comme le nœud web Civium). Le CID reste stable quelle que soit l'adresse du nœud : si l'URL ou l'IP change, le DHT met à jour la résolution CID → adresse automatiquement.
+
+#### Modèle de clés : maître + sous-clés par appareil
+
+La clé privée maître ne quitte jamais le nœud principal. Chaque appareil supplémentaire (mobile, second desktop, navigateur) reçoit une **sous-clé dérivée**, signée par la clé maître et révocable individuellement.
+
+```
+Nœud principal
+├── clé privée maître  (jamais exportée)
+├── sous-clé appareil A  [mobile daniel]    ← révocable
+├── sous-clé appareil B  [desktop bureau]   ← révocable
+└── sous-clé appareil C  [laptop perso]     ← révocable
+```
+
+La compromission d'un appareil ne compromet pas l'identité complète — seule la sous-clé de cet appareil est révoquée.
+
+#### Pairing d'un nouvel appareil
+
+```
+Nœud principal :
+  1. Génère un code de pairing à usage unique (TTL : 5 min)
+  2. Affiche un QR code
+
+Nouvel appareil :
+  3. Scanne le QR code
+  4. Reçoit la sous-clé dérivée, chiffrée en transit
+  5. La sous-clé est signée par la clé maître → vérifiable par tous
+  6. Stockée localement sur l'appareil, chiffrée au repos
+```
+
+#### Comportement hors-ligne
+
+Quand le nœud principal est inaccessible, les appareils appairés passent en **mode lecture seule** depuis leur cache local chiffré. Les actions en attente (messages envoyés, modifications) sont stockées dans une queue locale et synchronisées via CRDT à la reconnexion.
+
+```
+Nœud principal hors-ligne :
+  → Lecture  : cache local chiffré (données récentes disponibles)
+  → Écriture : mise en queue locale
+  → Reconnexion : sync CRDT automatique, résolution des conflits
 ```
 
 ### Nom affiché
@@ -1738,36 +1832,48 @@ CID          :  civium:a3f9c2...e71b   (unique globalement)
 
 ### Identifiant réseau
 
-Lorsqu'un membre rejoint un réseau, son identifiant dans ce réseau est formé automatiquement :
+Lorsqu'un membre rejoint un réseau, son identifiant dans ce réseau est formé à partir de son CID membre et du CID du réseau :
 
 ```
-identifiant_initial + "_" + nom_public_du_réseau
+<cid_membre_court>@<cid_réseau_court>
 
-daniel_famille-martin
-daniel_asso-velo
-daniel_equipe-design
+a3f9e71b@b4e2f91a
 ```
 
-Cet identifiant réseau est :
-- **Stable** : il ne change pas tant que le membre appartient au réseau
-- **Lisible** : il identifie immédiatement le membre et son réseau d'appartenance
+Cet identifiant est :
+- **Stable** : basé sur des CID cryptographiques, il ne change jamais — ni si le membre change de nœud, ni si le réseau se renomme
+- **Non ambigu** : deux réseaux portant le même nom public n'ont pas le même CID
 - **Vérifiable** : signé par la clé du membre, impossible à usurper
+
+Le nom public du réseau est modifiable librement sans aucun impact sur les identifiants de ses membres.
+
+### Nom affiché par réseau
+
+L'identifiant réseau (`a3f9e71b@b4e2f91a`) est l'identifiant **protocolaire** — utilisé par le système. Ce que les autres membres voient est le **nom affiché**, choisi librement par le membre pour chaque réseau :
+
+| Identifiant protocolaire | Nom affiché choisi | Contexte |
+|---|---|---|
+| `a3f9e71b@b4e2f91a` | Daniel R. | Dans l'asso vélo |
+| `a3f9e71b@c7d3a02e` | Papa | Dans le réseau famille |
+| `a3f9e71b@e91f4b17` | Le Vélociste | Dans la marketplace |
+
+Le membre peut choisir son nom réel, un pseudonyme, ou un surnom — différent dans chaque réseau. L'identifiant protocolaire reste interne au protocole.
 
 ### Profil par réseau
 
 Un membre peut avoir un **profil distinct dans chaque réseau** : nom affiché, photo, biographie, informations exposées. L'identité s'adapte au contexte.
 
 ```
-daniel (compte maître)
+Compte maître (CID : a3f9e71b...)
 │
-├── daniel_famille-martin
-│   └── profil : "Papa", photo de famille, agenda partagé
+├── @b4e2f91a  [asso-velo]
+│   └── nom affiché : "Daniel R.", bénévole, compétences logistique
 │
-├── daniel_asso-velo
-│   └── profil : "Daniel R.", bénévole, compétences logistique
+├── @c7d3a02e  [famille-martin]
+│   └── nom affiché : "Papa", photo de famille, agenda partagé
 │
-└── daniel_equipe-design
-    └── profil : "Dan", portfolio, compétences UI/UX, tarif journalier
+└── @e91f4b17  [equipe-design]
+    └── nom affiché : "Dan", portfolio, compétences UI/UX, tarif journalier
 ```
 
 ### Visibilité : double contrôle
@@ -1798,36 +1904,27 @@ Membre daniel choisit :
 
 Les deux niveaux sont **indépendants** — la politique du réseau définit le comportement par défaut, le membre peut s'en écarter librement dans les deux sens.
 
-**Nom affiché : nom réel ou pseudonyme**
-Pour chaque réseau, le membre choisit comment il souhaite être identifié publiquement :
-
-| Option | Exemple affiché | Identifiant réseau |
-|---|---|---|
-| **Nom réel** | Daniel Rouaix | `daniel_asso-velo` |
-| **Pseudonyme** | Dan_R | `daniel_asso-velo` |
-| **Nom de réseau personnalisé** | Le Vélociste | `daniel_asso-velo` |
-
-L'identifiant réseau (`daniel_asso-velo`) reste interne au protocole. Ce qui est affiché publiquement est le **nom choisi par le membre** pour ce réseau — réel, pseudo, ou surnom.
+Le membre peut choisir son nom réel, un pseudonyme, ou un surnom — différent dans chaque réseau. L'identifiant protocolaire (`a3f9e71b@b4e2f91a`) reste interne au protocole et n'est jamais affiché à l'utilisateur final.
 
 ### Recherche et découverte
 
 Un membre peut être trouvé :
-- Par son **identifiant réseau complet** (`daniel_asso-velo`) — recherche directe
-- Par son **identifiant initial** (`daniel`) — si au moins un de ses profils est public
+- Par son **CID membre** (`civium:a3f9e71b...`) — recherche directe inter-réseaux
+- Par son **nom affiché** — dans l'annuaire d'un réseau spécifique, si la politique le permet
 - Via l'**annuaire du réseau** — si la politique du réseau le permet
 
 ### Appartenance à plusieurs réseaux
 
-Un membre peut appartenir à autant de réseaux que souhaité. Ses différents identifiants réseau ne sont **pas liés publiquement** entre eux par défaut : connaître `daniel_asso-velo` ne révèle pas l'existence de `daniel_famille-martin`.
+Un membre peut appartenir à autant de réseaux que souhaité. Ses différentes appartenances ne sont **pas liées publiquement** entre elles par défaut : connaître l'identifiant d'un membre dans un réseau ne révèle pas ses autres appartenances.
 
 ```
-Vue publique (annuaire)       Vue du membre (compte maître)
-                              ┌─────────────────────────────┐
-daniel_asso-velo  ✓ visible   │ daniel                      │
-daniel_famille-??  ✗ masqué   │ ├── _famille-martin  [privé]│
-daniel_equipe-??   ✗ masqué   │ ├── _asso-velo      [public]│
-                              │ └── _equipe-design  [privé] │
-                              └─────────────────────────────┘
+Vue publique (annuaire)            Vue du membre (compte maître)
+                                   ┌──────────────────────────────────┐
+a3f9e71b@b4e2f91a  ✓ visible       │ CID : a3f9e71b...                │
+a3f9e71b@c7d3a02e  ✗ masqué        │ ├── @b4e2f91a [asso-velo, public]│
+a3f9e71b@e91f4b17  ✗ masqué        │ ├── @c7d3a02e [famille,   privé] │
+                                   │ └── @e91f4b17 [design,    privé] │
+                                   └──────────────────────────────────┘
 ```
 
 Le compte maître et la liste complète des appartenances ne sont visibles **que par le membre lui-même**.
@@ -1843,7 +1940,7 @@ Le compte maître et la liste complète des appartenances ne sont visibles **que
 | Permissions granulaires | Contrôle fin sur chaque donnée partagée entre réseaux |
 | Gouvernance configurable | Admin seul, collectif, ou mixte — au choix de chaque réseau |
 | Annuaires hiérarchisables | Public, semi-public, privé — fédérables entre eux |
-| Interopérabilité | Compatible ActivityPub, ouvert sur d'autres protocoles décentralisés |
+| Interopérabilité | ActivityPub prévu (roadmap) — interop Mastodon, PeerTube, etc. |
 | Export total | Export de toutes les données à tout moment, formats ouverts |
 | Hors-ligne | Fonctions de base accessibles sans connexion |
 
@@ -1869,137 +1966,28 @@ Civium est accessible via **quatre types d'applications**, chacune adaptée à u
 
 ### Application Desktop
 
-**Rôle :** nœud complet — l'application embarque le protocole Civium et peut héberger un réseau.
-
-**Capacités :**
-- Héberge un ou plusieurs Réseaux Civium localement
-- Fonctionne entièrement hors-ligne
-- Synchronise en P2P avec les autres nœuds
-- Accès à toutes les fonctionnalités et tous les services
-- Gestion des clés cryptographiques en local
-
-**Stack technique :** [Tauri](https://tauri.app) (Rust + WebView)
-- Exécutable léger (< 10 Mo vs 150 Mo+ pour Electron)
-- Interface web (React / Vue / Svelte) pour l'UI
-- Cœur du protocole en Rust — performance et sécurité mémoire
-- Disponible Windows, macOS, Linux depuis une seule base de code
-
-```
-┌────────────────────────────────────┐
-│  Application Desktop (Tauri)       │
-│  ┌──────────────────────────────┐  │
-│  │  Interface (WebView)         │  │
-│  ├──────────────────────────────┤  │
-│  │  Civium Core (Rust)          │  │
-│  │  ├── libp2p (transport P2P)  │  │
-│  │  ├── CRDT (sync données)     │  │
-│  │  ├── Protocole Civium (CP)   │  │
-│  │  └── Stockage chiffré local  │  │
-│  └──────────────────────────────┘  │
-└────────────────────────────────────┘
-```
+**Rôle :** nœud complet — héberge un ou plusieurs réseaux Civium localement, fonctionne entièrement hors-ligne, synchronise en P2P.
 
 ### Application Mobile
 
-**Rôle :** nœud léger — synchronise avec un nœud complet (desktop, NAS, VPS) ou directement en P2P.
-
-**Capacités :**
-- Accès à tous les réseaux dont le membre fait partie
-- Fonctionne hors-ligne (données en cache local chiffré)
-- Synchronise en P2P ou via le nœud maître du membre
-- Notifications push
-- Toutes les fonctionnalités membres (pas d'hébergement de réseau)
-
-**Stack technique :** React Native ou Flutter
-- Base de code partagée iOS / Android
-- Module natif Rust pour le protocole (via FFI)
-- Stockage local chiffré (SQLite + clé dérivée)
-
-**Gestion de la batterie et de la connectivité :**
-- Synchronisation différée hors Wi-Fi (configurable)
-- Mode ultra-léger en arrière-plan (notifications uniquement)
-- Reconnexion automatique P2P à la reprise de connexion
+**Rôle :** nœud léger — accès à tous les réseaux du membre, hors-ligne (cache local chiffré), synchronise via P2P ou via le nœud maître, notifications push.
 
 ### Application Web
 
-**Rôle :** client distant — se connecte à un nœud Civium existant (desktop, NAS, VPS, instance mutualisée).
-
-**Capacités :**
-- Accès aux réseaux via un nœud distant authentifié
-- Fonctionnement partiel hors-ligne (PWA avec cache)
-- Toutes les fonctionnalités membres
-- Pas d'hébergement de réseau (limitation navigateur)
-- WebRTC pour les communications P2P directes en session
-
-**Stack technique :** PHP Fat-Free Framework + Alpine.js
-
-```
-Navigateur
-  │
-  ├── Pages & routing ──────→ PHP Fat-Free Framework
-  │   Templates, sessions,     (hébergement Scaleway existant)
-  │   authentification,
-  │   proxy API → nœud Civium
-  │
-  ├── UI dynamique ──────────→ Alpine.js (2 Ko)
-  │   Réactivité dans les       s'intègre dans les templates F3
-  │   templates PHP,            sans build step
-  │   sans SPA complète
-  │
-  └── Temps-réel ────────────→ Connexion directe navigateur
-      WebSocket, WebRTC         ↕ nœud Civium
-                                (bypass PHP — F3 fournit
-                                 uniquement le token signé)
-```
-
-**Pourquoi cette stack :**
-- **PHP F3** : framework existant, zéro changement d'infrastructure sur Scaleway
-- **Alpine.js** : 2 Ko, s'écrit dans les templates PHP sans étape de compilation, gère toute la réactivité UI nécessaire
-- **Vanilla JS** pour le Service Worker (PWA) et les connexions WebSocket/WebRTC — aucune dépendance supplémentaire
-- **Scaleway bas de gamme** : PHP + nginx, empreinte mémoire minimale
-
-**Séparation des responsabilités :**
-
-| Couche | Technologie | Rôle |
-|---|---|---|
-| Routing & pages | PHP Fat-Free | Rendu templates, sessions, auth |
-| API bridge | PHP Fat-Free | Proxy REST vers le nœud Civium, validation tokens |
-| UI réactive | Alpine.js | Composants dynamiques dans les templates |
-| Temps-réel | Vanilla JS | WebSocket et WebRTC directs vers le nœud |
-| Hors-ligne | Service Worker | Cache PWA, fonctionnement sans connexion |
-
-**Flux d'authentification WebSocket :**
-```
-1. Navigateur → PHP F3 : demande de token signé
-2. PHP F3 → Nœud Civium : vérifie la session membre
-3. Nœud Civium → PHP F3 : token WebSocket signé (TTL court)
-4. PHP F3 → Navigateur : retourne le token
-5. Navigateur → Nœud Civium : connexion WebSocket avec token
-   (PHP n'est plus dans la boucle)
-```
+**Rôle :** client distant — se connecte à un nœud Civium existant via navigateur. PWA avec cache partiel hors-ligne. WebRTC pour les communications P2P directes en session.
 
 ### Interface CLI
 
-**Rôle :** nœud serveur — gestion headless d'un réseau Civium en production.
-
-**Capacités :**
-- Installation et gestion d'un nœud sur serveur (VPS, NAS, Raspberry Pi)
-- Administration complète via ligne de commande
-- Scripting et automatisation
-- Intégration dans des pipelines DevOps
-- Monitoring et journalisation
-
-**Stack technique :** Rust (binaire natif)
+**Rôle :** nœud serveur — gestion headless d'un réseau Civium en production (VPS, NAS, Raspberry Pi). Scripting et automatisation.
 
 ```bash
-# Exemples de commandes CLI Civium
 civium node start                        # démarre le nœud
 civium network create --name "mon-asso"  # crée un réseau
 civium network connect --cid civium:...  # connecte à un réseau
 civium member invite --email ...         # invite un membre
 civium service install marketplace       # installe un service
-civium audit log --last 7d              # journal des 7 derniers jours
-civium backup export --encrypted        # sauvegarde chiffrée
+civium audit log --last 7d               # journal des 7 derniers jours
+civium backup export --encrypted         # sauvegarde chiffrée
 ```
 
 ### Comparatif des applications
@@ -2015,19 +2003,7 @@ civium backup export --encrypted        # sauvegarde chiffrée
 | Scripting / automatisation | — | — | — | ✓ |
 | Installation sans app store | ✓ | — | ✓ (PWA) | ✓ |
 
-### Base de code partagée
-
-Le **cœur du protocole Civium** est un module Rust unique, partagé entre toutes les applications :
-
-```
-civium-core (Rust)
-├── utilisé par  Desktop  (Tauri — natif)
-├── utilisé par  Mobile   (React Native / Flutter — via FFI)
-├── utilisé par  CLI      (binaire natif)
-└── compilé en  WASM     (pour usage futur dans le navigateur)
-```
-
-Une seule implémentation du protocole — pas de divergence entre plateformes.
+Pour les détails de stack technique (Tauri, PHP F3, React Native vs Flutter, Rust FFI, infrastructure Scaleway), voir [STACK.md](STACK.md).
 
 ---
 
