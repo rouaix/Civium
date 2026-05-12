@@ -85,7 +85,24 @@ Chaque transaction génère un **reçu signé** :
 }
 ```
 
-Ce reçu est stocké localement sur le nœud du réseau et ne peut pas être modifié rétrospectivement (CRDT `deleted` interdit sur les reçus de transaction).
+Ce reçu est stocké localement sur le nœud du réseau et ne peut pas être modifié rétrospectivement (CRDT `deleted` interdit sur les reçus de transaction pendant la durée légale de conservation).
+
+### Reçus de transaction et droit à l'effacement RGPD
+
+Les reçus de transaction contiennent des données personnelles (CID vendeur/acheteur) soumises au droit à l'effacement (Article 17 RGPD). Cependant, la loi comptable française impose une conservation des pièces justificatives pendant **10 ans**. Ces deux obligations coexistent via la règle suivante :
+
+```
+Pendant la durée légale (10 ans) :
+  → Reçu conservé intégralement — obligation comptable prime sur le droit à l'effacement
+  → Le membre peut demander la pseudonymisation de ses données dans le reçu
+       └── CID remplacé par un identifiant opaque non réversible
+       └── Le montant et la date restent (nécessaires à la comptabilité)
+
+Après la durée légale :
+  → CRDT `deleted` autorisé — le reçu est effaçable à la demande
+```
+
+Cette règle est communiquée aux membres lors de l'activation du module de paiement.
 
 ### Anti-fraude
 
@@ -147,7 +164,7 @@ Document (reste sur le nœud)
 
 | Vecteur | Protection |
 |---|---|
-| Soumettre un SIRET légitime d'une autre entreprise | Vérification que le CID du réseau correspond à un admin déclaré dans le Kbis (à terme) |
+| Soumettre un SIRET légitime d'une autre entreprise | **Actuel :** vérification que le nom du réseau correspond à la raison sociale. **Prévu :** vérification que le CID correspond à un admin déclaré dans le Kbis (nécessite une API Kbis — non disponible aujourd'hui) |
 | Créer une association fictive juste pour obtenir le badge | Délai de vérification : l'association doit exister depuis > 3 mois dans le JO |
 | Réutiliser un badge après dissolution de l'entité | Vérification périodique automatique (tous les 6 mois) via les APIs publiques |
 | Badge volé d'un réseau légitime | Le badge est lié au CID — non transférable |
@@ -183,7 +200,14 @@ La révocation est immédiate et visible dans l'annuaire.
 La licence white-label protège la **marque et l'usage commercial**, pas le code (qui est open source). Un déployeur ne peut pas :
 - Redistribuer la licence à un tiers
 - Déployer plus de réseaux que ce que la licence autorise
-- Supprimer les mentions "Propulsé par Civium" (selon les conditions de licence)
+
+La mention "Propulsé par Civium" est **optionnelle selon le niveau de licence** :
+
+| Niveau | Mention Civium |
+|---|---|
+| Petite structure (< 500 membres) | Obligatoire — ex : "Propulsé par Civium" en pied de page |
+| Structure moyenne (500–5 000 membres) | Optionnelle — peut être retirée moyennant supplément |
+| Grande organisation (> 5 000 membres) | Libre — marque totalement indépendante de Civium |
 
 ### Mécanisme de vérification
 
@@ -229,7 +253,7 @@ Aucun plugin déclarant `commerce.transaction` ne peut être publié sur le RSC 
 Tout plugin commerce nouvellement publié est placé en **quarantaine de 30 jours** :
 - Visible dans le RSC avec badge "En observation"
 - Installable, mais avec avertissement explicite à l'admin
-- Monitored pour comportements anormaux (volume, patterns d'accès)
+- Surveillé pour comportements anormaux (volume, patterns d'accès)
 - Sorti de quarantaine après 30 jours sans incident signalé
 
 ---
@@ -240,7 +264,7 @@ Dès que Civium manipule des flux de paiement réels, la conformité **PCI DSS**
 
 ### Niveau de conformité applicable
 
-Civium utilise Stripe Connect ou Mollie comme provider de paiement — ces providers sont eux-mêmes certifiés PCI DSS niveau 1. En déléguant le traitement des données de carte à ces providers, Civium se place en **SAQ A** (Self-Assessment Questionnaire A) — le niveau le plus léger.
+Civium utilise Stripe Connect ou Mollie comme provider de paiement — ces providers sont eux-mêmes certifiés PCI DSS niveau 1. En déléguant le traitement des données de carte à ces providers, Civium vise le niveau **SAQ A** ou **SAQ A-EP** selon l'implémentation retenue.
 
 ```
 Données de carte bancaire
@@ -249,6 +273,16 @@ Données de carte bancaire
   └── Traitées exclusivement par Stripe/Mollie (PCI DSS niveau 1)
   └── Civium reçoit uniquement : statut de paiement + identifiant transaction
 ```
+
+**SAQ A vs SAQ A-EP — le niveau exact dépend de l'implémentation :**
+
+| Implémentation | Niveau applicable |
+|---|---|
+| Redirection complète vers Stripe Checkout (aucun JS Civium dans le flux carte) | **SAQ A** — le plus léger |
+| Formulaire de paiement Stripe.js/Elements intégré dans l'UI Civium | **SAQ A-EP** — légèrement plus exigeant |
+| Tout autre cas (traitement partiel côté nœud) | **SAQ D** — à éviter |
+
+**Recommandation :** implémenter via redirection Stripe Checkout pour rester en SAQ A. À confirmer avec le provider de paiement retenu avant tout lancement.
 
 ### Obligations pour les opérateurs de nœuds
 
