@@ -1572,7 +1572,7 @@ Réseau A  ◀──[annuaire: aucun]──  Réseau B
 
 Lors de la validation, les politiques des deux réseaux sont formalisées dans un **Accord de Partage Civium (APC)** — document signé cryptographiquement par les deux parties. Cet accord :
 - Liste explicitement chaque catégorie exposée et le niveau d'accès accordé
-- Est versionnée : toute modification requiert une nouvelle validation
+- Est versionné : toute modification requiert une nouvelle validation
 - Peut être révoqué unilatéralement à tout moment (retour à l'état Suspendu puis Révoqué)
 
 #### Modification des permissions en cours de connexion
@@ -1585,7 +1585,7 @@ Un réseau peut à tout moment **restreindre ou élargir** les données qu'il ex
 
 ### Refus et blocage
 
-Un réseau peut **refuser** ou **bloquer** une demande de connexion entrants :
+Un réseau peut **refuser** ou **bloquer** une demande de connexion entrante :
 
 | Action | Effet |
 |---|---|
@@ -2295,7 +2295,7 @@ Valider les deux hypothèses fondamentales de Civium :
 | Fonctionnalité | Détail |
 |---|---|
 | Création d'un Réseau Civium | Nœud local, CLI + Desktop (macOS/Linux/Windows) |
-| Identité membre | Identifiant réseau (`a3f9@b4e2`) + nom affiché choisi librement |
+| Identité membre | Identifiant réseau (`a3f9e71b@b4e2f91a`) + nom affiché choisi librement |
 | Invitation de membres | Par lien ou CID, validation par l'admin |
 | Cercles de confiance | Cercles 0, 1 et 2 uniquement |
 | Messagerie chiffrée | E2E entre membres d'un même réseau |
@@ -2313,7 +2313,7 @@ Valider les deux hypothèses fondamentales de Civium :
 | Plugins / API / SaaS / MCP | Après validation du protocole de base |
 | Annuaires | Phase suivante |
 | Fédération ActivityPub | Phase suivante |
-| Cercle 3 + cautionnement | Simplifié à 3 cercles pour le MVP |
+| Cercle 3 (pair E2E) | Simplifié à 3 cercles pour le MVP |
 | Récupération sociale | Phrase de récupération uniquement en MVP |
 | Applications mobile / web | Desktop + CLI en priorité |
 | Services avancés | Messagerie seule suffit à valider |
@@ -2325,19 +2325,19 @@ Valider les deux hypothèses fondamentales de Civium :
 Alice crée un Réseau Civium "asso-velo" sur son laptop
   └── installe le nœud (CLI ou Desktop)
   └── CID Alice : civium:a3f9...  CID réseau : civium:b4e2...
-  └── identifiant réseau : a3f9@b4e2 — nom affiché : "Alice"
-  └── invite Bob → identifiant réseau : c7d3@b4e2 — nom affiché : "Bob"
+  └── identifiant réseau : a3f9e71b@b4e2f91a — nom affiché : "Alice"
+  └── invite Bob → identifiant réseau : c7d3a02e@b4e2f91a — nom affiché : "Bob"
 
 Bob crée son propre Réseau Civium "quartier-sud"
   └── CID réseau : civium:e91f...
-  └── identifiant réseau de Bob : c7d3@e91f
+  └── identifiant réseau de Bob : c7d3a02e@e91f4b17
 
 Alice demande une connexion entre "asso-velo" et "quartier-sud"
   └── Bob valide la demande
   └── Alice configure : annuaire membres visible, messages non partagés
 
 Alice et Bob voient les membres de l'autre réseau
-Alice envoie un message à c7d3@e91f (Bob dans quartier-sud) → chiffré E2E → Bob le reçoit
+Alice envoie un message à c7d3a02e@e91f4b17 (Bob dans quartier-sud) → chiffré E2E → Bob le reçoit
 
 Bob refuse une deuxième demande de connexion d'un réseau inconnu
   └── le réseau demandeur est bloqué
@@ -2420,6 +2420,7 @@ Voir section MVP ci-dessus.
 - [ ] Délégation de vote
 - [ ] Annuaire de réseaux et de membres
 - [ ] Fédération d'annuaires
+- [ ] Profils enfants et contrôle parental
 
 ### Phase 2 — Services & Intégrations
 - [ ] API plugin complète (manifest, CIL, sandbox WASM, hooks)
@@ -2457,7 +2458,7 @@ Voir section MVP ci-dessus.
 | **E2E** | Chiffrement de bout en bout — seuls les destinataires désignés peuvent déchiffrer ; ni les nœuds relais ni les admins ne peuvent lire |
 | **Gouvernance** | Plugin système gérant les votes, décisions collectives et règles de fonctionnement d'un réseau. Non retirable |
 | **Nœud** | Instance du protocole Civium hébergeant un ou plusieurs réseaux. Peut être un desktop, un serveur, un NAS, un Raspberry Pi |
-| **Nœud maître** | Nœud principal d'un membre, où réside sa clé privée maître. Les autres appareils reçoivent des sous-clés dérivées |
+| **Nœud principal** | Nœud d'un membre où réside sa clé privée maître. Les autres appareils reçoivent des sous-clés dérivées |
 | **RRM** | Registre des Réseaux Malveillants — type spécialisé d'annuaire listant les réseaux au comportement malveillant avéré |
 | **RRM-LEA** | RRM Law Enforcement Authorities — registre spécialisé pour la coopération judiciaire, accessible aux forces de l'ordre accréditées |
 | **RSC** | Registre de Services Civium — catalogue décentralisé des plugins et services disponibles |
