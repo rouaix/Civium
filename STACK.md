@@ -25,7 +25,7 @@ Une seule implémentation du protocole — pas de divergence entre plateformes.
 **Stack :** [Tauri](https://tauri.app) (Rust + WebView)
 
 - Exécutable léger (< 10 Mo vs 150 Mo+ pour Electron)
-- Interface web (React / Vue / Svelte) pour l'UI — à décider
+- Interface web **React + Tailwind** pour l'UI (MVP)
 - Cœur du protocole en Rust — performance et sécurité mémoire
 - Disponible Windows, macOS, Linux depuis une seule base de code
 
@@ -39,7 +39,7 @@ Une seule implémentation du protocole — pas de divergence entre plateformes.
 │  │  ├── libp2p (transport P2P)  │  │
 │  │  ├── CRDT (sync données)     │  │
 │  │  ├── Protocole Civium (CP)   │  │
-│  │  └── Stockage chiffré local  │  │
+│  │  └── SQLCipher (stockage chiffré) │  │
 │  └──────────────────────────────┘  │
 └────────────────────────────────────┘
 ```
@@ -52,7 +52,7 @@ Une seule implémentation du protocole — pas de divergence entre plateformes.
 
 - Base de code partagée iOS / Android
 - Module natif Rust pour le protocole (via FFI)
-- Stockage local chiffré (SQLite + clé dérivée)
+- Stockage local chiffré (SQLCipher — SQLite + clé dérivée)
 
 **Gestion batterie et connectivité :**
 - Synchronisation différée hors Wi-Fi (configurable)
