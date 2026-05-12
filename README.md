@@ -29,6 +29,7 @@
 - [Cycle de vie d'une connexion inter-réseaux](#cycle-de-vie-dune-connexion-inter-réseaux)
 - [Services Civium](#services-civium)
 - [Identité des membres](#identité-des-membres)
+  - [Profils enfants et contrôle parental](#profils-enfants-et-contrôle-parental)
 - [Fonctionnalités transversales](#fonctionnalités-transversales)
 - [Applications](#applications)
 - [Ce que Civium n'est pas](#ce-que-civium-nest-pas)
@@ -2109,6 +2110,90 @@ Le compte maître et la liste complète des appartenances ne sont visibles **que
 
 ---
 
+### Profils enfants et contrôle parental
+
+Dans un réseau famille, les parents (admins) peuvent créer des **profils enfants** — comptes membres avec un ensemble de restrictions configurables selon l'âge.
+
+#### Création d'un profil enfant
+
+Un profil enfant est un compte Civium standard avec un CID propre, placé sous supervision parentale dès sa création :
+
+```
+Parent (admin du réseau famille)
+  └── crée un profil enfant
+       ├── âge déclaré → restrictions par défaut selon tranche d'âge
+       ├── compte lié au parent superviseur
+       └── sous-clé dérivée de la clé maître du parent (révocable)
+```
+
+La sous-clé dérivée permet au parent de révoquer l'accès de l'enfant sans affecter son propre compte. Quand l'enfant atteint la majorité, le compte peut être émancipé — il devient un CID indépendant, non lié au parent.
+
+#### Restrictions configurables
+
+Les parents configurent les restrictions depuis le tableau de bord parental :
+
+| Restriction | Description | Configurable |
+|---|---|---|
+| **Plugins autorisés** | Liste blanche des plugins accessibles à l'enfant | Par plugin |
+| **Plages horaires** | Accès limité à certaines heures de la journée | Par jour / heure |
+| **Connexions externes** | Toute demande de connexion hors du réseau famille requiert approbation parentale | Oui / Non |
+| **Contacts directs** | Messages privés limités aux membres approuvés | Liste blanche |
+| **Contenu adulte** | Masquage automatique du contenu marqué 18+ | Activé par défaut |
+| **Visibilité annuaire** | L'enfant n'apparaît pas dans les annuaires publics | Activé par défaut |
+
+#### Tranches d'âge et restrictions par défaut
+
+| Âge | Restrictions par défaut |
+|---|---|
+| **< 13 ans** | Accès limité aux plugins famille uniquement, zéro connexion externe, contacts uniquement dans le réseau famille, pas d'annuaire |
+| **13–15 ans** | Connexions externes soumises à approbation parentale, contenu adulte masqué, annuaire masqué par défaut |
+| **16–17 ans** | Connexions externes autorisées avec notification parentale, contenu adulte masqué, annuaire optionnel |
+| **18 ans+** | Émancipation possible — le compte devient indépendant si le membre le souhaite |
+
+Les restrictions par défaut sont modifiables par le parent à tout moment, dans les deux sens.
+
+#### Approbation parentale
+
+Quand une action d'un enfant requiert validation :
+
+```
+Enfant demande une connexion avec un réseau extérieur
+        │
+        ▼
+Notification envoyée au(x) parent(s) superviseur(s)
+        │
+        ├── Parent approuve → connexion établie
+        ├── Parent refuse   → connexion bloquée, enfant notifié
+        └── Pas de réponse après X heures → refus automatique (configurable)
+```
+
+Les deux parents peuvent être désignés superviseurs — l'approbation d'un seul suffit (configurable : un ou les deux).
+
+#### Tableau de bord parental
+
+Le plugin **Contrôle parental** (préinstallé dans tout réseau de type famille) fournit aux admins-parents :
+
+- **Activité récente** : dernières connexions, plugins utilisés, heures d'accès — sans accès au contenu des messages (E2E préservé)
+- **Demandes en attente** : connexions et contacts à approuver
+- **Alertes** : tentatives d'accès à du contenu bloqué, connexions depuis un nouvel appareil
+- **Gestion des restrictions** : modification en temps réel des plages horaires et plugins autorisés
+
+Le contenu des messages privés (cercle 3, E2E) reste inaccessible aux parents — le contrôle parental porte sur les **métadonnées et les accès**, pas sur le contenu chiffré.
+
+#### Émancipation du compte
+
+À 18 ans (ou à la décision des parents avant), le profil enfant peut être **émancipé** :
+
+```
+1. Parent ou enfant (18 ans+) déclenche l'émancipation
+2. Un nouveau CID indépendant est généré pour l'enfant
+3. L'historique et les relations sont migrés vers le nouveau CID
+4. Le lien de supervision est rompu — le compte n'est plus révocable par le parent
+5. L'enfant choisit de rester dans le réseau famille ou d'en partir
+```
+
+---
+
 ## Fonctionnalités transversales
 
 | Fonctionnalité | Description |
@@ -2121,6 +2206,7 @@ Le compte maître et la liste complète des appartenances ne sont visibles **que
 | Interopérabilité | ActivityPub prévu (roadmap) — interop Mastodon, PeerTube, etc. |
 | Export total | Export de toutes les données à tout moment (JSON, CSV, SQLite, ZIP) |
 | Hors-ligne | Fonctions de base accessibles sans connexion |
+| Contrôle parental | Profils enfants avec restrictions par âge, approbation parentale, tableau de bord |
 
 ---
 
