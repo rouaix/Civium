@@ -11,7 +11,7 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 | Phase | Nom | Statut |
 |---|---|---|
 | — | Site web de présentation | 🔲 Non démarré |
-| 0 | MVP | ⏳ En attente site web |
+| 0 | MVP | 🚧 En cours |
 | 1 | Gouvernance & Annuaires | ⏳ En attente Phase 0 |
 | 2 | Services & Intégrations | ⏳ En attente Phase 1 |
 | 3 | Applications & Écosystème | ⏳ En attente Phase 2 |
@@ -43,12 +43,12 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 1–2 — Protocole de base (`civium-core`)
 
-- [ ] Génération de paires de clés Ed25519
-- [ ] Dérivation du CID depuis la clé publique
-- [ ] Création et démarrage d'un nœud local
-- [ ] Transport libp2p TCP + QUIC
-- [ ] Découverte de pairs via DHT Kademlia
-- [ ] Chiffrement des connexions via Noise Protocol
+- [x] Génération de paires de clés Ed25519
+- [x] Dérivation du CID depuis la clé publique
+- [x] Création et démarrage d'un nœud local
+- [x] Transport libp2p TCP + QUIC
+- [x] Découverte de pairs via DHT Kademlia
+- [x] Chiffrement des connexions via Noise Protocol
 
 ### Semaines 3–4 — Identité et membres
 
