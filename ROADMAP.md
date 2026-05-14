@@ -69,12 +69,12 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 7–8 — Connexion inter-réseaux
 
-- [ ] Handshake : `CONNECT_REQUEST` / `CONNECT_RESPONSE`
-- [ ] États de connexion (Demandée → En validation → Active / Refusée / Bloquée)
-- [ ] Validation par l'admin (acceptation, refus simple, refus motivé, blocage)
-- [ ] Accord de Partage Civium (APC) signé cryptographiquement
-- [ ] Partage d'annuaire membres entre réseaux connectés
-- [ ] Révocation unilatérale d'une connexion
+- [x] Handshake : `CONNECT_REQUEST` / `CONNECT_RESPONSE`
+- [x] États de connexion (Demandée → En validation → Active / Refusée / Bloquée)
+- [x] Validation par l'admin (acceptation, refus simple, refus motivé, blocage)
+- [x] Accord de Partage Civium (APC) signé cryptographiquement
+- [x] Partage d'annuaire membres entre réseaux connectés
+- [x] Révocation unilatérale d'une connexion
 
 ### Semaines 9–10 — Interface Desktop + CLI
 

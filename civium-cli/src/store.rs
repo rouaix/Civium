@@ -2,7 +2,7 @@
 //! Replaced by SQLCipher in weeks 9-10 (Tauri app).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, CiviumKeypair, Mailbox};
+use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -79,6 +79,34 @@ pub fn list_network_cids(data_dir: &Path) -> Vec<String> {
         .filter(|e| e.path().is_dir())
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
+}
+
+// ── Connections ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Default)]
+pub struct ConnectionStore {
+    pub connections: Vec<ConnectionRecord>,
+}
+
+pub fn connections_path(data_dir: &Path, network_cid_short: &str) -> PathBuf {
+    network_dir(data_dir, network_cid_short).join("connections.json")
+}
+
+pub fn save_connections(
+    data_dir: &Path,
+    network_cid_short: &str,
+    store: &ConnectionStore,
+) -> Result<()> {
+    let path = connections_path(data_dir, network_cid_short);
+    write_json(data_dir, &path, store)
+}
+
+pub fn load_connections(data_dir: &Path, network_cid_short: &str) -> Result<ConnectionStore> {
+    let path = connections_path(data_dir, network_cid_short);
+    if !path.exists() {
+        return Ok(ConnectionStore::default());
+    }
+    read_json(&path).with_context(|| format!("cannot read connections at {}", path.display()))
 }
 
 // ── Mailbox ───────────────────────────────────────────────────────────────────

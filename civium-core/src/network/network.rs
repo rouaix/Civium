@@ -102,6 +102,11 @@ impl Network {
         &self.keypair
     }
 
+    /// Base58-encoded Ed25519 public key of this network's keypair.
+    pub fn pubkey_b58(&self) -> String {
+        bs58::encode(self.keypair.public_key_bytes()).into_string()
+    }
+
     /// Generate a signed invitation link.
     pub fn create_invitation(
         &self,
