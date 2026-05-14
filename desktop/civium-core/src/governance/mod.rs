@@ -202,8 +202,73 @@ pub struct VoteResult {
     pub winner: Option<usize>,
 }
 
+// ── Délégation de vote ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteDelegation {
+    pub delegator_cid_short: String,
+    pub delegate_cid_short: String,
+    pub network_cid_short: String,
+    /// None = applies to all proposals in this network (network-wide delegation).
+    /// Some(id) = applies only to this specific proposal.
+    pub proposal_id: Option<String>,
+    pub created_at: u64,
+}
+
+impl VoteDelegation {
+    pub fn applies_to(&self, proposal_id: &str) -> bool {
+        match &self.proposal_id {
+            None => true,
+            Some(pid) => pid == proposal_id,
+        }
+    }
+}
+
+// ── Vote counting ─────────────────────────────────────────────────────────────
+
+/// Compute results without delegation (backward-compatible).
 pub fn compute_result(proposal: &Proposal, votes: &[Vote], total_members: usize) -> VoteResult {
-    let total_votes = votes.len();
+    compute_result_with_delegations(proposal, votes, &[], total_members)
+}
+
+/// Compute results accounting for delegations.
+/// Rules:
+/// - A direct vote always takes precedence over any delegation.
+/// - A delegation is applied only if the delegate has voted and the delegator has not.
+/// - No transitivity: A→B→C only counts A's delegation to B (not to C).
+pub fn compute_result_with_delegations(
+    proposal: &Proposal,
+    votes: &[Vote],
+    delegations: &[VoteDelegation],
+    total_members: usize,
+) -> VoteResult {
+    use std::collections::HashMap;
+
+    // Map: voter_cid_short → choice_index (direct votes only)
+    let direct: HashMap<&str, usize> = votes
+        .iter()
+        .map(|v| (v.voter_cid_short.as_str(), v.choice_index))
+        .collect();
+
+    // Effective votes: start with all direct votes
+    let mut effective: HashMap<&str, usize> = direct.clone();
+
+    // Apply delegations: only if delegator has NOT voted directly
+    let relevant: Vec<&VoteDelegation> = delegations
+        .iter()
+        .filter(|d| d.applies_to(&proposal.id))
+        .collect();
+
+    for d in &relevant {
+        if direct.contains_key(d.delegator_cid_short.as_str()) {
+            continue; // direct vote takes precedence
+        }
+        if let Some(&choice) = direct.get(d.delegate_cid_short.as_str()) {
+            effective.insert(d.delegator_cid_short.as_str(), choice);
+        }
+    }
+
+    let total_votes = effective.len();
     let participation_percent = if total_members > 0 {
         (total_votes as f64 / total_members as f64) * 100.0
     } else {
@@ -213,9 +278,9 @@ pub fn compute_result(proposal: &Proposal, votes: &[Vote], total_members: usize)
         || participation_percent >= proposal.quorum_percent as f64;
 
     let mut counts = vec![0usize; proposal.options.len()];
-    for vote in votes {
-        if vote.choice_index < counts.len() {
-            counts[vote.choice_index] += 1;
+    for &choice in effective.values() {
+        if choice < counts.len() {
+            counts[choice] += 1;
         }
     }
 

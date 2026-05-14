@@ -6,11 +6,11 @@ use tauri::{AppHandle, Manager};
 
 use civium_core::{
     network::{Invitation, Network},
-    add_contest, compute_result,
+    add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     GroupKey, MemberRole, Message, MessageKind, Multiaddr,
-    NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote,
+    NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote, VoteDelegation,
     peer_id_from_multiaddr,
 };
 
@@ -671,8 +671,9 @@ pub fn vote_results(
         .ok_or_else(|| format!("proposal '{}' not found", proposal_id))?;
 
     let votes = store::list_votes(&conn, &proposal_id).map_err(|e| e.to_string())?;
+    let delegations = store::list_delegations(&conn, &network_cid).map_err(|e| e.to_string())?;
     let total_members = network.data.members.len();
-    let result = compute_result(proposal, &votes, total_members);
+    let result = compute_result_with_delegations(proposal, &votes, &delegations, total_members);
 
     Ok(VoteResultInfo {
         proposal_id: result.proposal_id,
@@ -687,6 +688,89 @@ pub fn vote_results(
             .collect(),
         winner: result.winner,
     })
+}
+
+// ── Vote delegation ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DelegationInfo {
+    pub delegator_cid_short: String,
+    pub delegate_cid_short: String,
+    pub proposal_id: Option<String>,
+    pub created_at: u64,
+}
+
+/// Set or replace a vote delegation (network-wide or per-proposal).
+#[tauri::command]
+pub fn vote_delegate(
+    app: AppHandle,
+    network_cid: String,
+    delegate_cid_short: String,
+    proposal_id: Option<String>,
+) -> Result<DelegationInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let delegator_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    if delegator_cid.short() == delegate_cid_short.as_str() {
+        return Err("cannot delegate to yourself".into());
+    }
+    if !network.data.members.iter().any(|m| m.cid_short == delegate_cid_short) {
+        return Err(format!("member '{}' not found in this network", delegate_cid_short));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let delegation = VoteDelegation {
+        delegator_cid_short: delegator_cid.short().to_string(),
+        delegate_cid_short: delegate_cid_short.clone(),
+        network_cid_short: network_cid.clone(),
+        proposal_id: proposal_id.clone(),
+        created_at: now,
+    };
+    store::save_delegation(&conn, &delegation).map_err(|e| e.to_string())?;
+    Ok(DelegationInfo {
+        delegator_cid_short: delegation.delegator_cid_short,
+        delegate_cid_short: delegation.delegate_cid_short,
+        proposal_id: delegation.proposal_id,
+        created_at: delegation.created_at,
+    })
+}
+
+/// Revoke a delegation (network-wide or per-proposal).
+#[tauri::command]
+pub fn vote_revoke_delegation(
+    app: AppHandle,
+    network_cid: String,
+    proposal_id: Option<String>,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let delegator_cid = keypair.cid();
+    store::delete_delegation(&conn, &network_cid, delegator_cid.short(), proposal_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// List my delegations for a network.
+#[tauri::command]
+pub fn vote_list_delegations(
+    app: AppHandle,
+    network_cid: String,
+) -> Result<Vec<DelegationInfo>, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let my_cid = keypair.cid();
+    let all = store::list_delegations(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(all
+        .into_iter()
+        .filter(|d| d.delegator_cid_short == my_cid.short())
+        .map(|d| DelegationInfo {
+            delegator_cid_short: d.delegator_cid_short,
+            delegate_cid_short: d.delegate_cid_short,
+            proposal_id: d.proposal_id,
+            created_at: d.created_at,
+        })
+        .collect())
 }
 
 // ── Admin actions (garde-fou) ─────────────────────────────────────────────────

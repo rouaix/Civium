@@ -18,8 +18,8 @@ pub use messaging::{Mailbox, Message, MessageKind};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};
 pub use governance::{
-    add_contest, compute_result,
+    add_contest, compute_result, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
-    Proposal, ProposalStatus, Vote, VoteResult,
+    Proposal, ProposalStatus, Vote, VoteDelegation, VoteResult,
 };
 pub use node::{peer_id_from_multiaddr, CiviumNode, CiviumRequest, CiviumResponse, NodeCommand, NodeConfig, NodeEvent, NodeHandle};

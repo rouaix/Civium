@@ -73,6 +73,13 @@ export interface VoteResultInfo {
   winner: number | null;
 }
 
+export interface DelegationInfo {
+  delegator_cid_short: string;
+  delegate_cid_short: string;
+  proposal_id: string | null;
+  created_at: number;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;

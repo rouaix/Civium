@@ -4,12 +4,12 @@ use anyhow::{bail, Result};
 use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
-    add_contest, compute_result,
+    add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, GroupKey, MemberRole,
     MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
-    Proposal, ShareTerms, TrustCircle, Vote, peer_id_from_multiaddr,
+    Proposal, ShareTerms, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
 use clap::{Parser, Subcommand};
@@ -285,6 +285,30 @@ enum GovernanceCmd {
         /// Proposal ID (short prefix accepted).
         proposal_id: String,
         /// Network CID short.
+        #[arg(long)]
+        network: String,
+    },
+    /// Delegate your vote to another member.
+    Delegate {
+        #[arg(long)]
+        network: String,
+        /// CID short of the member to delegate to.
+        #[arg(long)]
+        to: String,
+        /// Restrict delegation to a single proposal ID (omit for network-wide).
+        #[arg(long)]
+        proposal: Option<String>,
+    },
+    /// Revoke a vote delegation.
+    RevokeDelegation {
+        #[arg(long)]
+        network: String,
+        /// Restrict revocation to a specific proposal (omit to revoke the network-wide one).
+        #[arg(long)]
+        proposal: Option<String>,
+    },
+    /// List your current delegations for a network.
+    Delegations {
         #[arg(long)]
         network: String,
     },
@@ -1438,6 +1462,68 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
             );
         }
 
+        GovernanceCmd::Delegate { network, to, proposal } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let delegator_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+
+            if !net.data.members.iter().any(|m| m.cid_full == delegator_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+            if delegator_cid.short() == to.as_str() {
+                bail!("cannot delegate to yourself");
+            }
+            if !net.data.members.iter().any(|m| m.cid_short.starts_with(&to)) {
+                bail!("member '{}' not found in '{}'", to, net.name());
+            }
+            let delegate_cid_short = net.data.members.iter()
+                .find(|m| m.cid_short.starts_with(&to))
+                .map(|m| m.cid_short.clone()).unwrap();
+
+            let now = unix_now_cli();
+            let delegation = VoteDelegation {
+                delegator_cid_short: delegator_cid.short().to_string(),
+                delegate_cid_short: delegate_cid_short.clone(),
+                network_cid_short: net.cid_short().to_string(),
+                proposal_id: proposal.clone(),
+                created_at: now,
+            };
+            store::save_delegation(data, &delegation)?;
+            match &proposal {
+                Some(pid) => println!("Vote delegated to {} for proposal {}.", delegate_cid_short, pid),
+                None => println!("Vote delegated to {} for all proposals in '{}'.", delegate_cid_short, net.name()),
+            }
+        }
+
+        GovernanceCmd::RevokeDelegation { network, proposal } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let delegator_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+            store::delete_delegation(data, net.cid_short(), delegator_cid.short(), proposal.as_deref())?;
+            println!("Delegation revoked.");
+        }
+
+        GovernanceCmd::Delegations { network } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let my_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+            let all = store::list_delegations(data, net.cid_short())?;
+            let mine: Vec<_> = all.iter().filter(|d| d.delegator_cid_short == my_cid.short()).collect();
+            if mine.is_empty() {
+                println!("No active delegations for '{}'.", net.name());
+                return Ok(());
+            }
+            for d in mine {
+                match &d.proposal_id {
+                    None => println!("  → {} (network-wide)", d.delegate_cid_short),
+                    Some(pid) => println!("  → {} (proposal {})", d.delegate_cid_short, pid),
+                }
+            }
+        }
+
         GovernanceCmd::Actions { network } => {
             let net = load_network_fuzzy(data, &network)?;
             let actions = store::list_admin_actions(data, net.cid_short())?;
@@ -1521,8 +1607,9 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("proposal '{}' not found", proposal_id))?;
 
             let votes = store::list_votes(data, &proposal.id)?;
+            let delegations = store::list_delegations(data, net.cid_short())?;
             let total_members = net.data.members.len();
-            let result = compute_result(proposal, &votes, total_members);
+            let result = compute_result_with_delegations(proposal, &votes, &delegations, total_members);
 
             println!("=== Results: {} ===", proposal.title);
             println!("  Status        : {}", proposal.status);

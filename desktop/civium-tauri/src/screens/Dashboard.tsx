@@ -10,6 +10,7 @@ import type {
   ProposalInfo,
   VoteResultInfo,
   AdminActionInfo,
+  DelegationInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -46,6 +47,11 @@ export default function Dashboard() {
   const [creatingProposal, setCreatingProposal] = useState(false);
   const [voteResults, setVoteResults] = useState<Record<string, VoteResultInfo>>({});
   const [voting, setVoting] = useState<string | null>(null);
+
+  // Delegation state
+  const [myDelegations, setMyDelegations] = useState<DelegationInfo[]>([]);
+  const [delegatingTo, setDelegatingTo] = useState<Record<string, string>>({}); // proposalId|"global" → cid
+  const [savingDelegation, setSavingDelegation] = useState<string | null>(null);
 
   // Garde-fou state
   const [adminActions, setAdminActions] = useState<AdminActionInfo[]>([]);
@@ -90,18 +96,24 @@ export default function Dashboard() {
     tauriInvoke<AdminActionInfo[]>("admin_action_list", { networkCid: cid }).then(setAdminActions);
   }, []);
 
+  const refreshDelegations = useCallback((cid: string) => {
+    tauriInvoke<DelegationInfo[]>("vote_list_delegations", { networkCid: cid }).then(setMyDelegations);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
     refreshMessages(selected.cid_short);
     refreshProposals(selected.cid_short);
     refreshAdminActions(selected.cid_short);
+    refreshDelegations(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
     setVoteResults({});
     setShowProposalForm(false);
     setAdminActions([]);
+    setMyDelegations([]);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -192,6 +204,38 @@ export default function Dashboard() {
       console.error("Sync error:", e);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleDelegate(proposalId: string | null, delegateCid: string) {
+    if (!selected || !delegateCid.trim()) return;
+    const key = proposalId ?? "global";
+    setSavingDelegation(key);
+    try {
+      await tauriInvoke("vote_delegate", {
+        networkCid: selected.cid_short,
+        delegateCidShort: delegateCid.trim(),
+        proposalId,
+      });
+      refreshDelegations(selected.cid_short);
+      setDelegatingTo((prev) => ({ ...prev, [key]: "" }));
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingDelegation(null);
+    }
+  }
+
+  async function handleRevokeDelegation(proposalId: string | null) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("vote_revoke_delegation", {
+        networkCid: selected.cid_short,
+        proposalId,
+      });
+      refreshDelegations(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
     }
   }
 
@@ -571,6 +615,41 @@ export default function Dashboard() {
                 </button>
               </div>
 
+              {/* Network-wide delegation */}
+              {(() => {
+                const globalDel = myDelegations.find((d) => d.proposal_id === null);
+                return globalDel ? (
+                  <div className="flex items-center gap-2 text-xs mb-2 text-blue-600">
+                    <span>Délégation réseau active → <span className="font-mono">{globalDel.delegate_cid_short}</span></span>
+                    <button
+                      onClick={() => handleRevokeDelegation(null)}
+                      className="text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      Révoquer
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={delegatingTo["global"] ?? ""}
+                      onChange={(e) => setDelegatingTo((p) => ({ ...p, global: e.target.value }))}
+                      placeholder="Délégation réseau (CID court)…"
+                      className="border border-gray-200 rounded px-2 py-1 text-xs
+                                 focus:outline-none focus:ring-1 focus:ring-blue-300 w-52"
+                    />
+                    <button
+                      onClick={() => handleDelegate(null, delegatingTo["global"] ?? "")}
+                      disabled={savingDelegation === "global" || !delegatingTo["global"]?.trim()}
+                      className="text-xs px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
+                                 rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                    >
+                      {savingDelegation === "global" ? "…" : "Déléguer tout"}
+                    </button>
+                  </div>
+                );
+              })()}
+
               {/* New proposal form */}
               {showProposalForm && (
                 <div className="bg-white border border-gray-200 rounded-xl p-4 mb-3 space-y-3">
@@ -655,6 +734,53 @@ export default function Dashboard() {
                           {prop.status}
                         </span>
                       </div>
+
+                      {/* Delegation for this proposal */}
+                      {prop.status === "open" && (() => {
+                        const propDel = myDelegations.find((d) => d.proposal_id === prop.id);
+                        const globalDel = myDelegations.find((d) => d.proposal_id === null);
+                        const activeDel = propDel ?? globalDel;
+                        const key = prop.id;
+                        return (
+                          <div className="flex items-center gap-2 text-xs">
+                            {activeDel ? (
+                              <>
+                                <span className="text-blue-600">
+                                  Vote délégué → <span className="font-mono">{activeDel.delegate_cid_short}</span>
+                                  {activeDel.proposal_id === null && " (réseau)"}
+                                </span>
+                                <button
+                                  onClick={() => handleRevokeDelegation(propDel ? prop.id : null)}
+                                  className="text-gray-400 hover:text-red-500 transition-colors"
+                                >
+                                  Révoquer
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <input
+                                  type="text"
+                                  value={delegatingTo[key] ?? ""}
+                                  onChange={(e) =>
+                                    setDelegatingTo((p) => ({ ...p, [key]: e.target.value }))
+                                  }
+                                  placeholder="Déléguer à (CID court)…"
+                                  className="border border-gray-200 rounded px-2 py-1 text-xs
+                                             focus:outline-none focus:ring-1 focus:ring-blue-300 w-44"
+                                />
+                                <button
+                                  onClick={() => handleDelegate(prop.id, delegatingTo[key] ?? "")}
+                                  disabled={savingDelegation === key || !delegatingTo[key]?.trim()}
+                                  className="px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
+                                             rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                                >
+                                  {savingDelegation === key ? "…" : "Déléguer"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Vote buttons */}
                       {prop.status === "open" && (

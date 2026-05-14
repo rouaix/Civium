@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, MemberRecord, Message, Proposal, Vote};
+use civium_core::{network::Network, AdminAction, CiviumKeypair, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS admin_actions (
     action_id       TEXT NOT NULL,
     action_json     TEXT NOT NULL,
     PRIMARY KEY (network_cid, action_id)
+);
+CREATE TABLE IF NOT EXISTS vote_delegations (
+    network_cid         TEXT NOT NULL,
+    delegator_cid_short TEXT NOT NULL,
+    proposal_id         TEXT,
+    delegation_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
 );
 ";
 
@@ -211,6 +218,54 @@ pub fn list_votes(conn: &Connection, proposal_id: &str) -> Result<Vec<Vote>> {
         votes.push(v);
     }
     Ok(votes)
+}
+
+// ── Vote delegations ──────────────────────────────────────────────────────────
+
+pub fn save_delegation(conn: &Connection, delegation: &VoteDelegation) -> Result<()> {
+    let json = serde_json::to_string(delegation)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO vote_delegations
+             (network_cid, delegator_cid_short, proposal_id, delegation_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            &delegation.network_cid_short,
+            &delegation.delegator_cid_short,
+            &delegation.proposal_id,
+            json
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_delegation(
+    conn: &Connection,
+    network_cid_short: &str,
+    delegator_cid_short: &str,
+    proposal_id: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM vote_delegations
+          WHERE network_cid = ?1
+            AND delegator_cid_short = ?2
+            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
+        params![network_cid_short, delegator_cid_short, proposal_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_delegations(conn: &Connection, network_cid_short: &str) -> Result<Vec<VoteDelegation>> {
+    let mut stmt = conn.prepare(
+        "SELECT delegation_json FROM vote_delegations WHERE network_cid = ?1",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut delegations = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let d: VoteDelegation = serde_json::from_str(&json)?;
+        delegations.push(d);
+    }
+    Ok(delegations)
 }
 
 // ── Admin actions (garde-fou majoritaire) ─────────────────────────────────────
