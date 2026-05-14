@@ -29,3 +29,8 @@ export interface ConnectionInfo {
   peer_name: string;
   state: string;
 }
+
+export interface NodeStatus {
+  running: boolean;
+  listen_addrs: string[];
+}
