@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriInvoke } from "../tauri";
 import type { NetworkInfo, MemberInfo } from "../types";
 
 export default function Dashboard() {
@@ -10,12 +10,12 @@ export default function Dashboard() {
   const [loadingInvite, setLoadingInvite] = useState(false);
 
   useEffect(() => {
-    invoke<NetworkInfo[]>("network_list").then(setNetworks);
+    tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
   }, []);
 
   useEffect(() => {
     if (!selected) return;
-    invoke<MemberInfo[]>("member_list", { networkCid: selected.cid_short })
+    tauriInvoke<MemberInfo[]>("member_list", { networkCid: selected.cid_short })
       .then(setMembers);
     setInviteLink(null);
   }, [selected]);
@@ -24,7 +24,7 @@ export default function Dashboard() {
     if (!selected) return;
     setLoadingInvite(true);
     try {
-      const link = await invoke<string>("network_invite", {
+      const link = await tauriInvoke<string>("network_invite", {
         networkCid: selected.cid_short,
         expiresIn: 0,
       });

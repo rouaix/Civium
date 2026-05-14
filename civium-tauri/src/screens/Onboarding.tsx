@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriInvoke } from "../tauri";
 import type { IdentityInfo, NetworkInfo } from "../types";
 
 type Step = "welcome" | "identity" | "network" | "done";
@@ -22,7 +22,7 @@ export default function Onboarding({ onComplete }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const id = await invoke<IdentityInfo>("identity_init");
+      const id = await tauriInvoke<IdentityInfo>("identity_init");
       setIdentity(id);
       setStep("network");
     } catch (e) {
@@ -37,12 +37,12 @@ export default function Onboarding({ onComplete }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const net = await invoke<NetworkInfo>("network_create", {
+      const net = await tauriInvoke<NetworkInfo>("network_create", {
         name: networkName.trim(),
         displayName: displayName.trim(),
       });
       setNetwork(net);
-      const link = await invoke<string>("network_invite", {
+      const link = await tauriInvoke<string>("network_invite", {
         networkCid: net.cid_short,
         expiresIn: 0,
       });

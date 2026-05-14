@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { tauriInvoke } from "./tauri";
 import Onboarding from "./screens/Onboarding";
 import Dashboard from "./screens/Dashboard";
 
@@ -9,7 +9,7 @@ export default function App() {
   const [state, setState] = useState<AppState>("loading");
 
   useEffect(() => {
-    invoke<boolean>("identity_exists")
+    tauriInvoke<boolean>("identity_exists")
       .then((exists) => setState(exists ? "dashboard" : "onboarding"))
       .catch(() => setState("onboarding"));
   }, []);
