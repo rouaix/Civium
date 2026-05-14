@@ -52,12 +52,12 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 3–4 — Identité et membres
 
-- [ ] Création de compte (CID membre + clé Ed25519)
-- [ ] Format identifiant réseau (`<cid_membre_court>@<cid_réseau_court>`)
-- [ ] Nom affiché par réseau (choix libre, unique dans le réseau)
-- [ ] Invitation d'un membre (lien ou CID)
-- [ ] Validation d'admission par l'admin
-- [ ] Cercles de confiance 0, 1 et 2
+- [x] Création de compte (CID membre + clé Ed25519)
+- [x] Format identifiant réseau (`<cid_membre_court>@<cid_réseau_court>`)
+- [x] Nom affiché par réseau (choix libre, unique dans le réseau)
+- [x] Invitation d'un membre (lien ou CID)
+- [x] Validation d'admission par l'admin
+- [x] Cercles de confiance 0, 1 et 2
 
 ### Semaines 5–6 — Messagerie
 

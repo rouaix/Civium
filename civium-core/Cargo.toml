@@ -20,7 +20,9 @@ tokio.workspace     = true
 thiserror.workspace = true
 tracing.workspace   = true
 serde.workspace     = true
-bs58.workspace      = true
-futures.workspace   = true
+bs58.workspace       = true
+futures.workspace    = true
+rand.workspace       = true
+serde_json.workspace = true
 blake3  = "1"
 zeroize = { version = "1", features = ["derive"] }
