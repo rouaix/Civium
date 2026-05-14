@@ -72,3 +72,14 @@ export interface VoteResultInfo {
   options: OptionResult[];
   winner: number | null;
 }
+
+export interface AdminActionInfo {
+  id: string;
+  kind: string;
+  taken_by: string;
+  taken_at: number;
+  contest_window_secs: number;
+  contest_count: number;
+  status: "active" | "confirmed" | "suspended" | "reversed" | "upheld";
+  suspended_proposal_id: string | null;
+}

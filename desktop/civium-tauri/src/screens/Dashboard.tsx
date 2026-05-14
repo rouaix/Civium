@@ -9,6 +9,7 @@ import type {
   MessageDisplay,
   ProposalInfo,
   VoteResultInfo,
+  AdminActionInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -46,6 +47,11 @@ export default function Dashboard() {
   const [voteResults, setVoteResults] = useState<Record<string, VoteResultInfo>>({});
   const [voting, setVoting] = useState<string | null>(null);
 
+  // Garde-fou state
+  const [adminActions, setAdminActions] = useState<AdminActionInfo[]>([]);
+  const [contesting, setContesting] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -80,16 +86,22 @@ export default function Dashboard() {
     tauriInvoke<ProposalInfo[]>("proposal_list", { networkCid: cid }).then(setProposals);
   }, []);
 
+  const refreshAdminActions = useCallback((cid: string) => {
+    tauriInvoke<AdminActionInfo[]>("admin_action_list", { networkCid: cid }).then(setAdminActions);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
     refreshMessages(selected.cid_short);
     refreshProposals(selected.cid_short);
+    refreshAdminActions(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
     setVoteResults({});
     setShowProposalForm(false);
+    setAdminActions([]);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -180,6 +192,32 @@ export default function Dashboard() {
       console.error("Sync error:", e);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  // Update "now" every minute so countdown stays fresh.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function handleContest(actionId: string) {
+    if (!selected) return;
+    setContesting(actionId);
+    try {
+      const updated = await tauriInvoke<AdminActionInfo>("admin_action_contest", {
+        networkCid: selected.cid_short,
+        actionId,
+      });
+      setAdminActions((prev) => prev.map((a) => (a.id === actionId ? updated : a)));
+      if (updated.status === "suspended") {
+        // Refresh proposals so the auto-created one appears
+        refreshProposals(selected.cid_short);
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setContesting(null);
     }
   }
 
@@ -454,6 +492,67 @@ export default function Dashboard() {
                   {inviteLink}
                 </div>
                 <p className="text-xs text-gray-400 mt-1">Cliquer pour copier</p>
+              </section>
+            )}
+
+            {/* Garde-fou majoritaire */}
+            {adminActions.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                  Actions admin — Garde-fou
+                </h3>
+                <div className="space-y-2">
+                  {adminActions.map((a) => {
+                    const windowEnd = a.taken_at + a.contest_window_secs;
+                    const remaining = windowEnd - now;
+                    const isContestable = a.status === "active" && remaining > 0;
+                    return (
+                      <div
+                        key={a.id}
+                        className={`bg-white border rounded-xl px-4 py-3 flex items-center gap-3 ${
+                          a.status === "suspended"
+                            ? "border-orange-300 bg-orange-50"
+                            : "border-gray-200"
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{a.kind}</p>
+                          <p className="text-xs text-gray-400">
+                            {a.contest_count} conteste(s)
+                            {isContestable && remaining > 0 && (
+                              <span className="ml-1 text-amber-600">
+                                · {Math.ceil(remaining / 3600)}h restantes
+                              </span>
+                            )}
+                            {a.status === "suspended" && (
+                              <span className="ml-1 text-orange-600 font-medium">· SUSPENDU → vote en cours</span>
+                            )}
+                          </p>
+                        </div>
+                        {isContestable && (
+                          <button
+                            onClick={() => handleContest(a.id)}
+                            disabled={contesting === a.id}
+                            className="flex-shrink-0 text-xs px-3 py-1.5 bg-orange-100 border
+                                       border-orange-300 text-orange-700 rounded-lg
+                                       hover:bg-orange-200 disabled:opacity-50 transition-colors"
+                          >
+                            {contesting === a.id ? "…" : "Contester"}
+                          </button>
+                        )}
+                        {!isContestable && (
+                          <span className={`flex-shrink-0 text-xs px-2 py-0.5 rounded-full ${
+                            a.status === "confirmed" ? "bg-green-100 text-green-700" :
+                            a.status === "suspended" ? "bg-orange-100 text-orange-700" :
+                            "bg-gray-100 text-gray-500"
+                          }`}>
+                            {a.status}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </section>
             )}
 

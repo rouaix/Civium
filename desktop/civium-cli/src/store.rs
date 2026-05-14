@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message, Proposal, Vote};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message, Proposal, Vote};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS votes (
     voter_cid_short TEXT NOT NULL,
     vote_json       TEXT NOT NULL,
     PRIMARY KEY (proposal_id, voter_cid_short)
+);
+CREATE TABLE IF NOT EXISTS admin_actions (
+    network_cid     TEXT NOT NULL,
+    action_id       TEXT NOT NULL,
+    action_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, action_id)
 );
 ";
 
@@ -274,6 +280,34 @@ pub fn list_votes(data_dir: &Path, proposal_id: &str) -> Result<Vec<Vote>> {
         votes.push(v);
     }
     Ok(votes)
+}
+
+// ── Admin actions ─────────────────────────────────────────────────────────────
+
+pub fn save_admin_action(data_dir: &Path, network_cid_short: &str, action: &AdminAction) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(action)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO admin_actions (network_cid, action_id, action_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, &action.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_admin_actions(data_dir: &Path, network_cid_short: &str) -> Result<Vec<AdminAction>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT action_json FROM admin_actions WHERE network_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut actions = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let a: AdminAction = serde_json::from_str(&json).context("invalid admin action in database")?;
+        actions.push(a);
+    }
+    Ok(actions)
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

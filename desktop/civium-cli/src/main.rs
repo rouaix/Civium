@@ -4,10 +4,12 @@ use anyhow::{bail, Result};
 use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
+    add_contest, compute_result,
+    AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, GroupKey, MemberRole,
     MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
-    Proposal, ShareTerms, TrustCircle, Vote, compute_result, peer_id_from_multiaddr,
+    Proposal, ShareTerms, TrustCircle, Vote, peer_id_from_multiaddr,
 };
 use tracing::warn;
 use clap::{Parser, Subcommand};
@@ -286,6 +288,18 @@ enum GovernanceCmd {
         #[arg(long)]
         network: String,
     },
+    /// List recent admin actions (garde-fou).
+    Actions {
+        #[arg(long)]
+        network: String,
+    },
+    /// Contest an admin action (triggers a vote if majority agrees).
+    Contest {
+        /// Action ID (short prefix accepted).
+        action_id: String,
+        #[arg(long)]
+        network: String,
+    },
 }
 
 // ── Node sub-commands ─────────────────────────────────────────────────────────
@@ -549,6 +563,10 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
         }
 
         MemberCmd::Admit { network_cid, member_cid, circle, role } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let admin_cid = keypair.cid();
+
             let circle = TrustCircle::from_u8(circle)
                 .ok_or_else(|| anyhow::anyhow!("invalid circle {circle} — use 0, 1, or 2"))?;
             let role: MemberRole = role.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
@@ -559,11 +577,27 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             store::save_network(data, &network)?;
+
+            // Record admin action for the garde-fou
+            let now = unix_now_cli();
+            let action = AdminAction::new(
+                network.cid_short().to_string(),
+                AdminActionKind::MemberAdmitted {
+                    member_cid_short: record.cid_short.clone(),
+                    display_name: record.display_name.clone(),
+                },
+                admin_cid.short().to_string(),
+                now,
+                0,
+            );
+            store::save_admin_action(data, network.cid_short(), &action)?;
+
             println!(
                 "Admitted {} as '{}' — circle: {}, role: {}",
                 record.cid_short, record.display_name, record.circle, record.role
             );
             println!("Network address: {}@{}", record.cid_short, network.cid_short());
+            println!("Action ID (garde-fou): {}", action.id);
         }
 
         MemberCmd::Reject { network_cid, member_cid } => {
@@ -1402,6 +1436,80 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
                 "Vote cast: '{}' on proposal '{}'.",
                 proposal.options[choice], proposal.id
             );
+        }
+
+        GovernanceCmd::Actions { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let actions = store::list_admin_actions(data, net.cid_short())?;
+            if actions.is_empty() {
+                println!("No admin actions recorded for '{}'.", net.name());
+                return Ok(());
+            }
+            println!("=== Admin actions: {} ===", net.name());
+            println!();
+            let now = unix_now_cli();
+            for a in &actions {
+                let window = if a.is_window_open(now) {
+                    let remaining = (a.taken_at + a.contest_window_secs).saturating_sub(now);
+                    format!("({}h restantes pour contester)", remaining / 3600)
+                } else {
+                    String::new()
+                };
+                println!("  [{}] {} — {} — {} conteste(s) {}",
+                    a.id, a.kind, a.status, a.contests.len(), window);
+            }
+        }
+
+        GovernanceCmd::Contest { action_id, network } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let voter_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            if !net.data.members.iter().any(|m| m.cid_full == voter_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+
+            let mut actions = store::list_admin_actions(data, net.cid_short())?;
+            let action = actions
+                .iter_mut()
+                .find(|a| a.id.starts_with(&action_id))
+                .ok_or_else(|| anyhow::anyhow!("action '{}' not found", action_id))?;
+
+            if action.status != AdminActionStatus::Active {
+                bail!("action '{}' is no longer contestable (status: {})", action.id, action.status);
+            }
+            let now = unix_now_cli();
+            if !action.is_window_open(now) {
+                action.status = AdminActionStatus::Confirmed;
+                store::save_admin_action(data, net.cid_short(), action)?;
+                bail!("contest window has closed for action '{}'", action.id);
+            }
+
+            let total_members = net.data.members.len();
+            let threshold_reached = add_contest(action, voter_cid.short(), total_members);
+            println!("Contest recorded. ({}/{} membres ont contesté)",
+                action.contests.len(), total_members);
+
+            if threshold_reached {
+                // Auto-create a suspension proposal
+                let prop_now = unix_now_cli();
+                let proposal = Proposal::new(
+                    net.cid_short().to_string(),
+                    format!("Garde-fou : {}", action.kind),
+                    format!("La majorité a contesté une action de l'admin. Que décide le réseau ?"),
+                    vec!["Maintenir l'action".into(), "Annuler l'action".into()],
+                    "système".into(),
+                    prop_now,
+                    prop_now + 72 * 3600,
+                    0,
+                );
+                store::save_proposal(data, net.cid_short(), &proposal)?;
+                action.status = AdminActionStatus::Suspended { proposal_id: proposal.id.clone() };
+                println!("Seuil majoritaire atteint — action SUSPENDUE.");
+                println!("Vote automatique créé : {} ({})", proposal.title, proposal.id);
+            }
+            store::save_admin_action(data, net.cid_short(), action)?;
         }
 
         GovernanceCmd::Results { proposal_id, network } => {

@@ -6,10 +6,12 @@ use tauri::{AppHandle, Manager};
 
 use civium_core::{
     network::{Invitation, Network},
+    add_contest, compute_result,
+    AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     GroupKey, MemberRole, Message, MessageKind, Multiaddr,
     NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote,
-    compute_result, peer_id_from_multiaddr,
+    peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -222,11 +224,27 @@ pub fn member_admit(
     let circle = TrustCircle::from_u8(circle)
         .ok_or_else(|| format!("cercle invalide: {circle} — utiliser 0, 1 ou 2"))?;
     let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
     let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
     let record = network
         .admit(&member_cid, circle, MemberRole::Member)
         .map_err(|e| e.to_string())?;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let action = AdminAction::new(
+        network_cid.clone(),
+        AdminActionKind::MemberAdmitted {
+            member_cid_short: record.cid_short.clone(),
+            display_name: record.display_name.clone(),
+        },
+        admin_cid.short().to_string(),
+        now,
+        0,
+    );
+    store::save_admin_action(&conn, &network_cid, &action).map_err(|e| e.to_string())?;
+
     Ok(MemberInfo {
         cid_short: record.cid_short,
         display_name: record.display_name,
@@ -668,5 +686,111 @@ pub fn vote_results(
             .map(|o| OptionResult { label: o.label, votes: o.votes, percent: o.percent })
             .collect(),
         winner: result.winner,
+    })
+}
+
+// ── Admin actions (garde-fou) ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct AdminActionInfo {
+    pub id: String,
+    pub kind: String,
+    pub taken_by: String,
+    pub taken_at: u64,
+    pub contest_window_secs: u64,
+    pub contest_count: usize,
+    pub status: String,
+    pub suspended_proposal_id: Option<String>,
+}
+
+/// List admin actions for a network (most recent first).
+#[tauri::command]
+pub fn admin_action_list(app: AppHandle, network_cid: String) -> Result<Vec<AdminActionInfo>, String> {
+    let conn = open(&app)?;
+    let actions = store::list_admin_actions(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(actions
+        .into_iter()
+        .map(|a| {
+            let suspended_proposal_id = match &a.status {
+                AdminActionStatus::Suspended { proposal_id } => Some(proposal_id.clone()),
+                _ => None,
+            };
+            AdminActionInfo {
+                id: a.id,
+                kind: a.kind.to_string(),
+                taken_by: a.taken_by,
+                taken_at: a.taken_at,
+                contest_window_secs: a.contest_window_secs,
+                contest_count: a.contests.len(),
+                status: a.status.to_string(),
+                suspended_proposal_id,
+            }
+        })
+        .collect())
+}
+
+/// Contest an admin action. If majority threshold is reached, suspends the action
+/// and auto-creates a governance proposal.
+#[tauri::command]
+pub fn admin_action_contest(
+    app: AppHandle,
+    network_cid: String,
+    action_id: String,
+) -> Result<AdminActionInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let voter_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let mut actions = store::list_admin_actions(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let action = actions
+        .iter_mut()
+        .find(|a| a.id == action_id)
+        .ok_or_else(|| format!("action '{}' not found", action_id))?;
+
+    if action.status != AdminActionStatus::Active {
+        return Err(format!("action '{}' is not contestable (status: {})", action_id, action.status));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    if !action.is_window_open(now) {
+        action.status = AdminActionStatus::Confirmed;
+        store::save_admin_action(&conn, &network_cid, action).map_err(|e| e.to_string())?;
+        return Err(format!("contest window has closed for action '{}'", action_id));
+    }
+
+    let total_members = network.data.members.len();
+    let threshold_reached = add_contest(action, voter_cid.short(), total_members);
+
+    if threshold_reached {
+        let proposal = Proposal::new(
+            network_cid.clone(),
+            format!("Garde-fou : {}", action.kind),
+            "La majorité a contesté une action de l'admin. Que décide le réseau ?".into(),
+            vec!["Maintenir l'action".into(), "Annuler l'action".into()],
+            "système".into(),
+            now,
+            now + 72 * 3600,
+            0,
+        );
+        store::save_proposal(&conn, &network_cid, &proposal).map_err(|e| e.to_string())?;
+        action.status = AdminActionStatus::Suspended { proposal_id: proposal.id.clone() };
+    }
+
+    store::save_admin_action(&conn, &network_cid, action).map_err(|e| e.to_string())?;
+
+    let suspended_proposal_id = match &action.status {
+        AdminActionStatus::Suspended { proposal_id } => Some(proposal_id.clone()),
+        _ => None,
+    };
+    Ok(AdminActionInfo {
+        id: action.id.clone(),
+        kind: action.kind.to_string(),
+        taken_by: action.taken_by.clone(),
+        taken_at: action.taken_at,
+        contest_window_secs: action.contest_window_secs,
+        contest_count: action.contests.len(),
+        status: action.status.to_string(),
+        suspended_proposal_id,
     })
 }
