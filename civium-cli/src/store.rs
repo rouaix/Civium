@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message};
+use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message, Proposal, Vote};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS messages (
     message_json    TEXT    NOT NULL,
     in_outbox       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (network_cid, message_id)
+);
+CREATE TABLE IF NOT EXISTS proposals (
+    network_cid     TEXT NOT NULL,
+    proposal_id     TEXT NOT NULL,
+    proposal_json   TEXT NOT NULL,
+    PRIMARY KEY (network_cid, proposal_id)
+);
+CREATE TABLE IF NOT EXISTS votes (
+    proposal_id     TEXT NOT NULL,
+    voter_cid_short TEXT NOT NULL,
+    vote_json       TEXT NOT NULL,
+    PRIMARY KEY (proposal_id, voter_cid_short)
 );
 ";
 
@@ -208,6 +220,60 @@ pub fn load_mailbox(data_dir: &Path, network_cid_short: &str) -> Result<Mailbox>
         }
     }
     Ok(Mailbox { messages, outbox })
+}
+
+// ── Governance ────────────────────────────────────────────────────────────────
+
+pub fn save_proposal(data_dir: &Path, network_cid_short: &str, proposal: &Proposal) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(proposal)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO proposals (network_cid, proposal_id, proposal_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, &proposal.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_proposals(data_dir: &Path, network_cid_short: &str) -> Result<Vec<Proposal>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut proposals = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let p: Proposal = serde_json::from_str(&json).context("invalid proposal in database")?;
+        proposals.push(p);
+    }
+    Ok(proposals)
+}
+
+pub fn save_vote(data_dir: &Path, vote: &Vote) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(vote)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO votes (proposal_id, voter_cid_short, vote_json)
+         VALUES (?1, ?2, ?3)",
+        params![&vote.proposal_id, &vote.voter_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_votes(data_dir: &Path, proposal_id: &str) -> Result<Vec<Vote>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT vote_json FROM votes WHERE proposal_id = ?1",
+    )?;
+    let mut rows = stmt.query(params![proposal_id])?;
+    let mut votes = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let v: Vote = serde_json::from_str(&json).context("invalid vote in database")?;
+        votes.push(v);
+    }
+    Ok(votes)
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

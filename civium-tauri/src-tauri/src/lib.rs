@@ -58,6 +58,10 @@ pub fn run() {
             network_join_p2p,
             message_list,
             message_send,
+            proposal_list,
+            proposal_create,
+            vote_cast,
+            vote_results,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
