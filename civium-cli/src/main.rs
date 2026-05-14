@@ -4,9 +4,12 @@ use anyhow::{bail, Result};
 use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
-    CiviumKeypair, CiviumNode, ConnectionRecord, ConnectionState, GroupKey, MemberRole,
-    MessageKind, NodeConfig, ShareTerms, TrustCircle,
+    Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
+    ConnectionRecord, ConnectionState, GroupKey, MemberRole,
+    MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
+    ShareTerms, TrustCircle, peer_id_from_multiaddr,
 };
+use tracing::warn;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -232,7 +235,7 @@ enum ConnectCmd {
 
 #[derive(Subcommand)]
 enum NodeCmd {
-    /// Start the local P2P node.
+    /// Start the local P2P node (event loop — press Ctrl-C to stop).
     Start {
         #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")]
         listen_tcp: String,
@@ -240,6 +243,24 @@ enum NodeCmd {
         listen_quic: String,
         #[arg(long = "peer")]
         peers: Vec<String>,
+        /// Network CID(s) to announce to the DHT after connecting.
+        #[arg(long = "announce")]
+        announce: Vec<String>,
+    },
+    /// Join a network over P2P using an invitation link (no shared DB needed).
+    JoinP2p {
+        /// The civium-invite:… link.
+        invite_link: String,
+        /// Your display name in the network.
+        #[arg(long)]
+        name: String,
+        /// Multiaddr of a known peer in the target network (e.g. /ip4/1.2.3.4/tcp/4001/p2p/12D3…).
+        #[arg(long)]
+        via: String,
+        #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")]
+        listen_tcp: String,
+        #[arg(long, default_value = "/ip4/0.0.0.0/udp/0/quic-v1")]
+        listen_quic: String,
     },
 }
 
@@ -821,7 +842,8 @@ fn find_conn_mut<'a>(
 
 async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
     match cmd {
-        NodeCmd::Start { listen_tcp, listen_quic, peers } => {
+        // ── Start ─────────────────────────────────────────────────────────────
+        NodeCmd::Start { listen_tcp, listen_quic, peers, announce } => {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let cid = keypair.cid();
@@ -830,23 +852,224 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
 
             println!("Starting Civium node");
             println!("  CID        : {}", cid.short());
-            println!("  CID (full) : {}", cid.full());
+            println!("  Peer ID    : {}", {
+                let kp = keypair.libp2p_keypair();
+                kp.public().to_peer_id()
+            });
 
-            // Show network addresses
             for cid_short in store::list_network_cids(data) {
                 if let Ok(n) = store::load_network(data, &cid_short) {
-                    let addr = n.address_for(&cid);
-                    println!("  Network    : {} → {addr}", n.name());
+                    println!("  Network    : {} ({})", n.name(), n.cid_short());
                 }
             }
 
-            let mut node = CiviumNode::new(keypair, config).await
+            let (node, mut handle) = CiviumNode::new(keypair, config).await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Announce requested networks once we've heard our first listen address
+            let announce_list = announce.clone();
+            let data2 = data.clone();
+
+            tokio::spawn(async move {
+                // Wait for the first Listening event before announcing
+                let mut announced = false;
+                loop {
+                    match handle.events.recv().await {
+                        Some(NodeEvent::Listening { addr }) => {
+                            println!("Listening on {addr}");
+                            if !announced {
+                                for cid_short in &announce_list {
+                                    let _ = handle.commands.send(
+                                        NodeCommand::AnnounceNetwork {
+                                            network_cid_short: cid_short.clone(),
+                                        }
+                                    ).await;
+                                    println!("Announced network {cid_short} to DHT");
+                                }
+                                announced = true;
+                            }
+                        }
+                        Some(NodeEvent::PeerConnected { peer_id }) => {
+                            println!("Peer connected: {peer_id}");
+                        }
+                        Some(NodeEvent::PeersDiscovered { network_cid_short, peer_addrs }) => {
+                            println!("Peers for network {network_cid_short}:");
+                            for a in &peer_addrs { println!("  {a}"); }
+                        }
+                        Some(NodeEvent::InboundRequest { from, request_id, request }) => {
+                            let response = handle_inbound_request(&data2, from, &request);
+                            let _ = handle.commands.send(
+                                NodeCommand::Respond { request_id, response }
+                            ).await;
+                        }
+                        Some(NodeEvent::OutboundResponse { response, .. }) => {
+                            println!("Response: {response:?}");
+                        }
+                        None => break,
+                    }
+                }
+            });
+
+            node.run().await;
+        }
+
+        // ── JoinP2p ───────────────────────────────────────────────────────────
+        NodeCmd::JoinP2p { invite_link, name, via, listen_tcp, listen_quic } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let invitation = Invitation::from_link(&invite_link)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            invitation.verify().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            println!("Joining '{}' over P2P…", invitation.network_name());
+            println!("  As: {name}");
+            println!("  Via: {via}");
+
+            let member_cid = keypair.cid();
+            let config = NodeConfig {
+                listen_tcp,
+                listen_quic,
+                bootstrap_peers: vec![via.clone()],
+            };
+
+            let (node, mut handle) = CiviumNode::new(keypair, config).await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Parse the via address to extract PeerId
+            let via_addr: Multiaddr = via.parse()
+                .map_err(|e| anyhow::anyhow!("invalid multiaddr: {e}"))?;
+            let peer_id = peer_id_from_multiaddr(&via_addr)
+                .ok_or_else(|| anyhow::anyhow!("--via address must include /p2p/<PeerId>"))?;
+
+            let request = civium_core::CiviumRequest::Join {
+                invite_link: invite_link.clone(),
+                member_cid_full: member_cid.full().to_string(),
+                display_name: name.clone(),
+            };
+
+            let data2 = data.clone();
+            tokio::spawn(async move {
+                // Wait until connected, then send the join request
+                loop {
+                    match handle.events.recv().await {
+                        Some(NodeEvent::PeerConnected { peer_id: connected_id }) => {
+                            if connected_id == peer_id {
+                                let _ = handle.commands.send(NodeCommand::SendRequest {
+                                    peer: peer_id,
+                                    request: request.clone(),
+                                }).await;
+                            }
+                        }
+                        Some(NodeEvent::OutboundResponse { response, .. }) => {
+                            match response {
+                                CiviumResponse::JoinAccepted { network_data } => {
+                                    match Network::from_data(network_data) {
+                                        Ok(network) => {
+                                            match store::save_network(&data2, &network) {
+                                                Ok(()) => println!(
+                                                    "Joined '{}' — saved to local store.",
+                                                    network.name()
+                                                ),
+                                                Err(e) => eprintln!("Failed to save: {e}"),
+                                            }
+                                        }
+                                        Err(e) => eprintln!("Invalid network data: {e}"),
+                                    }
+                                    std::process::exit(0);
+                                }
+                                CiviumResponse::JoinRejected { reason } => {
+                                    eprintln!("Join rejected: {reason}");
+                                    std::process::exit(1);
+                                }
+                                other => eprintln!("Unexpected response: {other:?}"),
+                            }
+                        }
+                        None => break,
+                        _ => {}
+                    }
+                }
+            });
+
             node.run().await;
         }
     }
     Ok(())
 }
+
+/// Respond to an inbound Civium request using the local store.
+fn handle_inbound_request(
+    data: &PathBuf,
+    from: PeerId,
+    request: &CiviumRequest,
+) -> CiviumResponse {
+    match request {
+        CiviumRequest::Ping => CiviumResponse::Pong,
+
+        CiviumRequest::Join { invite_link, member_cid_full, display_name } => {
+            let result = (|| -> anyhow::Result<CiviumResponse> {
+                let invitation = Invitation::from_link(invite_link)?;
+                invitation.verify()?;
+
+                let network_cid_full = invitation.network_cid_full().to_string();
+                let cid_short = store::list_network_cids(data)
+                    .into_iter()
+                    .find(|c| {
+                        store::load_network(data, c)
+                            .map(|n| n.cid_full() == network_cid_full)
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("network '{}' not found locally", invitation.network_name()))?;
+
+                let mut network = store::load_network(data, &cid_short)?;
+                let member_cid = Cid::from_full(member_cid_full)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+                network.submit_join_request(&member_cid, display_name.clone(), &invitation)?;
+                network.admit(member_cid.short(), TrustCircle::Connaissance, MemberRole::Member)?;
+                store::save_network(data, &network)?;
+
+                println!("[P2P] Admitted '{}' to '{}'", display_name, network.name());
+                Ok(CiviumResponse::JoinAccepted { network_data: network.data })
+            })();
+
+            match result {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!(%from, err = %e, "join request failed");
+                    CiviumResponse::JoinRejected { reason: e.to_string() }
+                }
+            }
+        }
+
+        CiviumRequest::Sync { network_cid_full, since_ts } => {
+            let result = (|| -> anyhow::Result<CiviumResponse> {
+                let cid_short = store::list_network_cids(data)
+                    .into_iter()
+                    .find(|c| {
+                        store::load_network(data, c)
+                            .map(|n| n.cid_full() == *network_cid_full)
+                            .unwrap_or(false)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("network not found"))?;
+
+                let network = store::load_network(data, &cid_short)?;
+                let mailbox = store::load_mailbox(data, &cid_short)?;
+
+                let members = network.data.members.into_iter()
+                    .filter(|m| m.joined_at >= *since_ts)
+                    .collect();
+                let messages = mailbox.messages.into_iter()
+                    .filter(|m| m.sent_at >= *since_ts)
+                    .collect();
+
+                Ok(CiviumResponse::SyncData { members, messages })
+            })();
+
+            result.unwrap_or_else(|e| CiviumResponse::Error { message: e.to_string() })
+        }
+    }
+}
+
 
 // ── Msg handlers ─────────────────────────────────────────────────────────────
 
