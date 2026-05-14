@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message, Proposal, Vote};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -51,6 +51,31 @@ CREATE TABLE IF NOT EXISTS votes (
     voter_cid_short TEXT NOT NULL,
     vote_json       TEXT NOT NULL,
     PRIMARY KEY (proposal_id, voter_cid_short)
+);
+CREATE TABLE IF NOT EXISTS admin_actions (
+    network_cid     TEXT NOT NULL,
+    action_id       TEXT NOT NULL,
+    action_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, action_id)
+);
+CREATE TABLE IF NOT EXISTS vote_delegations (
+    network_cid         TEXT NOT NULL,
+    delegator_cid_short TEXT NOT NULL,
+    proposal_id         TEXT,
+    delegation_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+);
+CREATE TABLE IF NOT EXISTS directory_entries (
+    directory_cid   TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (directory_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS directory_federations (
+    host_cid        TEXT NOT NULL,
+    peer_cid        TEXT NOT NULL,
+    federation_json TEXT NOT NULL,
+    PRIMARY KEY (host_cid, peer_cid)
 );
 ";
 
@@ -274,6 +299,164 @@ pub fn list_votes(data_dir: &Path, proposal_id: &str) -> Result<Vec<Vote>> {
         votes.push(v);
     }
     Ok(votes)
+}
+
+// ── Vote delegations ──────────────────────────────────────────────────────────
+
+pub fn save_delegation(data_dir: &Path, delegation: &VoteDelegation) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(delegation)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO vote_delegations
+             (network_cid, delegator_cid_short, proposal_id, delegation_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            &delegation.network_cid_short,
+            &delegation.delegator_cid_short,
+            &delegation.proposal_id,
+            json
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_delegation(
+    data_dir: &Path,
+    network_cid_short: &str,
+    delegator_cid_short: &str,
+    proposal_id: Option<&str>,
+) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM vote_delegations
+          WHERE network_cid = ?1
+            AND delegator_cid_short = ?2
+            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
+        params![network_cid_short, delegator_cid_short, proposal_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_delegations(data_dir: &Path, network_cid_short: &str) -> Result<Vec<VoteDelegation>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT delegation_json FROM vote_delegations WHERE network_cid = ?1",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut delegations = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let d: VoteDelegation = serde_json::from_str(&json).context("invalid delegation in database")?;
+        delegations.push(d);
+    }
+    Ok(delegations)
+}
+
+// ── Admin actions ─────────────────────────────────────────────────────────────
+
+pub fn save_admin_action(data_dir: &Path, network_cid_short: &str, action: &AdminAction) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(action)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO admin_actions (network_cid, action_id, action_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, &action.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_admin_actions(data_dir: &Path, network_cid_short: &str) -> Result<Vec<AdminAction>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT action_json FROM admin_actions WHERE network_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut actions = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let a: AdminAction = serde_json::from_str(&json).context("invalid admin action in database")?;
+        actions.push(a);
+    }
+    Ok(actions)
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+pub fn save_directory_entry(data_dir: &Path, entry: &DirectoryEntry) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_entries (directory_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.directory_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_directory_entries(data_dir: &Path, directory_cid_short: &str) -> Result<Vec<DirectoryEntry>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM directory_entries WHERE directory_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![directory_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: DirectoryEntry = serde_json::from_str(&json).context("invalid directory entry in database")?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_directory_entries(data_dir: &Path, directory_cid_short: &str, query: &str) -> Result<Vec<DirectoryEntry>> {
+    let entries = list_directory_entries(data_dir, directory_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_directory_entry(data_dir: &Path, directory_cid_short: &str, entry_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM directory_entries WHERE directory_cid = ?1 AND entry_id = ?2",
+        params![directory_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Directory federations ─────────────────────────────────────────────────────
+
+pub fn save_federation(data_dir: &Path, fed: &FederatedDirectory) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(fed)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_federations (host_cid, peer_cid, federation_json)
+         VALUES (?1, ?2, ?3)",
+        params![&fed.host_cid_short, &fed.peer_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_federations(data_dir: &Path, host_cid_short: &str) -> Result<Vec<FederatedDirectory>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT federation_json FROM directory_federations WHERE host_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![host_cid_short])?;
+    let mut feds = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let f: FederatedDirectory = serde_json::from_str(&json).context("invalid federation in database")?;
+        feds.push(f);
+    }
+    Ok(feds)
+}
+
+pub fn delete_federation(data_dir: &Path, host_cid_short: &str, peer_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM directory_federations WHERE host_cid = ?1 AND peer_cid = ?2",
+        params![host_cid_short, peer_cid_short],
+    )?;
+    Ok(())
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

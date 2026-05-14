@@ -4,4 +4,4 @@ mod network;
 
 pub use invitation::Invitation;
 pub use member::{MemberRecord, MemberRole, PendingRecord, TrustCircle};
-pub use network::{Network, NetworkAddress, NetworkData};
+pub use network::{Network, NetworkAddress, NetworkData, NetworkKind};

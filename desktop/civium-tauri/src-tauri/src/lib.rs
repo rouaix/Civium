@@ -62,6 +62,20 @@ pub fn run() {
             proposal_create,
             vote_cast,
             vote_results,
+            admin_action_list,
+            admin_action_contest,
+            vote_delegate,
+            vote_revoke_delegation,
+            vote_list_delegations,
+            directory_create,
+            directory_list_networks,
+            directory_publish,
+            directory_list,
+            directory_search,
+            directory_remove,
+            directory_federate,
+            directory_unfederate,
+            directory_federations,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

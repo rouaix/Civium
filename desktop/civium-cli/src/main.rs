@@ -4,10 +4,12 @@ use anyhow::{bail, Result};
 use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
+    add_contest, compute_result_with_delegations,
+    AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    ConnectionRecord, ConnectionState, GroupKey, MemberRole,
-    MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
-    Proposal, ShareTerms, TrustCircle, Vote, compute_result, peer_id_from_multiaddr,
+    ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
+    MemberRole, NetworkKind, MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
+    Proposal, ShareTerms, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
 use clap::{Parser, Subcommand};
@@ -63,6 +65,11 @@ enum Command {
     Governance {
         #[command(subcommand)]
         action: GovernanceCmd,
+    },
+    /// Manage Civium directory networks
+    Directory {
+        #[command(subcommand)]
+        action: DirectoryCmd,
     },
 }
 
@@ -286,6 +293,128 @@ enum GovernanceCmd {
         #[arg(long)]
         network: String,
     },
+    /// Delegate your vote to another member.
+    Delegate {
+        #[arg(long)]
+        network: String,
+        /// CID short of the member to delegate to.
+        #[arg(long)]
+        to: String,
+        /// Restrict delegation to a single proposal ID (omit for network-wide).
+        #[arg(long)]
+        proposal: Option<String>,
+    },
+    /// Revoke a vote delegation.
+    RevokeDelegation {
+        #[arg(long)]
+        network: String,
+        /// Restrict revocation to a specific proposal (omit to revoke the network-wide one).
+        #[arg(long)]
+        proposal: Option<String>,
+    },
+    /// List your current delegations for a network.
+    Delegations {
+        #[arg(long)]
+        network: String,
+    },
+    /// List recent admin actions (garde-fou).
+    Actions {
+        #[arg(long)]
+        network: String,
+    },
+    /// Contest an admin action (triggers a vote if majority agrees).
+    Contest {
+        /// Action ID (short prefix accepted).
+        action_id: String,
+        #[arg(long)]
+        network: String,
+    },
+}
+
+// ── Directory sub-commands ────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum DirectoryCmd {
+    /// Create a new directory network (a Civium network of kind=directory).
+    Create {
+        #[arg(long)]
+        name: String,
+        /// Display name for the founding admin.
+        #[arg(long, default_value = "admin")]
+        display_name: String,
+    },
+    /// List all directory networks in your data directory.
+    List,
+    /// Publish a network or member to a directory.
+    Publish {
+        /// Directory network CID short.
+        #[arg(long)]
+        directory: String,
+        /// CID short of the network or member to catalogue.
+        #[arg(long)]
+        subject: String,
+        /// Human-readable name for the subject.
+        #[arg(long)]
+        name: String,
+        /// Kind: network or member.
+        #[arg(long, default_value = "network")]
+        kind: String,
+        /// Optional description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Optional P2P multiaddr to contact the subject (e.g. /ip4/1.2.3.4/tcp/4001/p2p/…).
+        #[arg(long)]
+        addr: Option<String>,
+        /// Comma-separated tags (optional).
+        #[arg(long, default_value = "")]
+        tags: String,
+    },
+    /// Search entries in a directory.
+    Search {
+        /// Directory network CID short.
+        #[arg(long)]
+        directory: String,
+        /// Also search entries from all federated directories.
+        #[arg(long, default_value = "false")]
+        federated: bool,
+        /// Free-text query (name, description, CID, tags).
+        query: String,
+    },
+    /// Remove an entry from a directory (admin only — by entry ID prefix).
+    Remove {
+        #[arg(long)]
+        directory: String,
+        /// Entry ID short prefix.
+        entry_id: String,
+    },
+    /// Add a federation link to another directory.
+    Federate {
+        /// Host directory CID short.
+        #[arg(long)]
+        directory: String,
+        /// CID short of the peer directory.
+        #[arg(long)]
+        peer: String,
+        /// Display name of the peer directory.
+        #[arg(long)]
+        name: String,
+        /// Optional P2P multiaddr to contact the peer directory.
+        #[arg(long)]
+        addr: Option<String>,
+    },
+    /// Remove a federation link.
+    Unfederate {
+        #[arg(long)]
+        directory: String,
+        /// CID short of the peer directory to remove.
+        #[arg(long)]
+        peer: String,
+    },
+    /// List federation links for a directory.
+    Federations {
+        #[arg(long)]
+        directory: String,
+    },
 }
 
 // ── Node sub-commands ─────────────────────────────────────────────────────────
@@ -353,6 +482,7 @@ async fn main() -> Result<()> {
         Command::Msg { action } => run_msg(action, data),
         Command::Connect { action } => run_connect(action, data),
         Command::Governance { action } => run_governance(action, data),
+        Command::Directory { action } => run_directory(action, data),
     }
 }
 
@@ -549,6 +679,10 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
         }
 
         MemberCmd::Admit { network_cid, member_cid, circle, role } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let admin_cid = keypair.cid();
+
             let circle = TrustCircle::from_u8(circle)
                 .ok_or_else(|| anyhow::anyhow!("invalid circle {circle} — use 0, 1, or 2"))?;
             let role: MemberRole = role.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
@@ -559,11 +693,27 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             store::save_network(data, &network)?;
+
+            // Record admin action for the garde-fou
+            let now = unix_now_cli();
+            let action = AdminAction::new(
+                network.cid_short().to_string(),
+                AdminActionKind::MemberAdmitted {
+                    member_cid_short: record.cid_short.clone(),
+                    display_name: record.display_name.clone(),
+                },
+                admin_cid.short().to_string(),
+                now,
+                0,
+            );
+            store::save_admin_action(data, network.cid_short(), &action)?;
+
             println!(
                 "Admitted {} as '{}' — circle: {}, role: {}",
                 record.cid_short, record.display_name, record.circle, record.role
             );
             println!("Network address: {}@{}", record.cid_short, network.cid_short());
+            println!("Action ID (garde-fou): {}", action.id);
         }
 
         MemberCmd::Reject { network_cid, member_cid } => {
@@ -1404,6 +1554,142 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
             );
         }
 
+        GovernanceCmd::Delegate { network, to, proposal } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let delegator_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+
+            if !net.data.members.iter().any(|m| m.cid_full == delegator_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+            if delegator_cid.short() == to.as_str() {
+                bail!("cannot delegate to yourself");
+            }
+            if !net.data.members.iter().any(|m| m.cid_short.starts_with(&to)) {
+                bail!("member '{}' not found in '{}'", to, net.name());
+            }
+            let delegate_cid_short = net.data.members.iter()
+                .find(|m| m.cid_short.starts_with(&to))
+                .map(|m| m.cid_short.clone()).unwrap();
+
+            let now = unix_now_cli();
+            let delegation = VoteDelegation {
+                delegator_cid_short: delegator_cid.short().to_string(),
+                delegate_cid_short: delegate_cid_short.clone(),
+                network_cid_short: net.cid_short().to_string(),
+                proposal_id: proposal.clone(),
+                created_at: now,
+            };
+            store::save_delegation(data, &delegation)?;
+            match &proposal {
+                Some(pid) => println!("Vote delegated to {} for proposal {}.", delegate_cid_short, pid),
+                None => println!("Vote delegated to {} for all proposals in '{}'.", delegate_cid_short, net.name()),
+            }
+        }
+
+        GovernanceCmd::RevokeDelegation { network, proposal } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let delegator_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+            store::delete_delegation(data, net.cid_short(), delegator_cid.short(), proposal.as_deref())?;
+            println!("Delegation revoked.");
+        }
+
+        GovernanceCmd::Delegations { network } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let my_cid = keypair.cid();
+            let net = load_network_fuzzy(data, &network)?;
+            let all = store::list_delegations(data, net.cid_short())?;
+            let mine: Vec<_> = all.iter().filter(|d| d.delegator_cid_short == my_cid.short()).collect();
+            if mine.is_empty() {
+                println!("No active delegations for '{}'.", net.name());
+                return Ok(());
+            }
+            for d in mine {
+                match &d.proposal_id {
+                    None => println!("  → {} (network-wide)", d.delegate_cid_short),
+                    Some(pid) => println!("  → {} (proposal {})", d.delegate_cid_short, pid),
+                }
+            }
+        }
+
+        GovernanceCmd::Actions { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let actions = store::list_admin_actions(data, net.cid_short())?;
+            if actions.is_empty() {
+                println!("No admin actions recorded for '{}'.", net.name());
+                return Ok(());
+            }
+            println!("=== Admin actions: {} ===", net.name());
+            println!();
+            let now = unix_now_cli();
+            for a in &actions {
+                let window = if a.is_window_open(now) {
+                    let remaining = (a.taken_at + a.contest_window_secs).saturating_sub(now);
+                    format!("({}h restantes pour contester)", remaining / 3600)
+                } else {
+                    String::new()
+                };
+                println!("  [{}] {} — {} — {} conteste(s) {}",
+                    a.id, a.kind, a.status, a.contests.len(), window);
+            }
+        }
+
+        GovernanceCmd::Contest { action_id, network } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let voter_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            if !net.data.members.iter().any(|m| m.cid_full == voter_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+
+            let mut actions = store::list_admin_actions(data, net.cid_short())?;
+            let action = actions
+                .iter_mut()
+                .find(|a| a.id.starts_with(&action_id))
+                .ok_or_else(|| anyhow::anyhow!("action '{}' not found", action_id))?;
+
+            if action.status != AdminActionStatus::Active {
+                bail!("action '{}' is no longer contestable (status: {})", action.id, action.status);
+            }
+            let now = unix_now_cli();
+            if !action.is_window_open(now) {
+                action.status = AdminActionStatus::Confirmed;
+                store::save_admin_action(data, net.cid_short(), action)?;
+                bail!("contest window has closed for action '{}'", action.id);
+            }
+
+            let total_members = net.data.members.len();
+            let threshold_reached = add_contest(action, voter_cid.short(), total_members);
+            println!("Contest recorded. ({}/{} membres ont contesté)",
+                action.contests.len(), total_members);
+
+            if threshold_reached {
+                // Auto-create a suspension proposal
+                let prop_now = unix_now_cli();
+                let proposal = Proposal::new(
+                    net.cid_short().to_string(),
+                    format!("Garde-fou : {}", action.kind),
+                    format!("La majorité a contesté une action de l'admin. Que décide le réseau ?"),
+                    vec!["Maintenir l'action".into(), "Annuler l'action".into()],
+                    "système".into(),
+                    prop_now,
+                    prop_now + 72 * 3600,
+                    0,
+                );
+                store::save_proposal(data, net.cid_short(), &proposal)?;
+                action.status = AdminActionStatus::Suspended { proposal_id: proposal.id.clone() };
+                println!("Seuil majoritaire atteint — action SUSPENDUE.");
+                println!("Vote automatique créé : {} ({})", proposal.title, proposal.id);
+            }
+            store::save_admin_action(data, net.cid_short(), action)?;
+        }
+
         GovernanceCmd::Results { proposal_id, network } => {
             let net = load_network_fuzzy(data, &network)?;
             let proposals = store::list_proposals(data, net.cid_short())?;
@@ -1413,8 +1699,9 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("proposal '{}' not found", proposal_id))?;
 
             let votes = store::list_votes(data, &proposal.id)?;
+            let delegations = store::list_delegations(data, net.cid_short())?;
             let total_members = net.data.members.len();
-            let result = compute_result(proposal, &votes, total_members);
+            let result = compute_result_with_delegations(proposal, &votes, &delegations, total_members);
 
             println!("=== Results: {} ===", proposal.title);
             println!("  Status        : {}", proposal.status);
@@ -1424,6 +1711,171 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
             for (i, opt) in result.options.iter().enumerate() {
                 let marker = result.winner.map(|w| if w == i { " ← WINNER" } else { "" }).unwrap_or("");
                 println!("  [{}] {} — {} votes ({:.1}%){}", i, opt.label, opt.votes, opt.percent, marker);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Directory handlers ────────────────────────────────────────────────────────
+
+fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        DirectoryCmd::Create { name, display_name } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let admin_cid = keypair.cid();
+            let mut network = Network::create(name.clone(), &admin_cid, display_name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            network.data.kind = NetworkKind::Directory;
+            store::save_network(data, &network)?;
+            println!("Directory network '{}' created.", name);
+            println!("  CID (short) : {}", network.cid_short());
+            println!("  CID (full)  : {}", network.cid_full());
+        }
+
+        DirectoryCmd::List => {
+            let cids = store::list_network_cids(data);
+            let dirs: Vec<_> = cids
+                .iter()
+                .filter_map(|cid| store::load_network(data, cid).ok())
+                .filter(|n| n.data.kind == NetworkKind::Directory)
+                .collect();
+            if dirs.is_empty() {
+                println!("No directory networks. Create one with `directory create --name <name>`.");
+                return Ok(());
+            }
+            for n in &dirs {
+                let entries = store::list_directory_entries(data, n.cid_short()).unwrap_or_default();
+                println!("{} — {} ({} entries)", n.cid_short(), n.name(), entries.len());
+            }
+        }
+
+        DirectoryCmd::Publish { directory, subject, name, kind, description, addr, tags } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let publisher_cid = keypair.cid().short().to_string();
+
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            if dir_net.data.kind != NetworkKind::Directory {
+                bail!("Network '{}' is not a directory — create one with `directory create`.", directory);
+            }
+
+            let entry_kind: EntryKind = kind.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            let tag_list: Vec<String> = tags
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            let entry = DirectoryEntry::new(
+                dir_net.cid_short().to_string(),
+                entry_kind,
+                subject.clone(),
+                name.clone(),
+                description,
+                addr,
+                publisher_cid,
+                tag_list,
+            );
+            store::save_directory_entry(data, &entry)?;
+            println!("Published '{}' ({}) to directory '{}'.", name, subject, dir_net.name());
+            println!("  Entry ID : {}", entry.id);
+        }
+
+        DirectoryCmd::Search { directory, federated, query } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let mut results = store::search_directory_entries(data, dir_net.cid_short(), &query)?;
+            let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for e in &results {
+                sources.entry(e.id.clone()).or_insert_with(|| dir_net.name().to_string());
+            }
+
+            if federated {
+                let feds = store::list_federations(data, dir_net.cid_short()).unwrap_or_default();
+                for fed in &feds {
+                    let peer_entries = store::search_directory_entries(data, &fed.peer_cid_short, &query)
+                        .unwrap_or_default();
+                    for e in &peer_entries {
+                        sources.entry(e.id.clone()).or_insert_with(|| fed.peer_name.clone());
+                    }
+                    results.extend(peer_entries);
+                }
+            }
+
+            if results.is_empty() {
+                println!("No entries matching '{query}'.");
+                return Ok(());
+            }
+            println!("Results in '{}'{} for '{query}':",
+                dir_net.name(),
+                if federated { " (+ fédérés)" } else { "" });
+            for e in &results {
+                let src = sources.get(&e.id).map(|s| s.as_str()).unwrap_or("?");
+                println!("  [{}] {} — {} ({}){}", e.kind, e.subject_name, e.subject_cid_short, e.id,
+                    if src != dir_net.name() { format!(" [via {src}]") } else { String::new() });
+                if !e.description.is_empty() {
+                    println!("      {}", e.description);
+                }
+                if let Some(addr) = &e.contact_addr {
+                    println!("      addr: {addr}");
+                }
+                if !e.tags.is_empty() {
+                    println!("      tags: {}", e.tags.join(", "));
+                }
+            }
+        }
+
+        DirectoryCmd::Remove { directory, entry_id } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let entries = store::list_directory_entries(data, dir_net.cid_short())?;
+            let entry = entries
+                .iter()
+                .find(|e| e.id.starts_with(&entry_id))
+                .ok_or_else(|| anyhow::anyhow!("no entry with ID starting with '{entry_id}'"))?;
+            let full_id = entry.id.clone();
+            store::delete_directory_entry(data, dir_net.cid_short(), &full_id)?;
+            println!("Entry '{full_id}' removed from directory '{}'.", dir_net.name());
+        }
+
+        DirectoryCmd::Federate { directory, peer, name, addr } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let publisher = keypair.cid().short().to_string();
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            if dir_net.data.kind != NetworkKind::Directory {
+                bail!("Network '{}' is not a directory.", directory);
+            }
+            let fed = FederatedDirectory::new(
+                dir_net.cid_short().to_string(),
+                peer.clone(),
+                name.clone(),
+                addr,
+                publisher,
+            );
+            store::save_federation(data, &fed)?;
+            println!("Directory '{}' now federates with '{name}' ({peer}).", dir_net.name());
+        }
+
+        DirectoryCmd::Unfederate { directory, peer } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            store::delete_federation(data, dir_net.cid_short(), &peer)?;
+            println!("Federation with '{peer}' removed from directory '{}'.", dir_net.name());
+        }
+
+        DirectoryCmd::Federations { directory } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let feds = store::list_federations(data, dir_net.cid_short())?;
+            if feds.is_empty() {
+                println!("No federations for directory '{}'.", dir_net.name());
+                return Ok(());
+            }
+            println!("Federations for '{}':", dir_net.name());
+            for f in &feds {
+                println!("  {} — {}", f.peer_name, f.peer_cid_short);
+                if let Some(addr) = &f.peer_addr {
+                    println!("    addr: {addr}");
+                }
             }
         }
     }

@@ -9,6 +9,10 @@ import type {
   MessageDisplay,
   ProposalInfo,
   VoteResultInfo,
+  AdminActionInfo,
+  DelegationInfo,
+  DirectoryEntryInfo,
+  FederationInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -46,6 +50,37 @@ export default function Dashboard() {
   const [voteResults, setVoteResults] = useState<Record<string, VoteResultInfo>>({});
   const [voting, setVoting] = useState<string | null>(null);
 
+  // Delegation state
+  const [myDelegations, setMyDelegations] = useState<DelegationInfo[]>([]);
+  const [delegatingTo, setDelegatingTo] = useState<Record<string, string>>({}); // proposalId|"global" → cid
+  const [savingDelegation, setSavingDelegation] = useState<string | null>(null);
+
+  // Garde-fou state
+  const [adminActions, setAdminActions] = useState<AdminActionInfo[]>([]);
+  const [contesting, setContesting] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  // Directory state
+  const [dirEntries, setDirEntries] = useState<DirectoryEntryInfo[]>([]);
+  const [dirSearchQuery, setDirSearchQuery] = useState("");
+  const [dirSearchResults, setDirSearchResults] = useState<DirectoryEntryInfo[] | null>(null);
+  const [showPublishForm, setShowPublishForm] = useState(false);
+  const [pubSubjectCid, setPubSubjectCid] = useState("");
+  const [pubSubjectName, setPubSubjectName] = useState("");
+  const [pubDescription, setPubDescription] = useState("");
+  const [pubKind, setPubKind] = useState<"network" | "member">("network");
+  const [pubTags, setPubTags] = useState("");
+  const [publishing, setPublishing] = useState(false);
+
+  // Federation state
+  const [federations, setFederations] = useState<FederationInfo[]>([]);
+  const [showFedForm, setShowFedForm] = useState(false);
+  const [fedPeerCid, setFedPeerCid] = useState("");
+  const [fedPeerName, setFedPeerName] = useState("");
+  const [fedPeerAddr, setFedPeerAddr] = useState("");
+  const [savingFed, setSavingFed] = useState(false);
+  const [includeFederated, setIncludeFederated] = useState(false);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -80,16 +115,47 @@ export default function Dashboard() {
     tauriInvoke<ProposalInfo[]>("proposal_list", { networkCid: cid }).then(setProposals);
   }, []);
 
+  const refreshAdminActions = useCallback((cid: string) => {
+    tauriInvoke<AdminActionInfo[]>("admin_action_list", { networkCid: cid }).then(setAdminActions);
+  }, []);
+
+  const refreshDelegations = useCallback((cid: string) => {
+    tauriInvoke<DelegationInfo[]>("vote_list_delegations", { networkCid: cid }).then(setMyDelegations);
+  }, []);
+
+  const refreshDirEntries = useCallback((cid: string) => {
+    tauriInvoke<DirectoryEntryInfo[]>("directory_list", { directoryCid: cid }).then(setDirEntries);
+  }, []);
+
+  const refreshFederations = useCallback((cid: string) => {
+    tauriInvoke<FederationInfo[]>("directory_federations", { directoryCid: cid }).then(setFederations);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
     refreshMessages(selected.cid_short);
     refreshProposals(selected.cid_short);
+    refreshAdminActions(selected.cid_short);
+    refreshDelegations(selected.cid_short);
+    if (selected.is_directory) {
+      refreshDirEntries(selected.cid_short);
+      refreshFederations(selected.cid_short);
+    }
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
     setVoteResults({});
     setShowProposalForm(false);
+    setAdminActions([]);
+    setMyDelegations([]);
+    setDirEntries([]);
+    setDirSearchResults(null);
+    setDirSearchQuery("");
+    setShowPublishForm(false);
+    setFederations([]);
+    setShowFedForm(false);
+    setIncludeFederated(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -183,6 +249,64 @@ export default function Dashboard() {
     }
   }
 
+  async function handleDelegate(proposalId: string | null, delegateCid: string) {
+    if (!selected || !delegateCid.trim()) return;
+    const key = proposalId ?? "global";
+    setSavingDelegation(key);
+    try {
+      await tauriInvoke("vote_delegate", {
+        networkCid: selected.cid_short,
+        delegateCidShort: delegateCid.trim(),
+        proposalId,
+      });
+      refreshDelegations(selected.cid_short);
+      setDelegatingTo((prev) => ({ ...prev, [key]: "" }));
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingDelegation(null);
+    }
+  }
+
+  async function handleRevokeDelegation(proposalId: string | null) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("vote_revoke_delegation", {
+        networkCid: selected.cid_short,
+        proposalId,
+      });
+      refreshDelegations(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  // Update "now" every minute so countdown stays fresh.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function handleContest(actionId: string) {
+    if (!selected) return;
+    setContesting(actionId);
+    try {
+      const updated = await tauriInvoke<AdminActionInfo>("admin_action_contest", {
+        networkCid: selected.cid_short,
+        actionId,
+      });
+      setAdminActions((prev) => prev.map((a) => (a.id === actionId ? updated : a)));
+      if (updated.status === "suspended") {
+        // Refresh proposals so the auto-created one appears
+        refreshProposals(selected.cid_short);
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setContesting(null);
+    }
+  }
+
   async function handleCreateProposal() {
     if (!selected || !propTitle.trim()) return;
     setCreatingProposal(true);
@@ -245,6 +369,96 @@ export default function Dashboard() {
     } catch {}
   }
 
+  async function handleFederate() {
+    if (!selected || !fedPeerCid.trim() || !fedPeerName.trim()) return;
+    setSavingFed(true);
+    try {
+      const fed = await tauriInvoke<FederationInfo>("directory_federate", {
+        directoryCid: selected.cid_short,
+        peerCid: fedPeerCid.trim(),
+        peerName: fedPeerName.trim(),
+        peerAddr: fedPeerAddr.trim() || null,
+      });
+      setFederations((prev) => [...prev, fed]);
+      setFedPeerCid("");
+      setFedPeerName("");
+      setFedPeerAddr("");
+      setShowFedForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingFed(false);
+    }
+  }
+
+  async function handleUnfederate(peerCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("directory_unfederate", {
+        directoryCid: selected.cid_short,
+        peerCid,
+      });
+      setFederations((prev) => prev.filter((f) => f.peer_cid_short !== peerCid));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleDirSearch() {
+    if (!selected || !dirSearchQuery.trim()) return;
+    try {
+      const results = await tauriInvoke<DirectoryEntryInfo[]>("directory_search", {
+        directoryCid: selected.cid_short,
+        query: dirSearchQuery.trim(),
+        includeFederated,
+      });
+      setDirSearchResults(results);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handlePublish() {
+    if (!selected || !pubSubjectCid.trim() || !pubSubjectName.trim()) return;
+    setPublishing(true);
+    try {
+      const tags = pubTags.split(",").map((t) => t.trim()).filter(Boolean);
+      const entry = await tauriInvoke<DirectoryEntryInfo>("directory_publish", {
+        directoryCid: selected.cid_short,
+        kind: pubKind,
+        subjectCidShort: pubSubjectCid.trim(),
+        subjectName: pubSubjectName.trim(),
+        description: pubDescription.trim(),
+        contactAddr: null,
+        tags,
+      });
+      setDirEntries((prev) => [...prev, entry]);
+      setPubSubjectCid("");
+      setPubSubjectName("");
+      setPubDescription("");
+      setPubTags("");
+      setShowPublishForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function handleRemoveEntry(entryId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("directory_remove", {
+        directoryCid: selected.cid_short,
+        entryId,
+      });
+      setDirEntries((prev) => prev.filter((e) => e.id !== entryId));
+      setDirSearchResults((prev) => prev ? prev.filter((e) => e.id !== entryId) : null);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -294,8 +508,15 @@ export default function Dashboard() {
                   : "text-civium-100 hover:bg-civium-700"
               }`}
             >
-              <div className="font-medium truncate">{net.name}</div>
-              <div className="text-xs opacity-70">{net.member_count} membre(s)</div>
+              <div className="font-medium truncate flex items-center gap-1.5">
+                {net.name}
+                {net.is_directory && (
+                  <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
+                )}
+              </div>
+              <div className="text-xs opacity-70">
+                {net.is_directory ? "Annuaire" : `${net.member_count} membre(s)`}
+              </div>
             </button>
           ))}
         </nav>
@@ -457,6 +678,67 @@ export default function Dashboard() {
               </section>
             )}
 
+            {/* Garde-fou majoritaire */}
+            {adminActions.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                  Actions admin — Garde-fou
+                </h3>
+                <div className="space-y-2">
+                  {adminActions.map((a) => {
+                    const windowEnd = a.taken_at + a.contest_window_secs;
+                    const remaining = windowEnd - now;
+                    const isContestable = a.status === "active" && remaining > 0;
+                    return (
+                      <div
+                        key={a.id}
+                        className={`bg-white border rounded-xl px-4 py-3 flex items-center gap-3 ${
+                          a.status === "suspended"
+                            ? "border-orange-300 bg-orange-50"
+                            : "border-gray-200"
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{a.kind}</p>
+                          <p className="text-xs text-gray-400">
+                            {a.contest_count} conteste(s)
+                            {isContestable && remaining > 0 && (
+                              <span className="ml-1 text-amber-600">
+                                · {Math.ceil(remaining / 3600)}h restantes
+                              </span>
+                            )}
+                            {a.status === "suspended" && (
+                              <span className="ml-1 text-orange-600 font-medium">· SUSPENDU → vote en cours</span>
+                            )}
+                          </p>
+                        </div>
+                        {isContestable && (
+                          <button
+                            onClick={() => handleContest(a.id)}
+                            disabled={contesting === a.id}
+                            className="flex-shrink-0 text-xs px-3 py-1.5 bg-orange-100 border
+                                       border-orange-300 text-orange-700 rounded-lg
+                                       hover:bg-orange-200 disabled:opacity-50 transition-colors"
+                          >
+                            {contesting === a.id ? "…" : "Contester"}
+                          </button>
+                        )}
+                        {!isContestable && (
+                          <span className={`flex-shrink-0 text-xs px-2 py-0.5 rounded-full ${
+                            a.status === "confirmed" ? "bg-green-100 text-green-700" :
+                            a.status === "suspended" ? "bg-orange-100 text-orange-700" :
+                            "bg-gray-100 text-gray-500"
+                          }`}>
+                            {a.status}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {/* Governance */}
             <section>
               <div className="flex items-center justify-between mb-3">
@@ -471,6 +753,41 @@ export default function Dashboard() {
                   {showProposalForm ? "Annuler" : "+ Proposer"}
                 </button>
               </div>
+
+              {/* Network-wide delegation */}
+              {(() => {
+                const globalDel = myDelegations.find((d) => d.proposal_id === null);
+                return globalDel ? (
+                  <div className="flex items-center gap-2 text-xs mb-2 text-blue-600">
+                    <span>Délégation réseau active → <span className="font-mono">{globalDel.delegate_cid_short}</span></span>
+                    <button
+                      onClick={() => handleRevokeDelegation(null)}
+                      className="text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      Révoquer
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={delegatingTo["global"] ?? ""}
+                      onChange={(e) => setDelegatingTo((p) => ({ ...p, global: e.target.value }))}
+                      placeholder="Délégation réseau (CID court)…"
+                      className="border border-gray-200 rounded px-2 py-1 text-xs
+                                 focus:outline-none focus:ring-1 focus:ring-blue-300 w-52"
+                    />
+                    <button
+                      onClick={() => handleDelegate(null, delegatingTo["global"] ?? "")}
+                      disabled={savingDelegation === "global" || !delegatingTo["global"]?.trim()}
+                      className="text-xs px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
+                                 rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                    >
+                      {savingDelegation === "global" ? "…" : "Déléguer tout"}
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* New proposal form */}
               {showProposalForm && (
@@ -556,6 +873,53 @@ export default function Dashboard() {
                           {prop.status}
                         </span>
                       </div>
+
+                      {/* Delegation for this proposal */}
+                      {prop.status === "open" && (() => {
+                        const propDel = myDelegations.find((d) => d.proposal_id === prop.id);
+                        const globalDel = myDelegations.find((d) => d.proposal_id === null);
+                        const activeDel = propDel ?? globalDel;
+                        const key = prop.id;
+                        return (
+                          <div className="flex items-center gap-2 text-xs">
+                            {activeDel ? (
+                              <>
+                                <span className="text-blue-600">
+                                  Vote délégué → <span className="font-mono">{activeDel.delegate_cid_short}</span>
+                                  {activeDel.proposal_id === null && " (réseau)"}
+                                </span>
+                                <button
+                                  onClick={() => handleRevokeDelegation(propDel ? prop.id : null)}
+                                  className="text-gray-400 hover:text-red-500 transition-colors"
+                                >
+                                  Révoquer
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <input
+                                  type="text"
+                                  value={delegatingTo[key] ?? ""}
+                                  onChange={(e) =>
+                                    setDelegatingTo((p) => ({ ...p, [key]: e.target.value }))
+                                  }
+                                  placeholder="Déléguer à (CID court)…"
+                                  className="border border-gray-200 rounded px-2 py-1 text-xs
+                                             focus:outline-none focus:ring-1 focus:ring-blue-300 w-44"
+                                />
+                                <button
+                                  onClick={() => handleDelegate(prop.id, delegatingTo[key] ?? "")}
+                                  disabled={savingDelegation === key || !delegatingTo[key]?.trim()}
+                                  className="px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
+                                             rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                                >
+                                  {savingDelegation === key ? "…" : "Déléguer"}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
 
                       {/* Vote buttons */}
                       {prop.status === "open" && (
@@ -687,6 +1051,255 @@ export default function Dashboard() {
                 </button>
               </div>
             </section>
+
+            {/* ── Annuaire section (directory networks only) ── */}
+            {selected.is_directory && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Annuaire
+                  </h3>
+                  <button
+                    onClick={() => setShowPublishForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg
+                               hover:bg-civium-700 transition-colors"
+                  >
+                    {showPublishForm ? "Annuler" : "+ Publier"}
+                  </button>
+                </div>
+
+                {showPublishForm && (
+                  <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 space-y-3">
+                    <div className="flex gap-3">
+                      <select
+                        value={pubKind}
+                        onChange={(e) => setPubKind(e.target.value as "network" | "member")}
+                        className="text-sm border border-gray-200 rounded-lg px-2 py-1.5
+                                   focus:outline-none focus:ring-2 focus:ring-civium-400"
+                      >
+                        <option value="network">Réseau</option>
+                        <option value="member">Membre</option>
+                      </select>
+                      <input
+                        value={pubSubjectCid}
+                        onChange={(e) => setPubSubjectCid(e.target.value)}
+                        placeholder="CID court du sujet"
+                        className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                   focus:outline-none focus:ring-2 focus:ring-civium-400
+                                   font-mono placeholder:font-sans placeholder:text-gray-400"
+                      />
+                    </div>
+                    <input
+                      value={pubSubjectName}
+                      onChange={(e) => setPubSubjectName(e.target.value)}
+                      placeholder="Nom affiché"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <input
+                      value={pubDescription}
+                      onChange={(e) => setPubDescription(e.target.value)}
+                      placeholder="Description (optionnel)"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <input
+                      value={pubTags}
+                      onChange={(e) => setPubTags(e.target.value)}
+                      placeholder="Tags, séparés par des virgules (optionnel)"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <button
+                      onClick={handlePublish}
+                      disabled={publishing || !pubSubjectCid.trim() || !pubSubjectName.trim()}
+                      className="text-xs px-4 py-2 bg-civium-600 text-white rounded-lg
+                                 hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
+                    >
+                      {publishing ? "Publication…" : "Publier"}
+                    </button>
+                  </div>
+                )}
+
+                {/* Federations */}
+                {(federations.length > 0 || showFedForm) && (
+                  <div className="mb-4 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                        Fédérations ({federations.length})
+                      </span>
+                      <button
+                        onClick={() => setShowFedForm((v) => !v)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        {showFedForm ? "Annuler" : "+ Ajouter"}
+                      </button>
+                    </div>
+                    {showFedForm && (
+                      <div className="space-y-2 pt-1">
+                        <input
+                          value={fedPeerCid}
+                          onChange={(e) => setFedPeerCid(e.target.value)}
+                          placeholder="CID court de l'annuaire pair"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                        />
+                        <input
+                          value={fedPeerName}
+                          onChange={(e) => setFedPeerName(e.target.value)}
+                          placeholder="Nom de l'annuaire pair"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     placeholder:text-gray-400 bg-white"
+                        />
+                        <input
+                          value={fedPeerAddr}
+                          onChange={(e) => setFedPeerAddr(e.target.value)}
+                          placeholder="Adresse P2P (optionnel)"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                        />
+                        <button
+                          onClick={handleFederate}
+                          disabled={savingFed || !fedPeerCid.trim() || !fedPeerName.trim()}
+                          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg
+                                     hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        >
+                          {savingFed ? "…" : "Fédérer"}
+                        </button>
+                      </div>
+                    )}
+                    {federations.map((f) => (
+                      <div key={f.peer_cid_short} className="flex items-center justify-between text-xs">
+                        <span className="text-blue-800">
+                          {f.peer_name}
+                          <span className="text-blue-400 font-mono ml-1">({f.peer_cid_short})</span>
+                        </span>
+                        <button
+                          onClick={() => handleUnfederate(f.peer_cid_short)}
+                          className="text-blue-300 hover:text-red-400 transition-colors"
+                          title="Supprimer cette fédération"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {federations.length === 0 && !showFedForm && (
+                  <button
+                    onClick={() => setShowFedForm(true)}
+                    className="text-xs text-gray-400 hover:text-civium-600 mb-3 block"
+                  >
+                    + Ajouter une fédération
+                  </button>
+                )}
+
+                {/* Search */}
+                <div className="flex gap-2 mb-2">
+                  <input
+                    value={dirSearchQuery}
+                    onChange={(e) => setDirSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleDirSearch()}
+                    placeholder="Rechercher dans l'annuaire…"
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                               focus:outline-none focus:ring-2 focus:ring-civium-400
+                               placeholder:text-gray-400"
+                  />
+                  <button
+                    onClick={handleDirSearch}
+                    disabled={!dirSearchQuery.trim()}
+                    className="text-xs px-3 py-1.5 bg-white border border-gray-200 text-gray-600
+                               rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    Rechercher
+                  </button>
+                  {dirSearchResults !== null && (
+                    <button
+                      onClick={() => { setDirSearchResults(null); setDirSearchQuery(""); }}
+                      className="text-xs px-2 py-1.5 text-gray-400 hover:text-gray-600"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                {federations.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs text-gray-500 mb-4 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeFederated}
+                      onChange={(e) => setIncludeFederated(e.target.checked)}
+                      className="accent-civium-600"
+                    />
+                    Inclure les annuaires fédérés dans la recherche
+                  </label>
+                )}
+
+                {/* Entries list */}
+                {(() => {
+                  const items = dirSearchResults ?? dirEntries;
+                  if (items.length === 0) {
+                    return (
+                      <p className="text-sm text-gray-400 text-center py-6">
+                        {dirSearchResults !== null
+                          ? `Aucun résultat pour « ${dirSearchQuery} ».`
+                          : "Aucune entrée. Publiez la première avec le bouton ci-dessus."}
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
+                      {items.map((entry) => (
+                        <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+                          <span className={`mt-0.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
+                            entry.kind === "network"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-purple-100 text-purple-700"
+                          }`}>
+                            {entry.kind === "network" ? "Réseau" : "Membre"}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium">{entry.subject_name}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-gray-400 font-mono">{entry.subject_cid_short}</span>
+                              {entry.source_dir_name && (
+                                <span className="text-xs bg-blue-50 text-blue-500 px-1.5 py-0.5 rounded">
+                                  via {entry.source_dir_name}
+                                </span>
+                              )}
+                            </div>
+                            {entry.description && (
+                              <p className="text-xs text-gray-500 mt-0.5">{entry.description}</p>
+                            )}
+                            {entry.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {entry.tags.map((tag) => (
+                                  <span key={tag} className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => handleRemoveEntry(entry.id)}
+                            className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                            title="Supprimer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </section>
+            )}
           </div>
         )}
       </main>

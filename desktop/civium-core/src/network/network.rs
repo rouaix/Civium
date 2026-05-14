@@ -22,6 +22,15 @@ impl std::fmt::Display for NetworkAddress {
     }
 }
 
+/// Whether a network acts as a general-purpose group or a public directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkKind {
+    #[default]
+    Standard,
+    Directory,
+}
+
 /// Serializable snapshot of a Network — persisted to JSON (Phase 0).
 /// SQLCipher replaces this in weeks 9-10.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +44,9 @@ pub struct NetworkData {
     /// ChaCha20-Poly1305 group key (base58). Empty on networks created before week 5.
     #[serde(default)]
     pub group_key_b58: String,
+    /// Standard (default) or Directory — backward-compatible (missing = Standard).
+    #[serde(default)]
+    pub kind: NetworkKind,
 }
 
 /// A Civium network — a sovereign group with its own identity, rules and members.
@@ -75,6 +87,7 @@ impl Network {
             members: vec![admin],
             pending: vec![],
             group_key_b58: group_key.to_b58(),
+            kind: NetworkKind::Standard,
         };
 
         Ok(Self { keypair, data })

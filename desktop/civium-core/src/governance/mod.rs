@@ -1,5 +1,112 @@
 use serde::{Deserialize, Serialize};
 
+// ── Garde-fou majoritaire ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminActionKind {
+    MemberAdmitted { member_cid_short: String, display_name: String },
+    MemberRejected { member_cid_short: String },
+    MemberBanned   { member_cid_short: String },
+}
+
+impl std::fmt::Display for AdminActionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdminActionKind::MemberAdmitted { member_cid_short, display_name } =>
+                write!(f, "Admission de {} ({})", display_name, member_cid_short),
+            AdminActionKind::MemberRejected { member_cid_short } =>
+                write!(f, "Rejet de {}", member_cid_short),
+            AdminActionKind::MemberBanned { member_cid_short } =>
+                write!(f, "Bannissement de {}", member_cid_short),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminActionStatus {
+    /// Within the contest window, no majority against yet.
+    Active,
+    /// Contest window expired without majority against.
+    Confirmed,
+    /// Majority contested → a Proposal has been auto-created.
+    Suspended { proposal_id: String },
+    /// The auto-vote decided to reverse the action.
+    Reversed,
+    /// The auto-vote upheld the action.
+    Upheld,
+}
+
+impl std::fmt::Display for AdminActionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdminActionStatus::Active => write!(f, "active"),
+            AdminActionStatus::Confirmed => write!(f, "confirmed"),
+            AdminActionStatus::Suspended { .. } => write!(f, "suspended"),
+            AdminActionStatus::Reversed => write!(f, "reversed"),
+            AdminActionStatus::Upheld => write!(f, "upheld"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAction {
+    pub id: String,
+    pub network_cid_short: String,
+    pub kind: AdminActionKind,
+    pub taken_by: String,
+    pub taken_at: u64,
+    /// Seconds after `taken_at` during which members can contest (0 = 24 h default).
+    pub contest_window_secs: u64,
+    /// CID shorts of members who have contested this action.
+    pub contests: Vec<String>,
+    pub status: AdminActionStatus,
+}
+
+impl AdminAction {
+    pub fn new(
+        network_cid_short: String,
+        kind: AdminActionKind,
+        taken_by: String,
+        taken_at: u64,
+        contest_window_secs: u64,
+    ) -> Self {
+        let raw = format!("{network_cid_short}:{taken_by}:{taken_at}:{kind}");
+        let hash = blake3::hash(raw.as_bytes());
+        let id = bs58::encode(hash.as_bytes()).into_string()[..12].to_string();
+        AdminAction {
+            id,
+            network_cid_short,
+            kind,
+            taken_by,
+            taken_at,
+            contest_window_secs: if contest_window_secs == 0 { 86_400 } else { contest_window_secs },
+            contests: Vec::new(),
+            status: AdminActionStatus::Active,
+        }
+    }
+
+    pub fn is_window_open(&self, now: u64) -> bool {
+        now < self.taken_at + self.contest_window_secs
+    }
+
+    /// Returns true if the majority threshold is reached (strictly more than half).
+    pub fn majority_contested(&self, total_members: usize) -> bool {
+        total_members > 0 && self.contests.len() * 2 > total_members
+    }
+}
+
+/// Add a contest from `voter_cid_short`. Returns whether the majority threshold
+/// was just reached (caller should then create a suspension Proposal).
+pub fn add_contest(action: &mut AdminAction, voter_cid_short: &str, total_members: usize) -> bool {
+    if action.contests.iter().any(|c| c == voter_cid_short) {
+        return false;
+    }
+    action.contests.push(voter_cid_short.to_string());
+    action.majority_contested(total_members)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalStatus {
@@ -95,8 +202,73 @@ pub struct VoteResult {
     pub winner: Option<usize>,
 }
 
+// ── Délégation de vote ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteDelegation {
+    pub delegator_cid_short: String,
+    pub delegate_cid_short: String,
+    pub network_cid_short: String,
+    /// None = applies to all proposals in this network (network-wide delegation).
+    /// Some(id) = applies only to this specific proposal.
+    pub proposal_id: Option<String>,
+    pub created_at: u64,
+}
+
+impl VoteDelegation {
+    pub fn applies_to(&self, proposal_id: &str) -> bool {
+        match &self.proposal_id {
+            None => true,
+            Some(pid) => pid == proposal_id,
+        }
+    }
+}
+
+// ── Vote counting ─────────────────────────────────────────────────────────────
+
+/// Compute results without delegation (backward-compatible).
 pub fn compute_result(proposal: &Proposal, votes: &[Vote], total_members: usize) -> VoteResult {
-    let total_votes = votes.len();
+    compute_result_with_delegations(proposal, votes, &[], total_members)
+}
+
+/// Compute results accounting for delegations.
+/// Rules:
+/// - A direct vote always takes precedence over any delegation.
+/// - A delegation is applied only if the delegate has voted and the delegator has not.
+/// - No transitivity: A→B→C only counts A's delegation to B (not to C).
+pub fn compute_result_with_delegations(
+    proposal: &Proposal,
+    votes: &[Vote],
+    delegations: &[VoteDelegation],
+    total_members: usize,
+) -> VoteResult {
+    use std::collections::HashMap;
+
+    // Map: voter_cid_short → choice_index (direct votes only)
+    let direct: HashMap<&str, usize> = votes
+        .iter()
+        .map(|v| (v.voter_cid_short.as_str(), v.choice_index))
+        .collect();
+
+    // Effective votes: start with all direct votes
+    let mut effective: HashMap<&str, usize> = direct.clone();
+
+    // Apply delegations: only if delegator has NOT voted directly
+    let relevant: Vec<&VoteDelegation> = delegations
+        .iter()
+        .filter(|d| d.applies_to(&proposal.id))
+        .collect();
+
+    for d in &relevant {
+        if direct.contains_key(d.delegator_cid_short.as_str()) {
+            continue; // direct vote takes precedence
+        }
+        if let Some(&choice) = direct.get(d.delegate_cid_short.as_str()) {
+            effective.insert(d.delegator_cid_short.as_str(), choice);
+        }
+    }
+
+    let total_votes = effective.len();
     let participation_percent = if total_members > 0 {
         (total_votes as f64 / total_members as f64) * 100.0
     } else {
@@ -106,9 +278,9 @@ pub fn compute_result(proposal: &Proposal, votes: &[Vote], total_members: usize)
         || participation_percent >= proposal.quorum_percent as f64;
 
     let mut counts = vec![0usize; proposal.options.len()];
-    for vote in votes {
-        if vote.choice_index < counts.len() {
-            counts[vote.choice_index] += 1;
+    for &choice in effective.values() {
+        if choice < counts.len() {
+            counts[choice] += 1;
         }
     }
 

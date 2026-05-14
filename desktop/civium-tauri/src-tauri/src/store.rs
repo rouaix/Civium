@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, CiviumKeypair, MemberRecord, Message, Proposal, Vote};
+use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -41,6 +41,31 @@ CREATE TABLE IF NOT EXISTS votes (
     voter_cid_short TEXT NOT NULL,
     vote_json       TEXT NOT NULL,
     PRIMARY KEY (proposal_id, voter_cid_short)
+);
+CREATE TABLE IF NOT EXISTS admin_actions (
+    network_cid     TEXT NOT NULL,
+    action_id       TEXT NOT NULL,
+    action_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, action_id)
+);
+CREATE TABLE IF NOT EXISTS vote_delegations (
+    network_cid         TEXT NOT NULL,
+    delegator_cid_short TEXT NOT NULL,
+    proposal_id         TEXT,
+    delegation_json     TEXT NOT NULL,
+    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+);
+CREATE TABLE IF NOT EXISTS directory_entries (
+    directory_cid   TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (directory_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS directory_federations (
+    host_cid        TEXT NOT NULL,
+    peer_cid        TEXT NOT NULL,
+    federation_json TEXT NOT NULL,
+    PRIMARY KEY (host_cid, peer_cid)
 );
 ";
 
@@ -205,6 +230,153 @@ pub fn list_votes(conn: &Connection, proposal_id: &str) -> Result<Vec<Vote>> {
         votes.push(v);
     }
     Ok(votes)
+}
+
+// ── Vote delegations ──────────────────────────────────────────────────────────
+
+pub fn save_delegation(conn: &Connection, delegation: &VoteDelegation) -> Result<()> {
+    let json = serde_json::to_string(delegation)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO vote_delegations
+             (network_cid, delegator_cid_short, proposal_id, delegation_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            &delegation.network_cid_short,
+            &delegation.delegator_cid_short,
+            &delegation.proposal_id,
+            json
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_delegation(
+    conn: &Connection,
+    network_cid_short: &str,
+    delegator_cid_short: &str,
+    proposal_id: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM vote_delegations
+          WHERE network_cid = ?1
+            AND delegator_cid_short = ?2
+            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
+        params![network_cid_short, delegator_cid_short, proposal_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_delegations(conn: &Connection, network_cid_short: &str) -> Result<Vec<VoteDelegation>> {
+    let mut stmt = conn.prepare(
+        "SELECT delegation_json FROM vote_delegations WHERE network_cid = ?1",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut delegations = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let d: VoteDelegation = serde_json::from_str(&json)?;
+        delegations.push(d);
+    }
+    Ok(delegations)
+}
+
+// ── Admin actions (garde-fou majoritaire) ─────────────────────────────────────
+
+pub fn save_admin_action(conn: &Connection, network_cid_short: &str, action: &AdminAction) -> Result<()> {
+    let json = serde_json::to_string(action)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO admin_actions (network_cid, action_id, action_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, &action.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_admin_actions(conn: &Connection, network_cid_short: &str) -> Result<Vec<AdminAction>> {
+    let mut stmt = conn.prepare(
+        "SELECT action_json FROM admin_actions WHERE network_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut actions = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let a: AdminAction = serde_json::from_str(&json)?;
+        actions.push(a);
+    }
+    Ok(actions)
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+pub fn save_directory_entry(conn: &Connection, entry: &DirectoryEntry) -> Result<()> {
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_entries (directory_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.directory_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_directory_entries(conn: &Connection, directory_cid_short: &str) -> Result<Vec<DirectoryEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM directory_entries WHERE directory_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![directory_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: DirectoryEntry = serde_json::from_str(&json)?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_directory_entries(conn: &Connection, directory_cid_short: &str, query: &str) -> Result<Vec<DirectoryEntry>> {
+    let entries = list_directory_entries(conn, directory_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_directory_entry(conn: &Connection, directory_cid_short: &str, entry_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM directory_entries WHERE directory_cid = ?1 AND entry_id = ?2",
+        params![directory_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Directory federations ─────────────────────────────────────────────────────
+
+pub fn save_federation(conn: &Connection, fed: &FederatedDirectory) -> Result<()> {
+    let json = serde_json::to_string(fed)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_federations (host_cid, peer_cid, federation_json)
+         VALUES (?1, ?2, ?3)",
+        params![&fed.host_cid_short, &fed.peer_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_federations(conn: &Connection, host_cid_short: &str) -> Result<Vec<FederatedDirectory>> {
+    let mut stmt = conn.prepare(
+        "SELECT federation_json FROM directory_federations WHERE host_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![host_cid_short])?;
+    let mut feds = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let f: FederatedDirectory = serde_json::from_str(&json)?;
+        feds.push(f);
+    }
+    Ok(feds)
+}
+
+pub fn delete_federation(conn: &Connection, host_cid_short: &str, peer_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM directory_federations WHERE host_cid = ?1 AND peer_cid = ?2",
+        params![host_cid_short, peer_cid_short],
+    )?;
+    Ok(())
 }
 
 /// Merge members and messages received via P2P sync.

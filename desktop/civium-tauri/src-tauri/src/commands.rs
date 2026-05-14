@@ -6,10 +6,12 @@ use tauri::{AppHandle, Manager};
 
 use civium_core::{
     network::{Invitation, Network},
+    add_contest, compute_result_with_delegations,
+    AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    GroupKey, MemberRole, Message, MessageKind, Multiaddr,
-    NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote,
-    compute_result, peer_id_from_multiaddr,
+    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, MemberRole, Message, MessageKind,
+    Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
+    TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -29,6 +31,7 @@ pub struct NetworkInfo {
     pub cid_full: String,
     pub name: String,
     pub member_count: usize,
+    pub is_directory: bool,
 }
 
 #[derive(Serialize)]
@@ -99,6 +102,7 @@ pub fn network_create(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: false,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -116,6 +120,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             cid_full: n.cid_full().to_string(),
             name: n.name().to_string(),
             member_count: n.data.members.len(),
+            is_directory: n.data.kind == NetworkKind::Directory,
         })
         .collect())
 }
@@ -191,6 +196,7 @@ pub fn network_join(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: network.data.kind == NetworkKind::Directory,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -222,11 +228,27 @@ pub fn member_admit(
     let circle = TrustCircle::from_u8(circle)
         .ok_or_else(|| format!("cercle invalide: {circle} — utiliser 0, 1 ou 2"))?;
     let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
     let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
     let record = network
         .admit(&member_cid, circle, MemberRole::Member)
         .map_err(|e| e.to_string())?;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let action = AdminAction::new(
+        network_cid.clone(),
+        AdminActionKind::MemberAdmitted {
+            member_cid_short: record.cid_short.clone(),
+            display_name: record.display_name.clone(),
+        },
+        admin_cid.short().to_string(),
+        now,
+        0,
+    );
+    store::save_admin_action(&conn, &network_cid, &action).map_err(|e| e.to_string())?;
+
     Ok(MemberInfo {
         cid_short: record.cid_short,
         display_name: record.display_name,
@@ -375,6 +397,7 @@ pub async fn network_join_p2p(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: network.data.kind == NetworkKind::Directory,
     })
 }
 
@@ -653,8 +676,9 @@ pub fn vote_results(
         .ok_or_else(|| format!("proposal '{}' not found", proposal_id))?;
 
     let votes = store::list_votes(&conn, &proposal_id).map_err(|e| e.to_string())?;
+    let delegations = store::list_delegations(&conn, &network_cid).map_err(|e| e.to_string())?;
     let total_members = network.data.members.len();
-    let result = compute_result(proposal, &votes, total_members);
+    let result = compute_result_with_delegations(proposal, &votes, &delegations, total_members);
 
     Ok(VoteResultInfo {
         proposal_id: result.proposal_id,
@@ -669,4 +693,440 @@ pub fn vote_results(
             .collect(),
         winner: result.winner,
     })
+}
+
+// ── Vote delegation ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DelegationInfo {
+    pub delegator_cid_short: String,
+    pub delegate_cid_short: String,
+    pub proposal_id: Option<String>,
+    pub created_at: u64,
+}
+
+/// Set or replace a vote delegation (network-wide or per-proposal).
+#[tauri::command]
+pub fn vote_delegate(
+    app: AppHandle,
+    network_cid: String,
+    delegate_cid_short: String,
+    proposal_id: Option<String>,
+) -> Result<DelegationInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let delegator_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    if delegator_cid.short() == delegate_cid_short.as_str() {
+        return Err("cannot delegate to yourself".into());
+    }
+    if !network.data.members.iter().any(|m| m.cid_short == delegate_cid_short) {
+        return Err(format!("member '{}' not found in this network", delegate_cid_short));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let delegation = VoteDelegation {
+        delegator_cid_short: delegator_cid.short().to_string(),
+        delegate_cid_short: delegate_cid_short.clone(),
+        network_cid_short: network_cid.clone(),
+        proposal_id: proposal_id.clone(),
+        created_at: now,
+    };
+    store::save_delegation(&conn, &delegation).map_err(|e| e.to_string())?;
+    Ok(DelegationInfo {
+        delegator_cid_short: delegation.delegator_cid_short,
+        delegate_cid_short: delegation.delegate_cid_short,
+        proposal_id: delegation.proposal_id,
+        created_at: delegation.created_at,
+    })
+}
+
+/// Revoke a delegation (network-wide or per-proposal).
+#[tauri::command]
+pub fn vote_revoke_delegation(
+    app: AppHandle,
+    network_cid: String,
+    proposal_id: Option<String>,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let delegator_cid = keypair.cid();
+    store::delete_delegation(&conn, &network_cid, delegator_cid.short(), proposal_id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// List my delegations for a network.
+#[tauri::command]
+pub fn vote_list_delegations(
+    app: AppHandle,
+    network_cid: String,
+) -> Result<Vec<DelegationInfo>, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let my_cid = keypair.cid();
+    let all = store::list_delegations(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(all
+        .into_iter()
+        .filter(|d| d.delegator_cid_short == my_cid.short())
+        .map(|d| DelegationInfo {
+            delegator_cid_short: d.delegator_cid_short,
+            delegate_cid_short: d.delegate_cid_short,
+            proposal_id: d.proposal_id,
+            created_at: d.created_at,
+        })
+        .collect())
+}
+
+// ── Admin actions (garde-fou) ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct AdminActionInfo {
+    pub id: String,
+    pub kind: String,
+    pub taken_by: String,
+    pub taken_at: u64,
+    pub contest_window_secs: u64,
+    pub contest_count: usize,
+    pub status: String,
+    pub suspended_proposal_id: Option<String>,
+}
+
+/// List admin actions for a network (most recent first).
+#[tauri::command]
+pub fn admin_action_list(app: AppHandle, network_cid: String) -> Result<Vec<AdminActionInfo>, String> {
+    let conn = open(&app)?;
+    let actions = store::list_admin_actions(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(actions
+        .into_iter()
+        .map(|a| {
+            let suspended_proposal_id = match &a.status {
+                AdminActionStatus::Suspended { proposal_id } => Some(proposal_id.clone()),
+                _ => None,
+            };
+            AdminActionInfo {
+                id: a.id,
+                kind: a.kind.to_string(),
+                taken_by: a.taken_by,
+                taken_at: a.taken_at,
+                contest_window_secs: a.contest_window_secs,
+                contest_count: a.contests.len(),
+                status: a.status.to_string(),
+                suspended_proposal_id,
+            }
+        })
+        .collect())
+}
+
+/// Contest an admin action. If majority threshold is reached, suspends the action
+/// and auto-creates a governance proposal.
+#[tauri::command]
+pub fn admin_action_contest(
+    app: AppHandle,
+    network_cid: String,
+    action_id: String,
+) -> Result<AdminActionInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let voter_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let mut actions = store::list_admin_actions(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let action = actions
+        .iter_mut()
+        .find(|a| a.id == action_id)
+        .ok_or_else(|| format!("action '{}' not found", action_id))?;
+
+    if action.status != AdminActionStatus::Active {
+        return Err(format!("action '{}' is not contestable (status: {})", action_id, action.status));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    if !action.is_window_open(now) {
+        action.status = AdminActionStatus::Confirmed;
+        store::save_admin_action(&conn, &network_cid, action).map_err(|e| e.to_string())?;
+        return Err(format!("contest window has closed for action '{}'", action_id));
+    }
+
+    let total_members = network.data.members.len();
+    let threshold_reached = add_contest(action, voter_cid.short(), total_members);
+
+    if threshold_reached {
+        let proposal = Proposal::new(
+            network_cid.clone(),
+            format!("Garde-fou : {}", action.kind),
+            "La majorité a contesté une action de l'admin. Que décide le réseau ?".into(),
+            vec!["Maintenir l'action".into(), "Annuler l'action".into()],
+            "système".into(),
+            now,
+            now + 72 * 3600,
+            0,
+        );
+        store::save_proposal(&conn, &network_cid, &proposal).map_err(|e| e.to_string())?;
+        action.status = AdminActionStatus::Suspended { proposal_id: proposal.id.clone() };
+    }
+
+    store::save_admin_action(&conn, &network_cid, action).map_err(|e| e.to_string())?;
+
+    let suspended_proposal_id = match &action.status {
+        AdminActionStatus::Suspended { proposal_id } => Some(proposal_id.clone()),
+        _ => None,
+    };
+    Ok(AdminActionInfo {
+        id: action.id.clone(),
+        kind: action.kind.to_string(),
+        taken_by: action.taken_by.clone(),
+        taken_at: action.taken_at,
+        contest_window_secs: action.contest_window_secs,
+        contest_count: action.contests.len(),
+        status: action.status.to_string(),
+        suspended_proposal_id,
+    })
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DirectoryEntryInfo {
+    pub id: String,
+    pub directory_cid_short: String,
+    pub kind: String,
+    pub subject_cid_short: String,
+    pub subject_name: String,
+    pub description: String,
+    pub contact_addr: Option<String>,
+    pub published_by: String,
+    pub published_at: u64,
+    pub tags: Vec<String>,
+    /// Set for results that come from a federated peer directory.
+    pub source_dir_name: Option<String>,
+}
+
+impl From<DirectoryEntry> for DirectoryEntryInfo {
+    fn from(e: DirectoryEntry) -> Self {
+        Self {
+            id: e.id,
+            directory_cid_short: e.directory_cid_short,
+            kind: e.kind.to_string(),
+            subject_cid_short: e.subject_cid_short,
+            subject_name: e.subject_name,
+            description: e.description,
+            contact_addr: e.contact_addr,
+            published_by: e.published_by,
+            published_at: e.published_at,
+            tags: e.tags,
+            source_dir_name: None,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct FederationInfo {
+    pub id: String,
+    pub host_cid_short: String,
+    pub peer_cid_short: String,
+    pub peer_name: String,
+    pub peer_addr: Option<String>,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+/// Create a directory network (kind = Directory).
+#[tauri::command]
+pub fn directory_create(
+    app: AppHandle,
+    name: String,
+    display_name: String,
+) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
+    let mut network = Network::create(name, &admin_cid, display_name)
+        .map_err(|e| e.to_string())?;
+    network.data.kind = NetworkKind::Directory;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+        is_directory: true,
+    })
+}
+
+/// List all local directory networks.
+#[tauri::command]
+pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
+    let conn = open(&app)?;
+    let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
+    Ok(networks
+        .into_iter()
+        .filter(|n| n.data.kind == NetworkKind::Directory)
+        .map(|n| NetworkInfo {
+            cid_short: n.cid_short().to_string(),
+            cid_full: n.cid_full().to_string(),
+            name: n.name().to_string(),
+            member_count: n.data.members.len(),
+            is_directory: n.data.kind == NetworkKind::Directory,
+        })
+        .collect())
+}
+
+/// Publish a network or member to a directory.
+#[tauri::command]
+pub fn directory_publish(
+    app: AppHandle,
+    directory_cid: String,
+    kind: String,
+    subject_cid_short: String,
+    subject_name: String,
+    description: String,
+    contact_addr: Option<String>,
+    tags: Vec<String>,
+) -> Result<DirectoryEntryInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let publisher = keypair.cid().short().to_string();
+
+    let dir_net = store::load_network(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    if dir_net.data.kind != NetworkKind::Directory {
+        return Err(format!("network '{}' is not a directory", directory_cid));
+    }
+
+    let entry_kind: EntryKind = kind.parse().map_err(|e: String| e)?;
+    let entry = DirectoryEntry::new(
+        directory_cid,
+        entry_kind,
+        subject_cid_short,
+        subject_name,
+        description,
+        contact_addr,
+        publisher,
+        tags,
+    );
+    store::save_directory_entry(&conn, &entry).map_err(|e| e.to_string())?;
+    Ok(DirectoryEntryInfo::from(entry))
+}
+
+/// List all entries in a directory.
+#[tauri::command]
+pub fn directory_list(
+    app: AppHandle,
+    directory_cid: String,
+) -> Result<Vec<DirectoryEntryInfo>, String> {
+    let conn = open(&app)?;
+    let entries = store::list_directory_entries(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(DirectoryEntryInfo::from).collect())
+}
+
+/// Search entries in a directory by free-text query.
+/// When include_federated is true, also searches entries from all federated peer directories.
+#[tauri::command]
+pub fn directory_search(
+    app: AppHandle,
+    directory_cid: String,
+    query: String,
+    include_federated: bool,
+) -> Result<Vec<DirectoryEntryInfo>, String> {
+    let conn = open(&app)?;
+    let mut results: Vec<DirectoryEntryInfo> = store::search_directory_entries(&conn, &directory_cid, &query)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(DirectoryEntryInfo::from)
+        .collect();
+
+    if include_federated {
+        let feds = store::list_federations(&conn, &directory_cid).map_err(|e| e.to_string())?;
+        for fed in feds {
+            let peer_entries = store::search_directory_entries(&conn, &fed.peer_cid_short, &query)
+                .unwrap_or_default();
+            for entry in peer_entries {
+                let mut info = DirectoryEntryInfo::from(entry);
+                info.source_dir_name = Some(fed.peer_name.clone());
+                results.push(info);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Remove an entry from a directory.
+#[tauri::command]
+pub fn directory_remove(
+    app: AppHandle,
+    directory_cid: String,
+    entry_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_directory_entry(&conn, &directory_cid, &entry_id).map_err(|e| e.to_string())
+}
+
+// ── Directory federations ─────────────────────────────────────────────────────
+
+/// Add a federation link from this directory to a peer directory.
+#[tauri::command]
+pub fn directory_federate(
+    app: AppHandle,
+    directory_cid: String,
+    peer_cid: String,
+    peer_name: String,
+    peer_addr: Option<String>,
+) -> Result<FederationInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let dir_net = store::load_network(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    if dir_net.data.kind != NetworkKind::Directory {
+        return Err(format!("network '{}' is not a directory", directory_cid));
+    }
+    let fed = FederatedDirectory::new(
+        directory_cid,
+        peer_cid,
+        peer_name,
+        peer_addr,
+        keypair.cid().short().to_string(),
+    );
+    store::save_federation(&conn, &fed).map_err(|e| e.to_string())?;
+    Ok(FederationInfo {
+        id: fed.id,
+        host_cid_short: fed.host_cid_short,
+        peer_cid_short: fed.peer_cid_short,
+        peer_name: fed.peer_name,
+        peer_addr: fed.peer_addr,
+        added_by: fed.added_by,
+        added_at: fed.added_at,
+    })
+}
+
+/// Remove a federation link.
+#[tauri::command]
+pub fn directory_unfederate(
+    app: AppHandle,
+    directory_cid: String,
+    peer_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_federation(&conn, &directory_cid, &peer_cid).map_err(|e| e.to_string())
+}
+
+/// List all federation links for a directory.
+#[tauri::command]
+pub fn directory_federations(
+    app: AppHandle,
+    directory_cid: String,
+) -> Result<Vec<FederationInfo>, String> {
+    let conn = open(&app)?;
+    let feds = store::list_federations(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    Ok(feds
+        .into_iter()
+        .map(|f| FederationInfo {
+            id: f.id,
+            host_cid_short: f.host_cid_short,
+            peer_cid_short: f.peer_cid_short,
+            peer_name: f.peer_name,
+            peer_addr: f.peer_addr,
+            added_by: f.added_by,
+            added_at: f.added_at,
+        })
+        .collect())
 }

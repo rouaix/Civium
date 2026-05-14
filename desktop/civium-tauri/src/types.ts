@@ -9,6 +9,7 @@ export interface NetworkInfo {
   cid_full: string;
   name: string;
   member_count: number;
+  is_directory: boolean;
 }
 
 export interface MemberInfo {
@@ -71,4 +72,46 @@ export interface VoteResultInfo {
   quorum_reached: boolean;
   options: OptionResult[];
   winner: number | null;
+}
+
+export interface DelegationInfo {
+  delegator_cid_short: string;
+  delegate_cid_short: string;
+  proposal_id: string | null;
+  created_at: number;
+}
+
+export interface DirectoryEntryInfo {
+  id: string;
+  directory_cid_short: string;
+  kind: "network" | "member";
+  subject_cid_short: string;
+  subject_name: string;
+  description: string;
+  contact_addr: string | null;
+  published_by: string;
+  published_at: number;
+  tags: string[];
+  source_dir_name: string | null;
+}
+
+export interface FederationInfo {
+  id: string;
+  host_cid_short: string;
+  peer_cid_short: string;
+  peer_name: string;
+  peer_addr: string | null;
+  added_by: string;
+  added_at: number;
+}
+
+export interface AdminActionInfo {
+  id: string;
+  kind: string;
+  taken_by: string;
+  taken_at: number;
+  contest_window_secs: number;
+  contest_count: number;
+  status: "active" | "confirmed" | "suspended" | "reversed" | "upheld";
+  suspended_proposal_id: string | null;
 }
