@@ -8,8 +8,8 @@ use civium_core::{
     network::{Invitation, Network},
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     GroupKey, MemberRole, Message, MessageKind, Multiaddr,
-    NodeCommand, NodeConfig, NodeEvent, TrustCircle,
-    peer_id_from_multiaddr,
+    NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote,
+    compute_result, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -484,5 +484,189 @@ pub fn message_send(
         sent_at: msg.sent_at,
         is_direct: false,
         to_cid_short: None,
+    })
+}
+
+// ── Governance commands ───────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ProposalInfo {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub options: Vec<String>,
+    pub created_by: String,
+    pub created_at: u64,
+    pub closes_at: u64,
+    pub quorum_percent: u8,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct OptionResult {
+    pub label: String,
+    pub votes: usize,
+    pub percent: f64,
+}
+
+#[derive(Serialize)]
+pub struct VoteResultInfo {
+    pub proposal_id: String,
+    pub total_votes: usize,
+    pub total_members: usize,
+    pub participation_percent: f64,
+    pub quorum_reached: bool,
+    pub options: Vec<OptionResult>,
+    pub winner: Option<usize>,
+}
+
+/// List all proposals for a network.
+#[tauri::command]
+pub fn proposal_list(app: AppHandle, network_cid: String) -> Result<Vec<ProposalInfo>, String> {
+    let conn = open(&app)?;
+    let proposals = store::list_proposals(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(proposals
+        .into_iter()
+        .map(|p| ProposalInfo {
+            id: p.id,
+            title: p.title,
+            description: p.description,
+            options: p.options,
+            created_by: p.created_by,
+            created_at: p.created_at,
+            closes_at: p.closes_at,
+            quorum_percent: p.quorum_percent,
+            status: p.status.to_string(),
+        })
+        .collect())
+}
+
+/// Create a new proposal (admin or any member, depending on network policy — open here).
+#[tauri::command]
+pub fn proposal_create(
+    app: AppHandle,
+    network_cid: String,
+    title: String,
+    description: String,
+    options: Vec<String>,
+    hours: u64,
+    quorum_percent: u8,
+) -> Result<ProposalInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let author_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    if !network.data.members.iter().any(|m| m.cid_short == author_cid.short()) {
+        return Err("you are not a member of this network".into());
+    }
+    if options.len() < 2 {
+        return Err("at least 2 options are required".into());
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let closes_at = if hours == 0 { 0 } else { now + hours * 3600 };
+
+    let proposal = Proposal::new(
+        network_cid.clone(),
+        title,
+        description,
+        options,
+        author_cid.short().to_string(),
+        now,
+        closes_at,
+        quorum_percent,
+    );
+
+    store::save_proposal(&conn, &network_cid, &proposal).map_err(|e| e.to_string())?;
+
+    Ok(ProposalInfo {
+        id: proposal.id,
+        title: proposal.title,
+        description: proposal.description,
+        options: proposal.options,
+        created_by: proposal.created_by,
+        created_at: proposal.created_at,
+        closes_at: proposal.closes_at,
+        quorum_percent: proposal.quorum_percent,
+        status: proposal.status.to_string(),
+    })
+}
+
+/// Cast a vote on a proposal.
+#[tauri::command]
+pub fn vote_cast(
+    app: AppHandle,
+    network_cid: String,
+    proposal_id: String,
+    choice_index: usize,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let voter_cid = keypair.cid();
+
+    let proposals = store::list_proposals(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let proposal = proposals
+        .iter()
+        .find(|p| p.id == proposal_id)
+        .ok_or_else(|| format!("proposal '{}' not found", proposal_id))?;
+
+    if proposal.status != ProposalStatus::Open {
+        return Err(format!("proposal '{}' is not open", proposal_id));
+    }
+    if choice_index >= proposal.options.len() {
+        return Err(format!(
+            "choice {} out of range (0–{})",
+            choice_index,
+            proposal.options.len() - 1
+        ));
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    if proposal.is_expired(now) {
+        return Err(format!("proposal '{}' has expired", proposal_id));
+    }
+
+    let vote = Vote {
+        proposal_id,
+        voter_cid_short: voter_cid.short().to_string(),
+        choice_index,
+        cast_at: now,
+    };
+    store::save_vote(&conn, &vote).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Return vote results for a proposal.
+#[tauri::command]
+pub fn vote_results(
+    app: AppHandle,
+    network_cid: String,
+    proposal_id: String,
+) -> Result<VoteResultInfo, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let proposals = store::list_proposals(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let proposal = proposals
+        .iter()
+        .find(|p| p.id == proposal_id)
+        .ok_or_else(|| format!("proposal '{}' not found", proposal_id))?;
+
+    let votes = store::list_votes(&conn, &proposal_id).map_err(|e| e.to_string())?;
+    let total_members = network.data.members.len();
+    let result = compute_result(proposal, &votes, total_members);
+
+    Ok(VoteResultInfo {
+        proposal_id: result.proposal_id,
+        total_votes: result.total_votes,
+        total_members: result.total_members,
+        participation_percent: result.participation_percent,
+        quorum_reached: result.quorum_reached,
+        options: result
+            .options
+            .into_iter()
+            .map(|o| OptionResult { label: o.label, votes: o.votes, percent: o.percent })
+            .collect(),
+        winner: result.winner,
     })
 }

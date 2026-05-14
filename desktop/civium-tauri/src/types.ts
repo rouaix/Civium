@@ -44,3 +44,31 @@ export interface MessageDisplay {
   is_direct: boolean;
   to_cid_short: string | null;
 }
+
+export interface ProposalInfo {
+  id: string;
+  title: string;
+  description: string;
+  options: string[];
+  created_by: string;
+  created_at: number;
+  closes_at: number;
+  quorum_percent: number;
+  status: "open" | "closed" | "cancelled";
+}
+
+export interface OptionResult {
+  label: string;
+  votes: number;
+  percent: number;
+}
+
+export interface VoteResultInfo {
+  proposal_id: string;
+  total_votes: number;
+  total_members: number;
+  participation_percent: number;
+  quorum_reached: boolean;
+  options: OptionResult[];
+  winner: number | null;
+}

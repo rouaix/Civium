@@ -7,7 +7,7 @@ use civium_core::{
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, GroupKey, MemberRole,
     MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
-    ShareTerms, TrustCircle, peer_id_from_multiaddr,
+    Proposal, ShareTerms, TrustCircle, Vote, compute_result, peer_id_from_multiaddr,
 };
 use tracing::warn;
 use clap::{Parser, Subcommand};
@@ -58,6 +58,11 @@ enum Command {
     Connect {
         #[command(subcommand)]
         action: ConnectCmd,
+    },
+    /// Governance — proposals and votes
+    Governance {
+        #[command(subcommand)]
+        action: GovernanceCmd,
     },
 }
 
@@ -231,6 +236,58 @@ enum ConnectCmd {
     },
 }
 
+// ── Governance sub-commands ───────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum GovernanceCmd {
+    /// Create a new proposal.
+    Propose {
+        /// Network CID short.
+        #[arg(long)]
+        network: String,
+        /// Proposal title.
+        #[arg(long)]
+        title: String,
+        /// Proposal description (optional).
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Voting options, comma-separated (default: "Pour,Contre,Abstention").
+        #[arg(long, default_value = "Pour,Contre,Abstention")]
+        options: String,
+        /// Duration in hours until the vote closes (0 = open until admin closes it).
+        #[arg(long, default_value = "72")]
+        hours: u64,
+        /// Required participation percentage for the result to be valid (0 = no quorum).
+        #[arg(long, default_value = "0")]
+        quorum: u8,
+    },
+    /// List proposals for a network.
+    List {
+        /// Network CID short.
+        #[arg(long)]
+        network: String,
+    },
+    /// Cast a vote on a proposal.
+    Vote {
+        /// Proposal ID (short prefix accepted).
+        proposal_id: String,
+        /// Network CID short (needed to find members count).
+        #[arg(long)]
+        network: String,
+        /// Choice index (0 = first option, 1 = second, etc.).
+        #[arg(long)]
+        choice: usize,
+    },
+    /// Show vote results for a proposal.
+    Results {
+        /// Proposal ID (short prefix accepted).
+        proposal_id: String,
+        /// Network CID short.
+        #[arg(long)]
+        network: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -295,6 +352,7 @@ async fn main() -> Result<()> {
         Command::Node { action } => run_node(action, data).await,
         Command::Msg { action } => run_msg(action, data),
         Command::Connect { action } => run_connect(action, data),
+        Command::Governance { action } => run_governance(action, data),
     }
 }
 
@@ -1239,6 +1297,133 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                     .map(|m| m.display_name.as_str())
                     .unwrap_or(&msg.author_cid_short);
                 println!("[{}] {} : {}", fmt_ts(msg.sent_at), author_name, body);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Governance handler ────────────────────────────────────────────────────────
+
+fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        GovernanceCmd::Propose { network, title, description, options, hours, quorum } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let author_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            if !net.data.members.iter().any(|m| m.cid_full == author_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+
+            let now = unix_now_cli();
+            let closes_at = if hours == 0 { 0 } else { now + hours * 3600 };
+            let opts: Vec<String> = options.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            if opts.len() < 2 {
+                bail!("at least 2 options are required");
+            }
+
+            let proposal = Proposal::new(
+                net.cid_short().to_string(),
+                title.clone(),
+                description,
+                opts,
+                author_cid.short().to_string(),
+                now,
+                closes_at,
+                quorum,
+            );
+
+            store::save_proposal(data, net.cid_short(), &proposal)?;
+            println!("Proposal '{}' created.", title);
+            println!("  ID      : {}", proposal.id);
+            println!("  Options : {}", proposal.options.join(", "));
+            if closes_at > 0 {
+                println!("  Closes  : +{hours}h");
+            } else {
+                println!("  Closes  : open-ended");
+            }
+        }
+
+        GovernanceCmd::List { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let proposals = store::list_proposals(data, net.cid_short())?;
+            if proposals.is_empty() {
+                println!("No proposals for '{}'.", net.name());
+                return Ok(());
+            }
+            println!("=== Proposals: {} ===", net.name());
+            println!();
+            for p in &proposals {
+                println!("  [{}] {} — {} ({})", p.id, p.title, p.status, p.options.join(" / "));
+                if !p.description.is_empty() {
+                    println!("       {}", p.description);
+                }
+            }
+        }
+
+        GovernanceCmd::Vote { proposal_id, network, choice } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let voter_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            if !net.data.members.iter().any(|m| m.cid_full == voter_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+
+            let proposals = store::list_proposals(data, net.cid_short())?;
+            let proposal = proposals
+                .iter()
+                .find(|p| p.id.starts_with(&proposal_id))
+                .ok_or_else(|| anyhow::anyhow!("proposal '{}' not found", proposal_id))?;
+
+            if proposal.status != civium_core::ProposalStatus::Open {
+                bail!("proposal '{}' is not open", proposal.id);
+            }
+            if choice >= proposal.options.len() {
+                bail!("choice {} out of range (0–{})", choice, proposal.options.len() - 1);
+            }
+
+            let now = unix_now_cli();
+            if proposal.is_expired(now) {
+                bail!("proposal '{}' has expired", proposal.id);
+            }
+
+            let vote = Vote {
+                proposal_id: proposal.id.clone(),
+                voter_cid_short: voter_cid.short().to_string(),
+                choice_index: choice,
+                cast_at: now,
+            };
+            store::save_vote(data, &vote)?;
+            println!(
+                "Vote cast: '{}' on proposal '{}'.",
+                proposal.options[choice], proposal.id
+            );
+        }
+
+        GovernanceCmd::Results { proposal_id, network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let proposals = store::list_proposals(data, net.cid_short())?;
+            let proposal = proposals
+                .iter()
+                .find(|p| p.id.starts_with(&proposal_id))
+                .ok_or_else(|| anyhow::anyhow!("proposal '{}' not found", proposal_id))?;
+
+            let votes = store::list_votes(data, &proposal.id)?;
+            let total_members = net.data.members.len();
+            let result = compute_result(proposal, &votes, total_members);
+
+            println!("=== Results: {} ===", proposal.title);
+            println!("  Status        : {}", proposal.status);
+            println!("  Votes cast    : {}/{} ({:.1}%)", result.total_votes, total_members, result.participation_percent);
+            println!("  Quorum        : {}", if result.quorum_reached { "reached" } else { "NOT reached" });
+            println!();
+            for (i, opt) in result.options.iter().enumerate() {
+                let marker = result.winner.map(|w| if w == i { " ← WINNER" } else { "" }).unwrap_or("");
+                println!("  [{}] {} — {} votes ({:.1}%){}", i, opt.label, opt.votes, opt.percent, marker);
             }
         }
     }
