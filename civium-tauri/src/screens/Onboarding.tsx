@@ -18,6 +18,7 @@ export default function Onboarding({ onComplete }: Props) {
   const [displayName, setDisplayName] = useState("");
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [joinInviteLink, setJoinInviteLink] = useState("");
+  const [peerAddr, setPeerAddr] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -63,10 +64,21 @@ export default function Onboarding({ onComplete }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const net = await tauriInvoke<NetworkInfo>("network_join", {
-        inviteLink: joinInviteLink.trim(),
-        displayName: displayName.trim(),
-      });
+      let net: NetworkInfo;
+      if (peerAddr.trim()) {
+        // Phase 1: real P2P join via a live peer
+        net = await tauriInvoke<NetworkInfo>("network_join_p2p", {
+          inviteLink: joinInviteLink.trim(),
+          displayName: displayName.trim(),
+          peerAddr: peerAddr.trim(),
+        });
+      } else {
+        // Phase 0 fallback: requires the network already in local DB
+        net = await tauriInvoke<NetworkInfo>("network_join", {
+          inviteLink: joinInviteLink.trim(),
+          displayName: displayName.trim(),
+        });
+      }
       setNetwork(net);
       setStep("done");
     } catch (e) {
@@ -82,6 +94,10 @@ export default function Onboarding({ onComplete }: Props) {
     setError(null);
     setStep(m === "create" ? "create" : "join");
   }
+
+  const joinLoadingLabel = peerAddr.trim()
+    ? "Connexion P2P… (jusqu'à 30 s)"
+    : "Rejoindre…";
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-civium-50 to-civium-100 p-6">
@@ -245,7 +261,7 @@ export default function Onboarding({ onComplete }: Props) {
                 Rejoindre un réseau
               </h2>
               <p className="text-sm text-gray-500 mt-1">
-                Collez le lien d'invitation que vous avez reçu.
+                Collez le lien d'invitation et l'adresse d'un pair actif.
               </p>
             </div>
             <div className="space-y-3">
@@ -275,6 +291,24 @@ export default function Onboarding({ onComplete }: Props) {
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Adresse du pair
+                  <span className="ml-1 text-xs font-normal text-gray-400">(P2P — recommandé)</span>
+                </label>
+                <input
+                  type="text"
+                  value={peerAddr}
+                  onChange={(e) => setPeerAddr(e.target.value)}
+                  placeholder="/ip4/1.2.3.4/tcp/4001/p2p/12D3…"
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono
+                             focus:outline-none focus:ring-2 focus:ring-civium-500"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Obtenez-la via <code className="font-mono">civium node start --announce</code>
+                  {" "}sur la machine de l'admin.
+                </p>
+              </div>
             </div>
             {error && (
               <div className="bg-red-50 text-red-700 text-sm rounded-lg px-4 py-3">
@@ -294,7 +328,7 @@ export default function Onboarding({ onComplete }: Props) {
                 className="flex-1 py-3 bg-civium-600 text-white rounded-xl font-semibold
                            hover:bg-civium-700 disabled:opacity-50 transition-colors"
               >
-                {loading ? "Rejoindre…" : "Rejoindre le réseau"}
+                {loading ? joinLoadingLabel : "Rejoindre le réseau"}
               </button>
             </div>
           </div>
@@ -333,7 +367,7 @@ export default function Onboarding({ onComplete }: Props) {
               </div>
             )}
 
-            {identity && mode === "create" && (
+            {identity && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-xs space-y-1">
                 <p className="font-semibold text-amber-800">
                   Sauvegardez votre clé secrète :

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use civium_core::{
     network::{Invitation, Network},
-    CiviumKeypair, GroupKey, MemberRole, Message, MessageKind, NodeCommand, TrustCircle,
+    CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
+    GroupKey, MemberRole, Message, MessageKind, Multiaddr,
+    NodeCommand, NodeConfig, NodeEvent, TrustCircle,
+    peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -273,6 +276,106 @@ pub fn member_reject(
     network.reject(&member_cid).map_err(|e| e.to_string())?;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── P2P join ──────────────────────────────────────────────────────────────────
+
+/// Join a network over P2P using a real invite link + known peer multiaddr.
+/// Spins up a short-lived local P2P node, dials the peer, and waits up to 30 s
+/// for JoinAccepted / JoinRejected.  Returns the network info on success.
+#[tauri::command]
+pub async fn network_join_p2p(
+    app: AppHandle,
+    invite_link: String,
+    display_name: String,
+    peer_addr: String,
+) -> Result<NetworkInfo, String> {
+    // Load identity — sync, before any await.
+    let keypair = {
+        let conn = open(&app)?;
+        store::load_identity(&conn).map_err(|e| e.to_string())?
+    };
+    let member_cid = keypair.cid();
+
+    // Validate invitation and peer address.
+    let invitation =
+        Invitation::from_link(&invite_link).map_err(|e| e.to_string())?;
+    invitation.verify().map_err(|e| e.to_string())?;
+
+    let via_addr: Multiaddr = peer_addr
+        .parse()
+        .map_err(|e| format!("adresse invalide : {e}"))?;
+    let peer_id = peer_id_from_multiaddr(&via_addr)
+        .ok_or_else(|| "l'adresse doit inclure /p2p/<PeerId>".to_string())?;
+
+    // Start a short-lived P2P node for this join.
+    let config = NodeConfig {
+        listen_tcp: "/ip4/0.0.0.0/tcp/0".into(),
+        listen_quic: "/ip4/0.0.0.0/udp/0/quic-v1".into(),
+        bootstrap_peers: vec![peer_addr.clone()],
+    };
+    let (node, mut handle) =
+        CiviumNode::new(keypair, config).await.map_err(|e| e.to_string())?;
+
+    let join_request = CiviumRequest::Join {
+        invite_link: invite_link.clone(),
+        member_cid_full: member_cid.full().to_string(),
+        display_name: display_name.clone(),
+    };
+
+    // Drive the libp2p swarm in the background.
+    let node_task = tauri::async_runtime::spawn(async move { node.run().await });
+
+    let join_result = tokio::time::timeout(
+        Duration::from_secs(30),
+        async {
+            let mut join_sent = false;
+            loop {
+                match handle.events.recv().await {
+                    Some(NodeEvent::PeerConnected { peer_id: connected }) => {
+                        if connected == peer_id && !join_sent {
+                            let _ = handle.commands.send(NodeCommand::SendRequest {
+                                peer: peer_id,
+                                request: join_request.clone(),
+                            }).await;
+                            join_sent = true;
+                        }
+                    }
+                    Some(NodeEvent::OutboundResponse { response, .. }) => match response {
+                        CiviumResponse::JoinAccepted { network_data } => {
+                            return Ok(network_data);
+                        }
+                        CiviumResponse::JoinRejected { reason } => {
+                            return Err(format!("Rejoindre refusé : {reason}"));
+                        }
+                        _ => {}
+                    },
+                    None => return Err("connexion au nœud P2P perdue".to_string()),
+                    _ => {}
+                }
+            }
+        },
+    )
+    .await
+    .map_err(|_| "délai dépassé — le pair ne répond pas (30 s)".to_string())?;
+
+    node_task.abort();
+
+    let network_data = join_result?;
+    let network = Network::from_data(network_data).map_err(|e| e.to_string())?;
+
+    // Save the network — new connection after all awaits.
+    {
+        let conn = open(&app)?;
+        store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    }
+
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+    })
 }
 
 // ── Messaging commands ────────────────────────────────────────────────────────
