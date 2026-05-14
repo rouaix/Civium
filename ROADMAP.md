@@ -61,11 +61,11 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 5–6 — Messagerie
 
-- [ ] Chiffrement E2E applicatif (clé de groupe — cercles 0-2)
-- [ ] Messages directs entre membres d'un même réseau
-- [ ] Fils de discussion dans le réseau
-- [ ] Synchronisation CRDT entre membres connectés
-- [ ] Queue locale + resync à la reconnexion (offline-first)
+- [x] Chiffrement E2E applicatif (clé de groupe — cercles 0-2)
+- [x] Messages directs entre membres d'un même réseau
+- [x] Fils de discussion dans le réseau
+- [x] Synchronisation CRDT entre membres connectés
+- [x] Queue locale + resync à la reconnexion (offline-first)
 
 ### Semaines 7–8 — Connexion inter-réseaux
 
@@ -158,4 +158,4 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-*Dernière mise à jour : 2026-05-12*
+*Dernière mise à jour : 2026-05-14*

@@ -1,4 +1,4 @@
-use crate::{Cid, CiviumError, CiviumKeypair};
+use crate::{crypto::GroupKey, Cid, CiviumError, CiviumKeypair};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,6 +32,9 @@ pub struct NetworkData {
     pub name: String,
     pub members: Vec<MemberRecord>,
     pub pending: Vec<PendingRecord>,
+    /// ChaCha20-Poly1305 group key (base58). Empty on networks created before week 5.
+    #[serde(default)]
+    pub group_key_b58: String,
 }
 
 /// A Civium network — a sovereign group with its own identity, rules and members.
@@ -44,7 +47,7 @@ pub struct Network {
 }
 
 impl Network {
-    /// Create a new network. Generates a fresh keypair for the network's identity.
+    /// Create a new network. Generates a fresh keypair and group key for the network.
     /// The founding admin is added as the first member.
     pub fn create(
         name: String,
@@ -53,6 +56,7 @@ impl Network {
     ) -> Result<Self, CiviumError> {
         let keypair = CiviumKeypair::generate()?;
         let cid = keypair.cid();
+        let group_key = GroupKey::generate();
 
         let admin = MemberRecord {
             cid_short: admin_cid.short().to_string(),
@@ -70,6 +74,7 @@ impl Network {
             name,
             members: vec![admin],
             pending: vec![],
+            group_key_b58: group_key.to_b58(),
         };
 
         Ok(Self { keypair, data })

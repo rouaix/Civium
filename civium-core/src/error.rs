@@ -14,6 +14,12 @@ pub enum CiviumError {
     #[error("node error: {0}")]
     Node(String),
 
+    #[error("crypto error: {0}")]
+    Crypto(String),
+
+    #[error("messaging error: {0}")]
+    Messaging(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

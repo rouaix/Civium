@@ -3,7 +3,7 @@ mod store;
 use anyhow::{bail, Result};
 use civium_core::{
     network::{Invitation, Network},
-    CiviumKeypair, CiviumNode, MemberRole, NodeConfig, TrustCircle,
+    CiviumKeypair, CiviumNode, GroupKey, MemberRole, MessageKind, NodeConfig, TrustCircle,
 };
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -43,6 +43,11 @@ enum Command {
     Node {
         #[command(subcommand)]
         action: NodeCmd,
+    },
+    /// Send and read encrypted messages
+    Msg {
+        #[command(subcommand)]
+        action: MsgCmd,
     },
 }
 
@@ -122,6 +127,33 @@ enum MemberCmd {
     },
 }
 
+// ── Msg sub-commands ──────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum MsgCmd {
+    /// Post a message to the network thread or directly to a member.
+    Send {
+        /// Network CID (short or prefix).
+        #[arg(long)]
+        network: String,
+        /// Recipient CID short — omit for a thread message.
+        #[arg(long)]
+        to: Option<String>,
+        /// Plaintext body (encrypted with the network group key before storage).
+        #[arg(long)]
+        body: String,
+    },
+    /// Read messages from the network thread or a direct conversation.
+    List {
+        /// Network CID (short or prefix).
+        #[arg(long)]
+        network: String,
+        /// Show only direct messages with this member CID short.
+        #[arg(long)]
+        with: Option<String>,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -153,6 +185,7 @@ async fn main() -> Result<()> {
         Command::Network { action } => run_network(action, data),
         Command::Member { action } => run_member(action, data),
         Command::Node { action } => run_node(action, data).await,
+        Command::Msg { action } => run_msg(action, data),
     }
 }
 
@@ -371,7 +404,140 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+// ── Msg handlers ─────────────────────────────────────────────────────────────
+
+fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        MsgCmd::Send { network, to, body } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let author_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            let group_key = GroupKey::from_b58(&net.data.group_key_b58)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Check that the author is a member of this network
+            if !net.data.members.iter().any(|m| m.cid_full == author_cid.full()) {
+                bail!("you are not a member of '{}'", net.name());
+            }
+
+            let kind = match to {
+                Some(ref peer) => {
+                    // Validate peer exists in the network
+                    if !net.data.members.iter().any(|m| m.cid_short.starts_with(peer.as_str())) {
+                        bail!("member '{peer}' not found in '{}'", net.name());
+                    }
+                    // Resolve to full cid_short
+                    let peer_cid_short = net
+                        .data
+                        .members
+                        .iter()
+                        .find(|m| m.cid_short.starts_with(peer.as_str()))
+                        .map(|m| m.cid_short.clone())
+                        .unwrap();
+                    MessageKind::Direct { to_cid_short: peer_cid_short }
+                }
+                None => MessageKind::Thread,
+            };
+
+            let mut mailbox = store::load_mailbox(data, net.cid_short())?;
+            mailbox
+                .post(author_cid.short().to_string(), kind.clone(), &body, &group_key)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Grab the id before the save (last message is what we just posted)
+            let msg_id = mailbox.messages.last().unwrap().id.clone();
+            store::save_mailbox(data, net.cid_short(), &mailbox)?;
+
+            let label = match kind {
+                MessageKind::Thread => "thread".to_string(),
+                MessageKind::Direct { to_cid_short } => format!("DM → {to_cid_short}"),
+            };
+            println!("Message sent ({label}) — id: {}", &msg_id[..8.min(msg_id.len())]);
+        }
+
+        MsgCmd::List { network, with } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let local_cid = keypair.cid();
+
+            let net = load_network_fuzzy(data, &network)?;
+            let group_key = GroupKey::from_b58(&net.data.group_key_b58)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let mailbox = store::load_mailbox(data, net.cid_short())?;
+
+            if mailbox.messages.is_empty() {
+                println!("No messages in '{}'.", net.name());
+                return Ok(());
+            }
+
+            let messages_to_show: Vec<_> = match &with {
+                Some(peer) => {
+                    mailbox
+                        .direct_messages(local_cid.short(), peer)
+                        .collect()
+                }
+                None => mailbox.thread_messages().collect(),
+            };
+
+            if messages_to_show.is_empty() {
+                if let Some(peer) = &with {
+                    println!("No direct messages with {peer} in '{}'.", net.name());
+                } else {
+                    println!("No thread messages in '{}'.", net.name());
+                }
+                return Ok(());
+            }
+
+            let header = match &with {
+                Some(peer) => format!("=== DM: {} ↔ {} ===", local_cid.short(), peer),
+                None => format!("=== {} — thread ===", net.name()),
+            };
+            println!("{header}");
+            println!();
+
+            for msg in messages_to_show {
+                let body = mailbox
+                    .decrypt_body(msg, &group_key)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let author_name = net
+                    .data
+                    .members
+                    .iter()
+                    .find(|m| m.cid_short == msg.author_cid_short)
+                    .map(|m| m.display_name.as_str())
+                    .unwrap_or(&msg.author_cid_short);
+                println!("[{}] {} : {}", fmt_ts(msg.sent_at), author_name, body);
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn fmt_ts(unix: u64) -> String {
+    // Simple formatting without external deps: YYYY-MM-DD HH:MM
+    use std::time::{Duration, UNIX_EPOCH};
+    let d = UNIX_EPOCH + Duration::from_secs(unix);
+    // Approximate: good enough for CLI display in Phase 0.
+    let secs = unix;
+    let mins  = secs / 60;
+    let hours = mins / 60;
+    let days  = hours / 24;
+    let year  = 1970 + days / 365;
+    let rem   = days % 365;
+    let month = rem / 30 + 1;
+    let day   = rem % 30 + 1;
+    let _ = d; // suppress unused warning
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        year, month.min(12), day.min(31),
+        hours % 24, mins % 60
+    )
+}
 
 /// Load a network by CID prefix — accepts short form or full CID.
 fn load_network_fuzzy(data: &PathBuf, cid: &str) -> Result<Network> {

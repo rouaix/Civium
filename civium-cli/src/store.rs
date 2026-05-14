@@ -2,7 +2,7 @@
 //! Replaced by SQLCipher in weeks 9-10 (Tauri app).
 
 use anyhow::{Context, Result};
-use civium_core::{CiviumKeypair, network::Network};
+use civium_core::{network::Network, CiviumKeypair, Mailbox};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -79,6 +79,25 @@ pub fn list_network_cids(data_dir: &Path) -> Vec<String> {
         .filter(|e| e.path().is_dir())
         .filter_map(|e| e.file_name().into_string().ok())
         .collect()
+}
+
+// ── Mailbox ───────────────────────────────────────────────────────────────────
+
+pub fn mailbox_path(data_dir: &Path, network_cid_short: &str) -> PathBuf {
+    network_dir(data_dir, network_cid_short).join("mailbox.json")
+}
+
+pub fn save_mailbox(data_dir: &Path, network_cid_short: &str, mailbox: &Mailbox) -> Result<()> {
+    let path = mailbox_path(data_dir, network_cid_short);
+    write_json(data_dir, &path, mailbox)
+}
+
+pub fn load_mailbox(data_dir: &Path, network_cid_short: &str) -> Result<Mailbox> {
+    let path = mailbox_path(data_dir, network_cid_short);
+    if !path.exists() {
+        return Ok(Mailbox::new());
+    }
+    read_json(&path).with_context(|| format!("cannot read mailbox at {}", path.display()))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
