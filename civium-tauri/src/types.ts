@@ -34,3 +34,13 @@ export interface NodeStatus {
   running: boolean;
   listen_addrs: string[];
 }
+
+export interface MessageDisplay {
+  id: string;
+  author_cid_short: string;
+  author_name: string;
+  body: string;
+  sent_at: number;
+  is_direct: boolean;
+  to_cid_short: string | null;
+}

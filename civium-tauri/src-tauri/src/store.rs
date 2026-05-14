@@ -134,6 +134,17 @@ pub fn load_messages(conn: &Connection, network_cid_short: &str) -> Result<Vec<M
     Ok(messages)
 }
 
+/// Persist a single message (thread or direct) into the messages table.
+pub fn save_message(conn: &Connection, network_cid_short: &str, msg: &Message) -> Result<()> {
+    let json = serde_json::to_string(msg)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO messages (network_cid, message_id, message_json, in_outbox)
+         VALUES (?1, ?2, ?3, 0)",
+        params![network_cid_short, &msg.id, json],
+    )?;
+    Ok(())
+}
+
 /// Merge members and messages received via P2P sync.
 /// Members already present (by cid_full) are skipped.
 /// Messages use INSERT OR IGNORE to avoid duplicates.

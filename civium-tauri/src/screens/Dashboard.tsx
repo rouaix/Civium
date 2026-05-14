@@ -1,22 +1,49 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { tauriInvoke } from "../tauri";
-import type { NetworkInfo, MemberInfo, PendingMemberInfo, NodeStatus } from "../types";
+import type {
+  NetworkInfo,
+  MemberInfo,
+  PendingMemberInfo,
+  NodeStatus,
+  MessageDisplay,
+} from "../types";
+
+function formatTime(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function Dashboard() {
   const [networks, setNetworks] = useState<NetworkInfo[]>([]);
   const [selected, setSelected] = useState<NetworkInfo | null>(null);
   const [members, setMembers] = useState<MemberInfo[]>([]);
   const [pending, setPending] = useState<PendingMemberInfo[]>([]);
+  const [messages, setMessages] = useState<MessageDisplay[]>([]);
+  const [msgBody, setMsgBody] = useState("");
+  const [sending, setSending] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [loadingInvite, setLoadingInvite] = useState(false);
   const [admitting, setAdmitting] = useState<string | null>(null);
-  const [nodeStatus, setNodeStatus] = useState<NodeStatus>({ running: false, listen_addrs: [] });
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus>({
+    running: false,
+    listen_addrs: [],
+  });
   const [syncing, setSyncing] = useState(false);
 
-  // Keep a ref to selected so the event listener always has the latest value.
+  // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
-  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change.
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
@@ -32,10 +59,16 @@ export default function Dashboard() {
     });
   }, []);
 
+  const refreshMessages = useCallback((cid: string) => {
+    tauriInvoke<MessageDisplay[]>("message_list", { networkCid: cid }).then(setMessages);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
+    refreshMessages(selected.cid_short);
     setInviteLink(null);
+    setMessages([]);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -44,7 +77,9 @@ export default function Dashboard() {
 
     const pollStatus = () => {
       tauriInvoke<NodeStatus>("node_status")
-        .then((s) => { if (mounted) setNodeStatus(s); })
+        .then((s) => {
+          if (mounted) setNodeStatus(s);
+        })
         .catch(() => {});
     };
     pollStatus();
@@ -53,22 +88,23 @@ export default function Dashboard() {
     let unlisten: UnlistenFn | null = null;
     listen<string>("civium://sync-completed", (event) => {
       const cid = event.payload;
-      // Refresh the network list so member counts stay current.
       tauriInvoke<NetworkInfo[]>("network_list").then((nets) => {
         if (mounted) setNetworks(nets);
       });
-      // If this network is currently selected, refresh its members too.
       if (selectedRef.current?.cid_short === cid) {
         refreshNetwork(cid);
+        refreshMessages(cid);
       }
-    }).then((fn) => { unlisten = fn; });
+    }).then((fn) => {
+      unlisten = fn;
+    });
 
     return () => {
       mounted = false;
       clearInterval(interval);
       unlisten?.();
     };
-  }, [refreshNetwork]);
+  }, [refreshNetwork, refreshMessages]);
 
   async function generateInvite() {
     if (!selected) return;
@@ -123,6 +159,30 @@ export default function Dashboard() {
       console.error("Sync error:", e);
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleSendMessage() {
+    if (!selected || !msgBody.trim()) return;
+    setSending(true);
+    try {
+      const msg = await tauriInvoke<MessageDisplay>("message_send", {
+        networkCid: selected.cid_short,
+        body: msgBody.trim(),
+      });
+      setMessages((prev) => [...prev, msg]);
+      setMsgBody("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function handleMsgKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
     }
   }
 
@@ -211,7 +271,7 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Pending members (admin view) */}
+            {/* Pending members */}
             {pending.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
@@ -313,6 +373,74 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-400 mt-1">Cliquer pour copier</p>
               </section>
             )}
+
+            {/* Thread messages */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                Fil de discussion
+                {messages.length > 0 && (
+                  <span className="ml-1 font-normal text-gray-400 normal-case">
+                    ({messages.filter((m) => !m.is_direct).length})
+                  </span>
+                )}
+              </h3>
+
+              {/* Message list */}
+              <div className="bg-white rounded-t-xl border border-b-0 border-gray-200
+                              max-h-72 overflow-y-auto p-4 space-y-4">
+                {messages.filter((m) => !m.is_direct).length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-4">
+                    Aucun message. Soyez le premier à écrire !
+                  </p>
+                ) : (
+                  messages
+                    .filter((m) => !m.is_direct)
+                    .map((msg) => (
+                      <div key={msg.id} className="flex gap-3">
+                        <div className="w-7 h-7 rounded-full bg-civium-100 flex-shrink-0 flex
+                                        items-center justify-center text-civium-700 text-xs font-semibold">
+                          {msg.author_name[0]?.toUpperCase()}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-sm font-medium text-gray-900">
+                              {msg.author_name}
+                            </span>
+                            <span className="text-xs text-gray-400">{formatTime(msg.sent_at)}</span>
+                          </div>
+                          <p className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap break-words">
+                            {msg.body}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {/* Send form */}
+              <div className="flex gap-2 bg-white border border-gray-200 rounded-b-xl p-3">
+                <textarea
+                  value={msgBody}
+                  onChange={(e) => setMsgBody(e.target.value)}
+                  onKeyDown={handleMsgKeyDown}
+                  placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour sauter une ligne)"
+                  rows={2}
+                  disabled={sending}
+                  className="flex-1 text-sm resize-none border border-gray-200 rounded-lg px-3 py-2
+                             focus:outline-none focus:ring-2 focus:ring-civium-400 disabled:opacity-50
+                             placeholder:text-gray-400"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  disabled={sending || !msgBody.trim()}
+                  className="self-end text-xs px-4 py-2 bg-civium-600 text-white rounded-lg
+                             hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
+                >
+                  {sending ? "…" : "Envoyer"}
+                </button>
+              </div>
+            </section>
           </div>
         )}
       </main>
