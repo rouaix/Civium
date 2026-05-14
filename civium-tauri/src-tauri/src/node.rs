@@ -11,7 +11,7 @@ use civium_core::{
     node::{CiviumNode, NodeCommand, NodeConfig, NodeEvent, NodeHandle},
     CiviumKeypair, CiviumRequest, CiviumResponse,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::time::{interval, Duration};
 
 use crate::store;
@@ -154,6 +154,7 @@ async fn run_event_loop(
                                     eprintln!("[civium] Sync merge error: {e}");
                                 } else {
                                     eprintln!("[civium] Synced network {cid_short}");
+                                    let _ = app_handle.emit("civium://sync-completed", &cid_short);
                                 }
                             }
                             pending_sync.retain(|(s, _)| s != &cid_short);

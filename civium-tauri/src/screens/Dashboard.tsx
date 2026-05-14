@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { tauriInvoke } from "../tauri";
-import type { NetworkInfo, MemberInfo, PendingMemberInfo } from "../types";
+import type { NetworkInfo, MemberInfo, PendingMemberInfo, NodeStatus } from "../types";
 
 export default function Dashboard() {
   const [networks, setNetworks] = useState<NetworkInfo[]>([]);
@@ -10,6 +11,12 @@ export default function Dashboard() {
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [loadingInvite, setLoadingInvite] = useState(false);
   const [admitting, setAdmitting] = useState<string | null>(null);
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus>({ running: false, listen_addrs: [] });
+  const [syncing, setSyncing] = useState(false);
+
+  // Keep a ref to selected so the event listener always has the latest value.
+  const selectedRef = useRef<NetworkInfo | null>(null);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
 
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
@@ -30,6 +37,38 @@ export default function Dashboard() {
     refreshNetwork(selected.cid_short);
     setInviteLink(null);
   }, [selected?.cid_short]);
+
+  // Poll node status + listen for sync-completed events.
+  useEffect(() => {
+    let mounted = true;
+
+    const pollStatus = () => {
+      tauriInvoke<NodeStatus>("node_status")
+        .then((s) => { if (mounted) setNodeStatus(s); })
+        .catch(() => {});
+    };
+    pollStatus();
+    const interval = setInterval(pollStatus, 5000);
+
+    let unlisten: UnlistenFn | null = null;
+    listen<string>("civium://sync-completed", (event) => {
+      const cid = event.payload;
+      // Refresh the network list so member counts stay current.
+      tauriInvoke<NetworkInfo[]>("network_list").then((nets) => {
+        if (mounted) setNetworks(nets);
+      });
+      // If this network is currently selected, refresh its members too.
+      if (selectedRef.current?.cid_short === cid) {
+        refreshNetwork(cid);
+      }
+    }).then((fn) => { unlisten = fn; });
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+      unlisten?.();
+    };
+  }, [refreshNetwork]);
 
   async function generateInvite() {
     if (!selected) return;
@@ -75,6 +114,18 @@ export default function Dashboard() {
     }
   }
 
+  async function handleSync() {
+    if (!selected) return;
+    setSyncing(true);
+    try {
+      await tauriInvoke("node_sync", { networkCid: selected.cid_short });
+    } catch (e) {
+      console.error("Sync error:", e);
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   const circleLabel = (c: number) =>
     ["Annuaire", "Connaissance", "Confiance"][c] ?? `Cercle ${c}`;
 
@@ -84,7 +135,7 @@ export default function Dashboard() {
       <aside className="w-64 bg-civium-900 text-white flex flex-col">
         <div className="px-5 py-4 border-b border-civium-700">
           <h1 className="text-lg font-bold tracking-wide">Civium</h1>
-          <p className="text-xs text-civium-100 mt-0.5">Phase 0 MVP</p>
+          <p className="text-xs text-civium-100 mt-0.5">Phase 1</p>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
           {networks.length === 0 && (
@@ -105,7 +156,27 @@ export default function Dashboard() {
             </button>
           ))}
         </nav>
-        <div className="px-3 py-3 border-t border-civium-700">
+
+        {/* P2P node status */}
+        <div className="px-4 py-3 border-t border-civium-700 space-y-0.5">
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                nodeStatus.running ? "bg-green-400" : "bg-gray-500"
+              }`}
+            />
+            <span className="text-xs text-civium-100">
+              {nodeStatus.running ? "En ligne" : "Hors ligne"}
+            </span>
+          </div>
+          {nodeStatus.running && nodeStatus.listen_addrs.length > 0 && (
+            <p className="text-xs text-civium-300 font-mono truncate pl-4">
+              {nodeStatus.listen_addrs[0]}
+            </p>
+          )}
+        </div>
+
+        <div className="px-4 py-3 border-t border-civium-700">
           <p className="text-xs text-civium-100">
             CLI : <code className="font-mono">civium --help</code>
           </p>
@@ -121,9 +192,23 @@ export default function Dashboard() {
         ) : (
           <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
             {/* Header */}
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">{selected.name}</h2>
-              <p className="text-xs text-gray-400 font-mono mt-0.5">{selected.cid_short}</p>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">{selected.name}</h2>
+                <p className="text-xs text-gray-400 font-mono mt-0.5">{selected.cid_short}</p>
+              </div>
+              {nodeStatus.running && (
+                <button
+                  onClick={handleSync}
+                  disabled={syncing}
+                  className="flex-shrink-0 text-xs px-3 py-1.5 bg-white border border-gray-200
+                             text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50
+                             transition-colors flex items-center gap-1.5"
+                >
+                  <span className={syncing ? "animate-spin inline-block" : ""}>↻</span>
+                  {syncing ? "Synchronisation…" : "Synchroniser"}
+                </button>
+              )}
             </div>
 
             {/* Pending members (admin view) */}
