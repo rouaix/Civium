@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS vote_delegations (
     proposal_id         TEXT,
     delegation_json     TEXT NOT NULL,
     PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+);
+CREATE TABLE IF NOT EXISTS directory_entries (
+    directory_cid   TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (directory_cid, entry_id)
 );
 ";
 
@@ -366,6 +372,48 @@ pub fn list_admin_actions(data_dir: &Path, network_cid_short: &str) -> Result<Ve
         actions.push(a);
     }
     Ok(actions)
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+pub fn save_directory_entry(data_dir: &Path, entry: &DirectoryEntry) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_entries (directory_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.directory_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_directory_entries(data_dir: &Path, directory_cid_short: &str) -> Result<Vec<DirectoryEntry>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM directory_entries WHERE directory_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![directory_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: DirectoryEntry = serde_json::from_str(&json).context("invalid directory entry in database")?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_directory_entries(data_dir: &Path, directory_cid_short: &str, query: &str) -> Result<Vec<DirectoryEntry>> {
+    let entries = list_directory_entries(data_dir, directory_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_directory_entry(data_dir: &Path, directory_cid_short: &str, entry_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM directory_entries WHERE directory_cid = ?1 AND entry_id = ?2",
+        params![directory_cid_short, entry_id],
+    )?;
+    Ok(())
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

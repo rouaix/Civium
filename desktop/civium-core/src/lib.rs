@@ -1,5 +1,6 @@
 pub mod connection;
 pub mod crypto;
+pub mod directory;
 pub mod error;
 pub mod governance;
 pub mod identity;
@@ -15,7 +16,8 @@ pub use crypto::GroupKey;
 pub use error::CiviumError;
 pub use identity::{Cid, CiviumKeypair};
 pub use messaging::{Mailbox, Message, MessageKind};
-pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, PendingRecord, TrustCircle};
+pub use directory::{DirectoryEntry, EntryKind};
+pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};
 pub use governance::{
     add_contest, compute_result, compute_result_with_delegations,

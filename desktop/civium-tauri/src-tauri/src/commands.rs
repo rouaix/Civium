@@ -9,7 +9,7 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    GroupKey, MemberRole, Message, MessageKind, Multiaddr,
+    DirectoryEntry, EntryKind, GroupKey, MemberRole, Message, MessageKind, Multiaddr, NetworkKind,
     NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote, VoteDelegation,
     peer_id_from_multiaddr,
 };
@@ -31,6 +31,7 @@ pub struct NetworkInfo {
     pub cid_full: String,
     pub name: String,
     pub member_count: usize,
+    pub is_directory: bool,
 }
 
 #[derive(Serialize)]
@@ -101,6 +102,7 @@ pub fn network_create(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: false,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -118,6 +120,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             cid_full: n.cid_full().to_string(),
             name: n.name().to_string(),
             member_count: n.data.members.len(),
+            is_directory: n.data.kind == NetworkKind::Directory,
         })
         .collect())
 }
@@ -193,6 +196,7 @@ pub fn network_join(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: network.data.kind == NetworkKind::Directory,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -393,6 +397,7 @@ pub async fn network_join_p2p(
         cid_full: network.cid_full().to_string(),
         name: network.name().to_string(),
         member_count: network.data.members.len(),
+        is_directory: network.data.kind == NetworkKind::Directory,
     })
 }
 
@@ -877,4 +882,148 @@ pub fn admin_action_contest(
         status: action.status.to_string(),
         suspended_proposal_id,
     })
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DirectoryEntryInfo {
+    pub id: String,
+    pub directory_cid_short: String,
+    pub kind: String,
+    pub subject_cid_short: String,
+    pub subject_name: String,
+    pub description: String,
+    pub contact_addr: Option<String>,
+    pub published_by: String,
+    pub published_at: u64,
+    pub tags: Vec<String>,
+}
+
+impl From<DirectoryEntry> for DirectoryEntryInfo {
+    fn from(e: DirectoryEntry) -> Self {
+        Self {
+            id: e.id,
+            directory_cid_short: e.directory_cid_short,
+            kind: e.kind.to_string(),
+            subject_cid_short: e.subject_cid_short,
+            subject_name: e.subject_name,
+            description: e.description,
+            contact_addr: e.contact_addr,
+            published_by: e.published_by,
+            published_at: e.published_at,
+            tags: e.tags,
+        }
+    }
+}
+
+/// Create a directory network (kind = Directory).
+#[tauri::command]
+pub fn directory_create(
+    app: AppHandle,
+    name: String,
+    display_name: String,
+) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
+    let mut network = Network::create(name, &admin_cid, display_name)
+        .map_err(|e| e.to_string())?;
+    network.data.kind = NetworkKind::Directory;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+        is_directory: true,
+    })
+}
+
+/// List all local directory networks.
+#[tauri::command]
+pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
+    let conn = open(&app)?;
+    let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
+    Ok(networks
+        .into_iter()
+        .filter(|n| n.data.kind == NetworkKind::Directory)
+        .map(|n| NetworkInfo {
+            cid_short: n.cid_short().to_string(),
+            cid_full: n.cid_full().to_string(),
+            name: n.name().to_string(),
+            member_count: n.data.members.len(),
+            is_directory: n.data.kind == NetworkKind::Directory,
+        })
+        .collect())
+}
+
+/// Publish a network or member to a directory.
+#[tauri::command]
+pub fn directory_publish(
+    app: AppHandle,
+    directory_cid: String,
+    kind: String,
+    subject_cid_short: String,
+    subject_name: String,
+    description: String,
+    contact_addr: Option<String>,
+    tags: Vec<String>,
+) -> Result<DirectoryEntryInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let publisher = keypair.cid().short().to_string();
+
+    let dir_net = store::load_network(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    if dir_net.data.kind != NetworkKind::Directory {
+        return Err(format!("network '{}' is not a directory", directory_cid));
+    }
+
+    let entry_kind: EntryKind = kind.parse().map_err(|e: String| e)?;
+    let entry = DirectoryEntry::new(
+        directory_cid,
+        entry_kind,
+        subject_cid_short,
+        subject_name,
+        description,
+        contact_addr,
+        publisher,
+        tags,
+    );
+    store::save_directory_entry(&conn, &entry).map_err(|e| e.to_string())?;
+    Ok(DirectoryEntryInfo::from(entry))
+}
+
+/// List all entries in a directory.
+#[tauri::command]
+pub fn directory_list(
+    app: AppHandle,
+    directory_cid: String,
+) -> Result<Vec<DirectoryEntryInfo>, String> {
+    let conn = open(&app)?;
+    let entries = store::list_directory_entries(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(DirectoryEntryInfo::from).collect())
+}
+
+/// Search entries in a directory by free-text query.
+#[tauri::command]
+pub fn directory_search(
+    app: AppHandle,
+    directory_cid: String,
+    query: String,
+) -> Result<Vec<DirectoryEntryInfo>, String> {
+    let conn = open(&app)?;
+    let entries = store::search_directory_entries(&conn, &directory_cid, &query).map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(DirectoryEntryInfo::from).collect())
+}
+
+/// Remove an entry from a directory.
+#[tauri::command]
+pub fn directory_remove(
+    app: AppHandle,
+    directory_cid: String,
+    entry_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_directory_entry(&conn, &directory_cid, &entry_id).map_err(|e| e.to_string())
 }

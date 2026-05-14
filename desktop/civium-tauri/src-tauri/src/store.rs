@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS vote_delegations (
     proposal_id         TEXT,
     delegation_json     TEXT NOT NULL,
     PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+);
+CREATE TABLE IF NOT EXISTS directory_entries (
+    directory_cid   TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (directory_cid, entry_id)
 );
 ";
 
@@ -292,6 +298,45 @@ pub fn list_admin_actions(conn: &Connection, network_cid_short: &str) -> Result<
         actions.push(a);
     }
     Ok(actions)
+}
+
+// ── Directory ─────────────────────────────────────────────────────────────────
+
+pub fn save_directory_entry(conn: &Connection, entry: &DirectoryEntry) -> Result<()> {
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_entries (directory_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.directory_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_directory_entries(conn: &Connection, directory_cid_short: &str) -> Result<Vec<DirectoryEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM directory_entries WHERE directory_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![directory_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: DirectoryEntry = serde_json::from_str(&json)?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_directory_entries(conn: &Connection, directory_cid_short: &str, query: &str) -> Result<Vec<DirectoryEntry>> {
+    let entries = list_directory_entries(conn, directory_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_directory_entry(conn: &Connection, directory_cid_short: &str, entry_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM directory_entries WHERE directory_cid = ?1 AND entry_id = ?2",
+        params![directory_cid_short, entry_id],
+    )?;
+    Ok(())
 }
 
 /// Merge members and messages received via P2P sync.

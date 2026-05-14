@@ -11,6 +11,7 @@ import type {
   VoteResultInfo,
   AdminActionInfo,
   DelegationInfo,
+  DirectoryEntryInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -58,6 +59,18 @@ export default function Dashboard() {
   const [contesting, setContesting] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
+  // Directory state
+  const [dirEntries, setDirEntries] = useState<DirectoryEntryInfo[]>([]);
+  const [dirSearchQuery, setDirSearchQuery] = useState("");
+  const [dirSearchResults, setDirSearchResults] = useState<DirectoryEntryInfo[] | null>(null);
+  const [showPublishForm, setShowPublishForm] = useState(false);
+  const [pubSubjectCid, setPubSubjectCid] = useState("");
+  const [pubSubjectName, setPubSubjectName] = useState("");
+  const [pubDescription, setPubDescription] = useState("");
+  const [pubKind, setPubKind] = useState<"network" | "member">("network");
+  const [pubTags, setPubTags] = useState("");
+  const [publishing, setPublishing] = useState(false);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -100,6 +113,10 @@ export default function Dashboard() {
     tauriInvoke<DelegationInfo[]>("vote_list_delegations", { networkCid: cid }).then(setMyDelegations);
   }, []);
 
+  const refreshDirEntries = useCallback((cid: string) => {
+    tauriInvoke<DirectoryEntryInfo[]>("directory_list", { directoryCid: cid }).then(setDirEntries);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -107,6 +124,7 @@ export default function Dashboard() {
     refreshProposals(selected.cid_short);
     refreshAdminActions(selected.cid_short);
     refreshDelegations(selected.cid_short);
+    if (selected.is_directory) refreshDirEntries(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -114,6 +132,10 @@ export default function Dashboard() {
     setShowProposalForm(false);
     setAdminActions([]);
     setMyDelegations([]);
+    setDirEntries([]);
+    setDirSearchResults(null);
+    setDirSearchQuery("");
+    setShowPublishForm(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -327,6 +349,60 @@ export default function Dashboard() {
     } catch {}
   }
 
+  async function handleDirSearch() {
+    if (!selected || !dirSearchQuery.trim()) return;
+    try {
+      const results = await tauriInvoke<DirectoryEntryInfo[]>("directory_search", {
+        directoryCid: selected.cid_short,
+        query: dirSearchQuery.trim(),
+      });
+      setDirSearchResults(results);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handlePublish() {
+    if (!selected || !pubSubjectCid.trim() || !pubSubjectName.trim()) return;
+    setPublishing(true);
+    try {
+      const tags = pubTags.split(",").map((t) => t.trim()).filter(Boolean);
+      const entry = await tauriInvoke<DirectoryEntryInfo>("directory_publish", {
+        directoryCid: selected.cid_short,
+        kind: pubKind,
+        subjectCidShort: pubSubjectCid.trim(),
+        subjectName: pubSubjectName.trim(),
+        description: pubDescription.trim(),
+        contactAddr: null,
+        tags,
+      });
+      setDirEntries((prev) => [...prev, entry]);
+      setPubSubjectCid("");
+      setPubSubjectName("");
+      setPubDescription("");
+      setPubTags("");
+      setShowPublishForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function handleRemoveEntry(entryId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("directory_remove", {
+        directoryCid: selected.cid_short,
+        entryId,
+      });
+      setDirEntries((prev) => prev.filter((e) => e.id !== entryId));
+      setDirSearchResults((prev) => prev ? prev.filter((e) => e.id !== entryId) : null);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -376,8 +452,15 @@ export default function Dashboard() {
                   : "text-civium-100 hover:bg-civium-700"
               }`}
             >
-              <div className="font-medium truncate">{net.name}</div>
-              <div className="text-xs opacity-70">{net.member_count} membre(s)</div>
+              <div className="font-medium truncate flex items-center gap-1.5">
+                {net.name}
+                {net.is_directory && (
+                  <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
+                )}
+              </div>
+              <div className="text-xs opacity-70">
+                {net.is_directory ? "Annuaire" : `${net.member_count} membre(s)`}
+              </div>
             </button>
           ))}
         </nav>
@@ -912,6 +995,161 @@ export default function Dashboard() {
                 </button>
               </div>
             </section>
+
+            {/* ── Annuaire section (directory networks only) ── */}
+            {selected.is_directory && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Annuaire
+                  </h3>
+                  <button
+                    onClick={() => setShowPublishForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg
+                               hover:bg-civium-700 transition-colors"
+                  >
+                    {showPublishForm ? "Annuler" : "+ Publier"}
+                  </button>
+                </div>
+
+                {showPublishForm && (
+                  <div className="bg-white border border-gray-200 rounded-xl p-4 mb-4 space-y-3">
+                    <div className="flex gap-3">
+                      <select
+                        value={pubKind}
+                        onChange={(e) => setPubKind(e.target.value as "network" | "member")}
+                        className="text-sm border border-gray-200 rounded-lg px-2 py-1.5
+                                   focus:outline-none focus:ring-2 focus:ring-civium-400"
+                      >
+                        <option value="network">Réseau</option>
+                        <option value="member">Membre</option>
+                      </select>
+                      <input
+                        value={pubSubjectCid}
+                        onChange={(e) => setPubSubjectCid(e.target.value)}
+                        placeholder="CID court du sujet"
+                        className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                   focus:outline-none focus:ring-2 focus:ring-civium-400
+                                   font-mono placeholder:font-sans placeholder:text-gray-400"
+                      />
+                    </div>
+                    <input
+                      value={pubSubjectName}
+                      onChange={(e) => setPubSubjectName(e.target.value)}
+                      placeholder="Nom affiché"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <input
+                      value={pubDescription}
+                      onChange={(e) => setPubDescription(e.target.value)}
+                      placeholder="Description (optionnel)"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <input
+                      value={pubTags}
+                      onChange={(e) => setPubTags(e.target.value)}
+                      placeholder="Tags, séparés par des virgules (optionnel)"
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-civium-400
+                                 placeholder:text-gray-400"
+                    />
+                    <button
+                      onClick={handlePublish}
+                      disabled={publishing || !pubSubjectCid.trim() || !pubSubjectName.trim()}
+                      className="text-xs px-4 py-2 bg-civium-600 text-white rounded-lg
+                                 hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
+                    >
+                      {publishing ? "Publication…" : "Publier"}
+                    </button>
+                  </div>
+                )}
+
+                {/* Search */}
+                <div className="flex gap-2 mb-4">
+                  <input
+                    value={dirSearchQuery}
+                    onChange={(e) => setDirSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleDirSearch()}
+                    placeholder="Rechercher dans l'annuaire…"
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5
+                               focus:outline-none focus:ring-2 focus:ring-civium-400
+                               placeholder:text-gray-400"
+                  />
+                  <button
+                    onClick={handleDirSearch}
+                    disabled={!dirSearchQuery.trim()}
+                    className="text-xs px-3 py-1.5 bg-white border border-gray-200 text-gray-600
+                               rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    Rechercher
+                  </button>
+                  {dirSearchResults !== null && (
+                    <button
+                      onClick={() => { setDirSearchResults(null); setDirSearchQuery(""); }}
+                      className="text-xs px-2 py-1.5 text-gray-400 hover:text-gray-600"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                {/* Entries list */}
+                {(() => {
+                  const items = dirSearchResults ?? dirEntries;
+                  if (items.length === 0) {
+                    return (
+                      <p className="text-sm text-gray-400 text-center py-6">
+                        {dirSearchResults !== null
+                          ? `Aucun résultat pour « ${dirSearchQuery} ».`
+                          : "Aucune entrée. Publiez la première avec le bouton ci-dessus."}
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
+                      {items.map((entry) => (
+                        <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+                          <span className={`mt-0.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
+                            entry.kind === "network"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-purple-100 text-purple-700"
+                          }`}>
+                            {entry.kind === "network" ? "Réseau" : "Membre"}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium">{entry.subject_name}</div>
+                            <div className="text-xs text-gray-400 font-mono">{entry.subject_cid_short}</div>
+                            {entry.description && (
+                              <p className="text-xs text-gray-500 mt-0.5">{entry.description}</p>
+                            )}
+                            {entry.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {entry.tags.map((tag) => (
+                                  <span key={tag} className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => handleRemoveEntry(entry.id)}
+                            className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                            title="Supprimer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </section>
+            )}
           </div>
         )}
       </main>

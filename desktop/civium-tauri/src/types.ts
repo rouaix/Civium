@@ -9,6 +9,7 @@ export interface NetworkInfo {
   cid_full: string;
   name: string;
   member_count: number;
+  is_directory: boolean;
 }
 
 export interface MemberInfo {
@@ -78,6 +79,19 @@ export interface DelegationInfo {
   delegate_cid_short: string;
   proposal_id: string | null;
   created_at: number;
+}
+
+export interface DirectoryEntryInfo {
+  id: string;
+  directory_cid_short: string;
+  kind: "network" | "member";
+  subject_cid_short: string;
+  subject_name: string;
+  description: string;
+  contact_addr: string | null;
+  published_by: string;
+  published_at: number;
+  tags: string[];
 }
 
 export interface AdminActionInfo {

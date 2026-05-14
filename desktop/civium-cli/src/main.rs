@@ -7,7 +7,7 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    ConnectionRecord, ConnectionState, GroupKey, MemberRole,
+    ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, GroupKey, MemberRole, NetworkKind,
     MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
     Proposal, ShareTerms, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
@@ -65,6 +65,11 @@ enum Command {
     Governance {
         #[command(subcommand)]
         action: GovernanceCmd,
+    },
+    /// Manage Civium directory networks
+    Directory {
+        #[command(subcommand)]
+        action: DirectoryCmd,
     },
 }
 
@@ -326,6 +331,61 @@ enum GovernanceCmd {
     },
 }
 
+// ── Directory sub-commands ────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum DirectoryCmd {
+    /// Create a new directory network (a Civium network of kind=directory).
+    Create {
+        #[arg(long)]
+        name: String,
+        /// Display name for the founding admin.
+        #[arg(long, default_value = "admin")]
+        display_name: String,
+    },
+    /// List all directory networks in your data directory.
+    List,
+    /// Publish a network or member to a directory.
+    Publish {
+        /// Directory network CID short.
+        #[arg(long)]
+        directory: String,
+        /// CID short of the network or member to catalogue.
+        #[arg(long)]
+        subject: String,
+        /// Human-readable name for the subject.
+        #[arg(long)]
+        name: String,
+        /// Kind: network or member.
+        #[arg(long, default_value = "network")]
+        kind: String,
+        /// Optional description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Optional P2P multiaddr to contact the subject (e.g. /ip4/1.2.3.4/tcp/4001/p2p/…).
+        #[arg(long)]
+        addr: Option<String>,
+        /// Comma-separated tags (optional).
+        #[arg(long, default_value = "")]
+        tags: String,
+    },
+    /// Search entries in a directory.
+    Search {
+        /// Directory network CID short.
+        #[arg(long)]
+        directory: String,
+        /// Free-text query (name, description, CID, tags).
+        query: String,
+    },
+    /// Remove an entry from a directory (admin only — by entry ID prefix).
+    Remove {
+        #[arg(long)]
+        directory: String,
+        /// Entry ID short prefix.
+        entry_id: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -391,6 +451,7 @@ async fn main() -> Result<()> {
         Command::Msg { action } => run_msg(action, data),
         Command::Connect { action } => run_connect(action, data),
         Command::Governance { action } => run_governance(action, data),
+        Command::Directory { action } => run_directory(action, data),
     }
 }
 
@@ -1620,6 +1681,109 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
                 let marker = result.winner.map(|w| if w == i { " ← WINNER" } else { "" }).unwrap_or("");
                 println!("  [{}] {} — {} votes ({:.1}%){}", i, opt.label, opt.votes, opt.percent, marker);
             }
+        }
+    }
+    Ok(())
+}
+
+// ── Directory handlers ────────────────────────────────────────────────────────
+
+fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        DirectoryCmd::Create { name, display_name } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let admin_cid = keypair.cid();
+            let mut network = Network::create(name.clone(), &admin_cid, display_name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            network.data.kind = NetworkKind::Directory;
+            store::save_network(data, &network)?;
+            println!("Directory network '{}' created.", name);
+            println!("  CID (short) : {}", network.cid_short());
+            println!("  CID (full)  : {}", network.cid_full());
+        }
+
+        DirectoryCmd::List => {
+            let cids = store::list_network_cids(data);
+            let dirs: Vec<_> = cids
+                .iter()
+                .filter_map(|cid| store::load_network(data, cid).ok())
+                .filter(|n| n.data.kind == NetworkKind::Directory)
+                .collect();
+            if dirs.is_empty() {
+                println!("No directory networks. Create one with `directory create --name <name>`.");
+                return Ok(());
+            }
+            for n in &dirs {
+                let entries = store::list_directory_entries(data, n.cid_short()).unwrap_or_default();
+                println!("{} — {} ({} entries)", n.cid_short(), n.name(), entries.len());
+            }
+        }
+
+        DirectoryCmd::Publish { directory, subject, name, kind, description, addr, tags } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let publisher_cid = keypair.cid().short().to_string();
+
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            if dir_net.data.kind != NetworkKind::Directory {
+                bail!("Network '{}' is not a directory — create one with `directory create`.", directory);
+            }
+
+            let entry_kind: EntryKind = kind.parse().map_err(|e: String| anyhow::anyhow!("{e}"))?;
+            let tag_list: Vec<String> = tags
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            let entry = DirectoryEntry::new(
+                dir_net.cid_short().to_string(),
+                entry_kind,
+                subject.clone(),
+                name.clone(),
+                description,
+                addr,
+                publisher_cid,
+                tag_list,
+            );
+            store::save_directory_entry(data, &entry)?;
+            println!("Published '{}' ({}) to directory '{}'.", name, subject, dir_net.name());
+            println!("  Entry ID : {}", entry.id);
+        }
+
+        DirectoryCmd::Search { directory, query } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let results = store::search_directory_entries(data, dir_net.cid_short(), &query)?;
+            if results.is_empty() {
+                println!("No entries matching '{query}'.");
+                return Ok(());
+            }
+            println!("Results in '{}' for '{query}':", dir_net.name());
+            for e in &results {
+                println!("  [{}] {} — {} ({})", e.kind, e.subject_name, e.subject_cid_short, e.id);
+                if !e.description.is_empty() {
+                    println!("      {}", e.description);
+                }
+                if let Some(addr) = &e.contact_addr {
+                    println!("      addr: {addr}");
+                }
+                if !e.tags.is_empty() {
+                    println!("      tags: {}", e.tags.join(", "));
+                }
+            }
+        }
+
+        DirectoryCmd::Remove { directory, entry_id } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let entries = store::list_directory_entries(data, dir_net.cid_short())?;
+            let entry = entries
+                .iter()
+                .find(|e| e.id.starts_with(&entry_id))
+                .ok_or_else(|| anyhow::anyhow!("no entry with ID starting with '{entry_id}'"))?;
+            let full_id = entry.id.clone();
+            store::delete_directory_entry(data, dir_net.cid_short(), &full_id)?;
+            println!("Entry '{full_id}' removed from directory '{}'.", dir_net.name());
         }
     }
     Ok(())
