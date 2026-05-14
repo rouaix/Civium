@@ -9,9 +9,9 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    DirectoryEntry, EntryKind, GroupKey, MemberRole, Message, MessageKind, Multiaddr, NetworkKind,
-    NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus, TrustCircle, Vote, VoteDelegation,
-    peer_id_from_multiaddr,
+    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, MemberRole, Message, MessageKind,
+    Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
+    TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -898,6 +898,8 @@ pub struct DirectoryEntryInfo {
     pub published_by: String,
     pub published_at: u64,
     pub tags: Vec<String>,
+    /// Set for results that come from a federated peer directory.
+    pub source_dir_name: Option<String>,
 }
 
 impl From<DirectoryEntry> for DirectoryEntryInfo {
@@ -913,8 +915,20 @@ impl From<DirectoryEntry> for DirectoryEntryInfo {
             published_by: e.published_by,
             published_at: e.published_at,
             tags: e.tags,
+            source_dir_name: None,
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct FederationInfo {
+    pub id: String,
+    pub host_cid_short: String,
+    pub peer_cid_short: String,
+    pub peer_name: String,
+    pub peer_addr: Option<String>,
+    pub added_by: String,
+    pub added_at: u64,
 }
 
 /// Create a directory network (kind = Directory).
@@ -1006,15 +1020,35 @@ pub fn directory_list(
 }
 
 /// Search entries in a directory by free-text query.
+/// When include_federated is true, also searches entries from all federated peer directories.
 #[tauri::command]
 pub fn directory_search(
     app: AppHandle,
     directory_cid: String,
     query: String,
+    include_federated: bool,
 ) -> Result<Vec<DirectoryEntryInfo>, String> {
     let conn = open(&app)?;
-    let entries = store::search_directory_entries(&conn, &directory_cid, &query).map_err(|e| e.to_string())?;
-    Ok(entries.into_iter().map(DirectoryEntryInfo::from).collect())
+    let mut results: Vec<DirectoryEntryInfo> = store::search_directory_entries(&conn, &directory_cid, &query)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(DirectoryEntryInfo::from)
+        .collect();
+
+    if include_federated {
+        let feds = store::list_federations(&conn, &directory_cid).map_err(|e| e.to_string())?;
+        for fed in feds {
+            let peer_entries = store::search_directory_entries(&conn, &fed.peer_cid_short, &query)
+                .unwrap_or_default();
+            for entry in peer_entries {
+                let mut info = DirectoryEntryInfo::from(entry);
+                info.source_dir_name = Some(fed.peer_name.clone());
+                results.push(info);
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 /// Remove an entry from a directory.
@@ -1026,4 +1060,73 @@ pub fn directory_remove(
 ) -> Result<(), String> {
     let conn = open(&app)?;
     store::delete_directory_entry(&conn, &directory_cid, &entry_id).map_err(|e| e.to_string())
+}
+
+// ── Directory federations ─────────────────────────────────────────────────────
+
+/// Add a federation link from this directory to a peer directory.
+#[tauri::command]
+pub fn directory_federate(
+    app: AppHandle,
+    directory_cid: String,
+    peer_cid: String,
+    peer_name: String,
+    peer_addr: Option<String>,
+) -> Result<FederationInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let dir_net = store::load_network(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    if dir_net.data.kind != NetworkKind::Directory {
+        return Err(format!("network '{}' is not a directory", directory_cid));
+    }
+    let fed = FederatedDirectory::new(
+        directory_cid,
+        peer_cid,
+        peer_name,
+        peer_addr,
+        keypair.cid().short().to_string(),
+    );
+    store::save_federation(&conn, &fed).map_err(|e| e.to_string())?;
+    Ok(FederationInfo {
+        id: fed.id,
+        host_cid_short: fed.host_cid_short,
+        peer_cid_short: fed.peer_cid_short,
+        peer_name: fed.peer_name,
+        peer_addr: fed.peer_addr,
+        added_by: fed.added_by,
+        added_at: fed.added_at,
+    })
+}
+
+/// Remove a federation link.
+#[tauri::command]
+pub fn directory_unfederate(
+    app: AppHandle,
+    directory_cid: String,
+    peer_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_federation(&conn, &directory_cid, &peer_cid).map_err(|e| e.to_string())
+}
+
+/// List all federation links for a directory.
+#[tauri::command]
+pub fn directory_federations(
+    app: AppHandle,
+    directory_cid: String,
+) -> Result<Vec<FederationInfo>, String> {
+    let conn = open(&app)?;
+    let feds = store::list_federations(&conn, &directory_cid).map_err(|e| e.to_string())?;
+    Ok(feds
+        .into_iter()
+        .map(|f| FederationInfo {
+            id: f.id,
+            host_cid_short: f.host_cid_short,
+            peer_cid_short: f.peer_cid_short,
+            peer_name: f.peer_name,
+            peer_addr: f.peer_addr,
+            added_by: f.added_by,
+            added_at: f.added_at,
+        })
+        .collect())
 }

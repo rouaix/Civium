@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS directory_entries (
     entry_id        TEXT NOT NULL,
     entry_json      TEXT NOT NULL,
     PRIMARY KEY (directory_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS directory_federations (
+    host_cid        TEXT NOT NULL,
+    peer_cid        TEXT NOT NULL,
+    federation_json TEXT NOT NULL,
+    PRIMARY KEY (host_cid, peer_cid)
 );
 ";
 
@@ -412,6 +418,43 @@ pub fn delete_directory_entry(data_dir: &Path, directory_cid_short: &str, entry_
     conn.execute(
         "DELETE FROM directory_entries WHERE directory_cid = ?1 AND entry_id = ?2",
         params![directory_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Directory federations ─────────────────────────────────────────────────────
+
+pub fn save_federation(data_dir: &Path, fed: &FederatedDirectory) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(fed)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO directory_federations (host_cid, peer_cid, federation_json)
+         VALUES (?1, ?2, ?3)",
+        params![&fed.host_cid_short, &fed.peer_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_federations(data_dir: &Path, host_cid_short: &str) -> Result<Vec<FederatedDirectory>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT federation_json FROM directory_federations WHERE host_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![host_cid_short])?;
+    let mut feds = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let f: FederatedDirectory = serde_json::from_str(&json).context("invalid federation in database")?;
+        feds.push(f);
+    }
+    Ok(feds)
+}
+
+pub fn delete_federation(data_dir: &Path, host_cid_short: &str, peer_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM directory_federations WHERE host_cid = ?1 AND peer_cid = ?2",
+        params![host_cid_short, peer_cid_short],
     )?;
     Ok(())
 }

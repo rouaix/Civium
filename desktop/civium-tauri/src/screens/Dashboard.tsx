@@ -12,6 +12,7 @@ import type {
   AdminActionInfo,
   DelegationInfo,
   DirectoryEntryInfo,
+  FederationInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -71,6 +72,15 @@ export default function Dashboard() {
   const [pubTags, setPubTags] = useState("");
   const [publishing, setPublishing] = useState(false);
 
+  // Federation state
+  const [federations, setFederations] = useState<FederationInfo[]>([]);
+  const [showFedForm, setShowFedForm] = useState(false);
+  const [fedPeerCid, setFedPeerCid] = useState("");
+  const [fedPeerName, setFedPeerName] = useState("");
+  const [fedPeerAddr, setFedPeerAddr] = useState("");
+  const [savingFed, setSavingFed] = useState(false);
+  const [includeFederated, setIncludeFederated] = useState(false);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -117,6 +127,10 @@ export default function Dashboard() {
     tauriInvoke<DirectoryEntryInfo[]>("directory_list", { directoryCid: cid }).then(setDirEntries);
   }, []);
 
+  const refreshFederations = useCallback((cid: string) => {
+    tauriInvoke<FederationInfo[]>("directory_federations", { directoryCid: cid }).then(setFederations);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -124,7 +138,10 @@ export default function Dashboard() {
     refreshProposals(selected.cid_short);
     refreshAdminActions(selected.cid_short);
     refreshDelegations(selected.cid_short);
-    if (selected.is_directory) refreshDirEntries(selected.cid_short);
+    if (selected.is_directory) {
+      refreshDirEntries(selected.cid_short);
+      refreshFederations(selected.cid_short);
+    }
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -136,6 +153,9 @@ export default function Dashboard() {
     setDirSearchResults(null);
     setDirSearchQuery("");
     setShowPublishForm(false);
+    setFederations([]);
+    setShowFedForm(false);
+    setIncludeFederated(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -349,12 +369,48 @@ export default function Dashboard() {
     } catch {}
   }
 
+  async function handleFederate() {
+    if (!selected || !fedPeerCid.trim() || !fedPeerName.trim()) return;
+    setSavingFed(true);
+    try {
+      const fed = await tauriInvoke<FederationInfo>("directory_federate", {
+        directoryCid: selected.cid_short,
+        peerCid: fedPeerCid.trim(),
+        peerName: fedPeerName.trim(),
+        peerAddr: fedPeerAddr.trim() || null,
+      });
+      setFederations((prev) => [...prev, fed]);
+      setFedPeerCid("");
+      setFedPeerName("");
+      setFedPeerAddr("");
+      setShowFedForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingFed(false);
+    }
+  }
+
+  async function handleUnfederate(peerCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("directory_unfederate", {
+        directoryCid: selected.cid_short,
+        peerCid,
+      });
+      setFederations((prev) => prev.filter((f) => f.peer_cid_short !== peerCid));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleDirSearch() {
     if (!selected || !dirSearchQuery.trim()) return;
     try {
       const results = await tauriInvoke<DirectoryEntryInfo[]>("directory_search", {
         directoryCid: selected.cid_short,
         query: dirSearchQuery.trim(),
+        includeFederated,
       });
       setDirSearchResults(results);
     } catch (e) {
@@ -1068,8 +1124,84 @@ export default function Dashboard() {
                   </div>
                 )}
 
+                {/* Federations */}
+                {(federations.length > 0 || showFedForm) && (
+                  <div className="mb-4 bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+                        Fédérations ({federations.length})
+                      </span>
+                      <button
+                        onClick={() => setShowFedForm((v) => !v)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        {showFedForm ? "Annuler" : "+ Ajouter"}
+                      </button>
+                    </div>
+                    {showFedForm && (
+                      <div className="space-y-2 pt-1">
+                        <input
+                          value={fedPeerCid}
+                          onChange={(e) => setFedPeerCid(e.target.value)}
+                          placeholder="CID court de l'annuaire pair"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                        />
+                        <input
+                          value={fedPeerName}
+                          onChange={(e) => setFedPeerName(e.target.value)}
+                          placeholder="Nom de l'annuaire pair"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     placeholder:text-gray-400 bg-white"
+                        />
+                        <input
+                          value={fedPeerAddr}
+                          onChange={(e) => setFedPeerAddr(e.target.value)}
+                          placeholder="Adresse P2P (optionnel)"
+                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-blue-400
+                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                        />
+                        <button
+                          onClick={handleFederate}
+                          disabled={savingFed || !fedPeerCid.trim() || !fedPeerName.trim()}
+                          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg
+                                     hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        >
+                          {savingFed ? "…" : "Fédérer"}
+                        </button>
+                      </div>
+                    )}
+                    {federations.map((f) => (
+                      <div key={f.peer_cid_short} className="flex items-center justify-between text-xs">
+                        <span className="text-blue-800">
+                          {f.peer_name}
+                          <span className="text-blue-400 font-mono ml-1">({f.peer_cid_short})</span>
+                        </span>
+                        <button
+                          onClick={() => handleUnfederate(f.peer_cid_short)}
+                          className="text-blue-300 hover:text-red-400 transition-colors"
+                          title="Supprimer cette fédération"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {federations.length === 0 && !showFedForm && (
+                  <button
+                    onClick={() => setShowFedForm(true)}
+                    className="text-xs text-gray-400 hover:text-civium-600 mb-3 block"
+                  >
+                    + Ajouter une fédération
+                  </button>
+                )}
+
                 {/* Search */}
-                <div className="flex gap-2 mb-4">
+                <div className="flex gap-2 mb-2">
                   <input
                     value={dirSearchQuery}
                     onChange={(e) => setDirSearchQuery(e.target.value)}
@@ -1096,6 +1228,17 @@ export default function Dashboard() {
                     </button>
                   )}
                 </div>
+                {federations.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs text-gray-500 mb-4 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeFederated}
+                      onChange={(e) => setIncludeFederated(e.target.checked)}
+                      className="accent-civium-600"
+                    />
+                    Inclure les annuaires fédérés dans la recherche
+                  </label>
+                )}
 
                 {/* Entries list */}
                 {(() => {
@@ -1122,7 +1265,14 @@ export default function Dashboard() {
                           </span>
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium">{entry.subject_name}</div>
-                            <div className="text-xs text-gray-400 font-mono">{entry.subject_cid_short}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-gray-400 font-mono">{entry.subject_cid_short}</span>
+                              {entry.source_dir_name && (
+                                <span className="text-xs bg-blue-50 text-blue-500 px-1.5 py-0.5 rounded">
+                                  via {entry.source_dir_name}
+                                </span>
+                              )}
+                            </div>
                             {entry.description && (
                               <p className="text-xs text-gray-500 mt-0.5">{entry.description}</p>
                             )}

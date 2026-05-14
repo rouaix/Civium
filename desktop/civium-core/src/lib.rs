@@ -16,7 +16,7 @@ pub use crypto::GroupKey;
 pub use error::CiviumError;
 pub use identity::{Cid, CiviumKeypair};
 pub use messaging::{Mailbox, Message, MessageKind};
-pub use directory::{DirectoryEntry, EntryKind};
+pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};
 pub use governance::{

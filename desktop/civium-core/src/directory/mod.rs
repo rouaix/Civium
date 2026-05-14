@@ -79,6 +79,41 @@ impl DirectoryEntry {
     }
 }
 
+/// A federation link between two directory networks.
+/// The host directory `host_cid_short` trusts the peer directory
+/// `peer_cid_short` and will include its entries in federated searches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederatedDirectory {
+    pub id: String,
+    pub host_cid_short: String,
+    pub peer_cid_short: String,
+    pub peer_name: String,
+    /// Optional P2P multiaddr to reach the peer directory for live queries.
+    pub peer_addr: Option<String>,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+impl FederatedDirectory {
+    pub fn new(
+        host_cid_short: String,
+        peer_cid_short: String,
+        peer_name: String,
+        peer_addr: Option<String>,
+        added_by: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            host_cid_short,
+            peer_cid_short,
+            peer_name,
+            peer_addr,
+            added_by,
+            added_at: unix_now(),
+        }
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -73,6 +73,9 @@ pub fn run() {
             directory_list,
             directory_search,
             directory_remove,
+            directory_federate,
+            directory_unfederate,
+            directory_federations,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

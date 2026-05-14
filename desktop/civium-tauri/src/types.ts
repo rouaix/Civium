@@ -92,6 +92,17 @@ export interface DirectoryEntryInfo {
   published_by: string;
   published_at: number;
   tags: string[];
+  source_dir_name: string | null;
+}
+
+export interface FederationInfo {
+  id: string;
+  host_cid_short: string;
+  peer_cid_short: string;
+  peer_name: string;
+  peer_addr: string | null;
+  added_by: string;
+  added_at: number;
 }
 
 export interface AdminActionInfo {

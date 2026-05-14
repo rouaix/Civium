@@ -7,8 +7,8 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, GroupKey, MemberRole, NetworkKind,
-    MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
+    ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
+    MemberRole, NetworkKind, MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
     Proposal, ShareTerms, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
@@ -374,6 +374,9 @@ enum DirectoryCmd {
         /// Directory network CID short.
         #[arg(long)]
         directory: String,
+        /// Also search entries from all federated directories.
+        #[arg(long, default_value = "false")]
+        federated: bool,
         /// Free-text query (name, description, CID, tags).
         query: String,
     },
@@ -383,6 +386,34 @@ enum DirectoryCmd {
         directory: String,
         /// Entry ID short prefix.
         entry_id: String,
+    },
+    /// Add a federation link to another directory.
+    Federate {
+        /// Host directory CID short.
+        #[arg(long)]
+        directory: String,
+        /// CID short of the peer directory.
+        #[arg(long)]
+        peer: String,
+        /// Display name of the peer directory.
+        #[arg(long)]
+        name: String,
+        /// Optional P2P multiaddr to contact the peer directory.
+        #[arg(long)]
+        addr: Option<String>,
+    },
+    /// Remove a federation link.
+    Unfederate {
+        #[arg(long)]
+        directory: String,
+        /// CID short of the peer directory to remove.
+        #[arg(long)]
+        peer: String,
+    },
+    /// List federation links for a directory.
+    Federations {
+        #[arg(long)]
+        directory: String,
     },
 }
 
@@ -1752,16 +1783,37 @@ fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
             println!("  Entry ID : {}", entry.id);
         }
 
-        DirectoryCmd::Search { directory, query } => {
+        DirectoryCmd::Search { directory, federated, query } => {
             let dir_net = load_network_fuzzy(data, &directory)?;
-            let results = store::search_directory_entries(data, dir_net.cid_short(), &query)?;
+            let mut results = store::search_directory_entries(data, dir_net.cid_short(), &query)?;
+            let mut sources: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            for e in &results {
+                sources.entry(e.id.clone()).or_insert_with(|| dir_net.name().to_string());
+            }
+
+            if federated {
+                let feds = store::list_federations(data, dir_net.cid_short()).unwrap_or_default();
+                for fed in &feds {
+                    let peer_entries = store::search_directory_entries(data, &fed.peer_cid_short, &query)
+                        .unwrap_or_default();
+                    for e in &peer_entries {
+                        sources.entry(e.id.clone()).or_insert_with(|| fed.peer_name.clone());
+                    }
+                    results.extend(peer_entries);
+                }
+            }
+
             if results.is_empty() {
                 println!("No entries matching '{query}'.");
                 return Ok(());
             }
-            println!("Results in '{}' for '{query}':", dir_net.name());
+            println!("Results in '{}'{} for '{query}':",
+                dir_net.name(),
+                if federated { " (+ fédérés)" } else { "" });
             for e in &results {
-                println!("  [{}] {} — {} ({})", e.kind, e.subject_name, e.subject_cid_short, e.id);
+                let src = sources.get(&e.id).map(|s| s.as_str()).unwrap_or("?");
+                println!("  [{}] {} — {} ({}){}", e.kind, e.subject_name, e.subject_cid_short, e.id,
+                    if src != dir_net.name() { format!(" [via {src}]") } else { String::new() });
                 if !e.description.is_empty() {
                     println!("      {}", e.description);
                 }
@@ -1784,6 +1836,47 @@ fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
             let full_id = entry.id.clone();
             store::delete_directory_entry(data, dir_net.cid_short(), &full_id)?;
             println!("Entry '{full_id}' removed from directory '{}'.", dir_net.name());
+        }
+
+        DirectoryCmd::Federate { directory, peer, name, addr } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let publisher = keypair.cid().short().to_string();
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            if dir_net.data.kind != NetworkKind::Directory {
+                bail!("Network '{}' is not a directory.", directory);
+            }
+            let fed = FederatedDirectory::new(
+                dir_net.cid_short().to_string(),
+                peer.clone(),
+                name.clone(),
+                addr,
+                publisher,
+            );
+            store::save_federation(data, &fed)?;
+            println!("Directory '{}' now federates with '{name}' ({peer}).", dir_net.name());
+        }
+
+        DirectoryCmd::Unfederate { directory, peer } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            store::delete_federation(data, dir_net.cid_short(), &peer)?;
+            println!("Federation with '{peer}' removed from directory '{}'.", dir_net.name());
+        }
+
+        DirectoryCmd::Federations { directory } => {
+            let dir_net = load_network_fuzzy(data, &directory)?;
+            let feds = store::list_federations(data, dir_net.cid_short())?;
+            if feds.is_empty() {
+                println!("No federations for directory '{}'.", dir_net.name());
+                return Ok(());
+            }
+            println!("Federations for '{}':", dir_net.name());
+            for f in &feds {
+                println!("  {} — {}", f.peer_name, f.peer_cid_short);
+                if let Some(addr) = &f.peer_addr {
+                    println!("    addr: {addr}");
+                }
+            }
         }
     }
     Ok(())
