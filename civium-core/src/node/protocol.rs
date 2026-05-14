@@ -33,6 +33,8 @@ pub enum CiviumResponse {
     JoinRejected { reason: String },
     /// Sync data: members and messages newer than the requested timestamp.
     SyncData {
+        /// Echo of the requested network CID — lets the receiver correlate without tracking request IDs.
+        network_cid_full: String,
         members: Vec<MemberRecord>,
         messages: Vec<Message>,
     },

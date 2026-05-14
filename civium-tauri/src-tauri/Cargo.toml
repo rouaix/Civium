@@ -19,3 +19,4 @@ serde_json        = "1"
 civium-core       = { path = "../../civium-core" }
 rusqlite          = { version = "0.31", features = ["bundled"] }
 anyhow            = "1"
+tokio             = { version = "1", features = ["full"] }
