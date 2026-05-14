@@ -1,25 +1,15 @@
-// Wrapper autour de l'API Tauri injectée via withGlobalTauri.
-// Utilise window.__TAURI__.core.invoke (Tauri 2.x avec withGlobalTauri: true).
+import { invoke } from "@tauri-apps/api/core";
 
-declare global {
-  interface Window {
-    __TAURI__?: {
-      core: {
-        invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-      };
-    };
-  }
-}
-
-export function tauriInvoke<T>(
+export async function tauriInvoke<T>(
   cmd: string,
   args?: Record<string, unknown>
 ): Promise<T> {
-  const tauri = window.__TAURI__?.core;
-  if (!tauri) {
-    return Promise.reject(
-      new Error("Tauri IPC non disponible — lancez l'app via `cargo tauri dev`")
-    );
+  try {
+    return await invoke<T>(cmd, args);
+  } catch (e) {
+    if (String(e).includes("__TAURI_INTERNALS__") || String(e).includes("not a Tauri")) {
+      throw new Error("Tauri IPC non disponible — lancez l'app via `cargo tauri dev`");
+    }
+    throw e;
   }
-  return tauri.invoke<T>(cmd, args);
 }
