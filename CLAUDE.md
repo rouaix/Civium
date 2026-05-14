@@ -71,3 +71,17 @@ Individual node  →  Civium network  →  Civium directory
 | Data sync | CRDT (group-key scope) + last-write-wins (E2E scope) |
 | Federation | ActivityPub (interop with Mastodon, PeerTube, etc.) |
 | Plugin runtime | WASM sandbox |
+
+## Repository structure
+
+```
+civium/
+  desktop/          ← Rust workspace (app de bureau en cours de développement)
+    Cargo.toml      ← workspace racine
+    civium-core/    ← bibliothèque partagée (identité, P2P, gouvernance…)
+    civium-cli/     ← outil en ligne de commande
+    civium-tauri/   ← application Tauri (desktop GUI)
+  website/          ← site web (PHP F3 + Alpine.js)
+  README.md         ← spécification du protocole
+  ROADMAP.md        ← plan de développement
+```
