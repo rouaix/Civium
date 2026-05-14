@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, CiviumKeypair, MemberRecord};
+use civium_core::{network::Network, CiviumKeypair, MemberRecord, Message};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -104,4 +104,59 @@ pub fn load_network(conn: &Connection, cid_short: &str) -> Result<Network> {
 
 pub fn network_members(network: &Network) -> &[MemberRecord] {
     &network.data.members
+}
+
+// ── Sync helpers ──────────────────────────────────────────────────────────────
+
+/// Find a network by its full CID (searches all stored networks).
+pub fn find_network_by_full_cid(conn: &Connection, cid_full: &str) -> Result<Network> {
+    let networks = list_networks(conn)?;
+    networks
+        .into_iter()
+        .find(|n| n.cid_full() == cid_full)
+        .ok_or_else(|| anyhow::anyhow!("network '{}' not found", cid_full))
+}
+
+/// Load all inbox messages for a network.
+pub fn load_messages(conn: &Connection, network_cid_short: &str) -> Result<Vec<Message>> {
+    let mut stmt = conn.prepare(
+        "SELECT message_json FROM messages
+         WHERE network_cid = ?1 AND in_outbox = 0
+         ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut messages = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let msg: Message = serde_json::from_str(&json)?;
+        messages.push(msg);
+    }
+    Ok(messages)
+}
+
+/// Merge members and messages received via P2P sync.
+/// Members already present (by cid_full) are skipped.
+/// Messages use INSERT OR IGNORE to avoid duplicates.
+pub fn merge_sync_data(
+    conn: &Connection,
+    network_cid_short: &str,
+    members: Vec<MemberRecord>,
+    messages: Vec<Message>,
+) -> Result<()> {
+    let mut network = load_network(conn, network_cid_short)?;
+    for member in members {
+        if !network.data.members.iter().any(|m| m.cid_full == member.cid_full) {
+            network.data.members.push(member);
+        }
+    }
+    save_network(conn, &network)?;
+    for msg in &messages {
+        let json = serde_json::to_string(msg)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO messages (network_cid, message_id, message_json, in_outbox)
+             VALUES (?1, ?2, ?3, 0)",
+            params![network_cid_short, &msg.id, json],
+        )?;
+    }
+    Ok(())
 }

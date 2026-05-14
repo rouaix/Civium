@@ -247,6 +247,19 @@ enum NodeCmd {
         #[arg(long = "announce")]
         announce: Vec<String>,
     },
+    /// Sync state with a remote peer for a specific network (one-shot).
+    Sync {
+        /// Network CID short or prefix.
+        #[arg(long)]
+        network: String,
+        /// Multiaddr of a peer to sync with (must include /p2p/<PeerId>).
+        #[arg(long)]
+        via: String,
+        #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0")]
+        listen_tcp: String,
+        #[arg(long, default_value = "/ip4/0.0.0.0/udp/0/quic-v1")]
+        listen_quic: String,
+    },
     /// Join a network over P2P using an invitation link (no shared DB needed).
     JoinP2p {
         /// The civium-invite:… link.
@@ -913,6 +926,55 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
             node.run().await;
         }
 
+        // ── Sync ─────────────────────────────────────────────────────────────
+        NodeCmd::Sync { network, via, listen_tcp, listen_quic } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let net = load_network_fuzzy(data, &network)?;
+
+            println!("Syncing '{}' via {via}…", net.name());
+
+            let via_addr: Multiaddr = via.parse()
+                .map_err(|e| anyhow::anyhow!("invalid multiaddr: {e}"))?;
+            let peer_id = peer_id_from_multiaddr(&via_addr)
+                .ok_or_else(|| anyhow::anyhow!("--via must include /p2p/<PeerId>"))?;
+
+            let network_cid_full = net.cid_full().to_string();
+            let network_cid_short = net.cid_short().to_string();
+            let config = NodeConfig { listen_tcp, listen_quic, bootstrap_peers: vec![via.clone()] };
+
+            let (node, mut handle) = CiviumNode::new(keypair, config).await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let data2 = data.clone();
+            tokio::spawn(async move {
+                loop {
+                    match handle.events.recv().await {
+                        Some(NodeEvent::PeerConnected { peer_id: connected }) if connected == peer_id => {
+                            let _ = handle.commands.send(NodeCommand::SendRequest {
+                                peer: peer_id,
+                                request: CiviumRequest::Sync {
+                                    network_cid_full: network_cid_full.clone(),
+                                    since_ts: 0,
+                                },
+                            }).await;
+                        }
+                        Some(NodeEvent::OutboundResponse { response: CiviumResponse::SyncData { members, messages, .. }, .. }) => {
+                            match store::merge_sync_data(&data2, &network_cid_short, &members, &messages) {
+                                Ok(()) => println!("Synced: {} members, {} messages", members.len(), messages.len()),
+                                Err(e) => eprintln!("Sync error: {e}"),
+                            }
+                            std::process::exit(0);
+                        }
+                        None => break,
+                        _ => {}
+                    }
+                }
+            });
+
+            node.run().await;
+        }
+
         // ── JoinP2p ───────────────────────────────────────────────────────────
         NodeCmd::JoinP2p { invite_link, name, via, listen_tcp, listen_quic } => {
             let keypair = store::load_identity(data)
@@ -1062,7 +1124,7 @@ fn handle_inbound_request(
                     .filter(|m| m.sent_at >= *since_ts)
                     .collect();
 
-                Ok(CiviumResponse::SyncData { members, messages })
+                Ok(CiviumResponse::SyncData { network_cid_full: network_cid_full.clone(), members, messages })
             })();
 
             result.unwrap_or_else(|e| CiviumResponse::Error { message: e.to_string() })

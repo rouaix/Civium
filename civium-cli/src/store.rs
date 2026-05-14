@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, Message};
+use civium_core::{network::Network, ConnectionRecord, CiviumKeypair, Mailbox, MemberRecord, Message};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -208,4 +208,33 @@ pub fn load_mailbox(data_dir: &Path, network_cid_short: &str) -> Result<Mailbox>
         }
     }
     Ok(Mailbox { messages, outbox })
+}
+
+// ── Sync ──────────────────────────────────────────────────────────────────────
+
+/// Merge members and messages received via P2P sync into the local store.
+/// Members already present (by cid_full) are skipped. Messages use INSERT OR IGNORE.
+pub fn merge_sync_data(
+    data_dir: &Path,
+    network_cid_short: &str,
+    members: &[MemberRecord],
+    messages: &[Message],
+) -> Result<()> {
+    let mut network = load_network(data_dir, network_cid_short)?;
+    for member in members {
+        if !network.data.members.iter().any(|m| m.cid_full == member.cid_full) {
+            network.data.members.push(member.clone());
+        }
+    }
+    save_network(data_dir, &network)?;
+    let conn = open_db(data_dir)?;
+    for msg in messages {
+        let json = serde_json::to_string(msg)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO messages (network_cid, message_id, message_json, in_outbox)
+             VALUES (?1, ?2, ?3, 0)",
+            params![network_cid_short, &msg.id, json],
+        )?;
+    }
+    Ok(())
 }

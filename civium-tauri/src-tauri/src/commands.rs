@@ -1,11 +1,11 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use civium_core::{network::{Invitation, Network}, CiviumKeypair, MemberRole, TrustCircle};
+use civium_core::{network::{Invitation, Network}, CiviumKeypair, MemberRole, NodeCommand, TrustCircle};
 
-use crate::store;
+use crate::{node::AppState, store};
 
-// ── Return types (serialized to JSON for the frontend) ────────────────────────
+// ── Return types ─────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct IdentityInfo {
@@ -224,6 +224,36 @@ pub fn member_admit(
         circle: record.circle as u8,
         role: record.role.to_string(),
     })
+}
+
+// ── P2P node commands ─────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct NodeStatus {
+    pub running: bool,
+    pub listen_addrs: Vec<String>,
+}
+
+/// Return the current P2P node status (running + listen addresses).
+#[tauri::command]
+pub fn node_status(app: AppHandle) -> NodeStatus {
+    let state = app.state::<AppState>();
+    let running = state.node_tx.lock().unwrap().is_some();
+    let listen_addrs = state.listen_addrs.lock().unwrap().clone();
+    NodeStatus { running, listen_addrs }
+}
+
+/// Trigger an immediate peer-discovery + sync cycle for a network.
+/// Returns an error if the P2P node isn't running.
+#[tauri::command]
+pub async fn node_sync(app: AppHandle, network_cid: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let cmd_tx = state.node_tx.lock().unwrap().clone()
+        .ok_or_else(|| "P2P node is not running".to_string())?;
+    cmd_tx
+        .send(NodeCommand::DiscoverPeers { network_cid_short: network_cid })
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
