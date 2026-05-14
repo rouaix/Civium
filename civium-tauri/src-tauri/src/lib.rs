@@ -55,6 +55,7 @@ pub fn run() {
             member_reject,
             node_status,
             node_sync,
+            network_join_p2p,
             message_list,
             message_send,
         ])
