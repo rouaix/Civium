@@ -1,15 +1,23 @@
 use libp2p::{
     identify, kad, mdns,
+    request_response,
     swarm::NetworkBehaviour,
     PeerId, StreamProtocol,
     identity::PublicKey,
 };
+use std::time::Duration;
+
+use super::protocol::{CiviumRequest, CiviumResponse};
+
+pub type ReqResBehaviour =
+    request_response::cbor::Behaviour<CiviumRequest, CiviumResponse>;
 
 #[derive(NetworkBehaviour)]
 pub struct CiviumBehaviour {
-    pub kademlia: kad::Behaviour<kad::store::MemoryStore>,
-    pub identify: identify::Behaviour,
-    pub mdns: mdns::tokio::Behaviour,
+    pub kademlia:         kad::Behaviour<kad::store::MemoryStore>,
+    pub identify:         identify::Behaviour,
+    pub mdns:             mdns::tokio::Behaviour,
+    pub request_response: ReqResBehaviour,
 }
 
 impl CiviumBehaviour {
@@ -28,6 +36,15 @@ impl CiviumBehaviour {
 
         let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)?;
 
-        Ok(Self { kademlia, identify, mdns })
+        let request_response = request_response::cbor::Behaviour::new(
+            [(
+                StreamProtocol::new("/civium/1.0.0"),
+                request_response::ProtocolSupport::Full,
+            )],
+            request_response::Config::default()
+                .with_request_timeout(Duration::from_secs(30)),
+        );
+
+        Ok(Self { kademlia, identify, mdns, request_response })
     }
 }

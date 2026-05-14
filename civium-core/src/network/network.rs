@@ -24,7 +24,7 @@ impl std::fmt::Display for NetworkAddress {
 
 /// Serializable snapshot of a Network — persisted to JSON (Phase 0).
 /// SQLCipher replaces this in weeks 9-10.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkData {
     pub network_secret_b58: String,
     pub cid_short: String,
