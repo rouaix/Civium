@@ -18,6 +18,12 @@ export interface MemberInfo {
   role: string;
 }
 
+export interface PendingMemberInfo {
+  cid_short: string;
+  display_name: string;
+  requested_at: number;
+}
+
 export interface ConnectionInfo {
   peer_cid_short: string;
   peer_name: string;

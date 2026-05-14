@@ -13,7 +13,11 @@ pub fn run() {
             network_create,
             network_list,
             network_invite,
+            network_join,
             member_list,
+            member_pending_list,
+            member_admit,
+            member_reject,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use civium_core::{network::Network, CiviumKeypair};
+use civium_core::{network::{Invitation, Network}, CiviumKeypair, MemberRole, TrustCircle};
 
 use crate::store;
 
@@ -28,6 +28,13 @@ pub struct MemberInfo {
     pub display_name: String,
     pub circle: u8,
     pub role: String,
+}
+
+#[derive(Serialize)]
+pub struct PendingMemberInfo {
+    pub cid_short: String,
+    pub display_name: String,
+    pub requested_at: u64,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -135,4 +142,99 @@ pub fn member_list(
             role: m.role.to_string(),
         })
         .collect())
+}
+
+/// Join a network via an invitation link (Phase 0: network must already be in local DB).
+/// Auto-admits the joiner at circle Connaissance — no P2P needed in Phase 0.
+#[tauri::command]
+pub fn network_join(
+    app: AppHandle,
+    invite_link: String,
+    display_name: String,
+) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let member_cid = keypair.cid();
+
+    let invitation = Invitation::from_link(&invite_link).map_err(|e| e.to_string())?;
+    invitation.verify().map_err(|e| e.to_string())?;
+
+    let network_cid_full = invitation.network_cid_full().to_string();
+    let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
+    let mut network = networks
+        .into_iter()
+        .find(|n| n.cid_full() == network_cid_full)
+        .ok_or_else(|| format!(
+            "Réseau '{}' introuvable localement. En Phase 0, partagez la même base de données que l'admin.",
+            invitation.network_name()
+        ))?;
+
+    network
+        .submit_join_request(&member_cid, display_name, &invitation)
+        .map_err(|e| e.to_string())?;
+
+    let record = network
+        .admit(member_cid.short(), TrustCircle::Connaissance, MemberRole::Member)
+        .map_err(|e| e.to_string())?;
+
+    let info = NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+    };
+
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    let _ = record;
+    Ok(info)
+}
+
+#[tauri::command]
+pub fn member_pending_list(
+    app: AppHandle,
+    network_cid: String,
+) -> Result<Vec<PendingMemberInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(network.data.pending.iter().map(|p| PendingMemberInfo {
+        cid_short: p.cid_short.clone(),
+        display_name: p.display_name.clone(),
+        requested_at: p.requested_at,
+    }).collect())
+}
+
+#[tauri::command]
+pub fn member_admit(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+    circle: u8,
+) -> Result<MemberInfo, String> {
+    let circle = TrustCircle::from_u8(circle)
+        .ok_or_else(|| format!("cercle invalide: {circle} — utiliser 0, 1 ou 2"))?;
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let record = network
+        .admit(&member_cid, circle, MemberRole::Member)
+        .map_err(|e| e.to_string())?;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(MemberInfo {
+        cid_short: record.cid_short,
+        display_name: record.display_name,
+        circle: record.circle as u8,
+        role: record.role.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn member_reject(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    network.reject(&member_cid).map_err(|e| e.to_string())?;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(())
 }
