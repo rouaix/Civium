@@ -1,0 +1,29 @@
+[package]
+name    = "civium-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libp2p = { version = "0.55", features = [
+    "tokio",
+    "tcp",
+    "quic",
+    "noise",
+    "yamux",
+    "kad",
+    "identify",
+    "mdns",
+    "macros",
+] }
+tokio.workspace     = true
+thiserror.workspace = true
+tracing.workspace   = true
+serde.workspace     = true
+bs58.workspace       = true
+futures.workspace    = true
+rand.workspace       = true
+serde_json.workspace = true
+blake3           = "1"
+zeroize          = { version = "1", features = ["derive"] }
+chacha20poly1305 = "0.10"

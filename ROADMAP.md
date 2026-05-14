@@ -11,7 +11,7 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 | Phase | Nom | Statut |
 |---|---|---|
 | — | Site web de présentation | 🔲 Non démarré |
-| 0 | MVP | ⏳ En attente site web |
+| 0 | MVP | 🚧 En cours |
 | 1 | Gouvernance & Annuaires | ⏳ En attente Phase 0 |
 | 2 | Services & Intégrations | ⏳ En attente Phase 1 |
 | 3 | Applications & Écosystème | ⏳ En attente Phase 2 |
@@ -43,46 +43,46 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 1–2 — Protocole de base (`civium-core`)
 
-- [ ] Génération de paires de clés Ed25519
-- [ ] Dérivation du CID depuis la clé publique
-- [ ] Création et démarrage d'un nœud local
-- [ ] Transport libp2p TCP + QUIC
-- [ ] Découverte de pairs via DHT Kademlia
-- [ ] Chiffrement des connexions via Noise Protocol
+- [x] Génération de paires de clés Ed25519
+- [x] Dérivation du CID depuis la clé publique
+- [x] Création et démarrage d'un nœud local
+- [x] Transport libp2p TCP + QUIC
+- [x] Découverte de pairs via DHT Kademlia
+- [x] Chiffrement des connexions via Noise Protocol
 
 ### Semaines 3–4 — Identité et membres
 
-- [ ] Création de compte (CID membre + clé Ed25519)
-- [ ] Format identifiant réseau (`<cid_membre_court>@<cid_réseau_court>`)
-- [ ] Nom affiché par réseau (choix libre, unique dans le réseau)
-- [ ] Invitation d'un membre (lien ou CID)
-- [ ] Validation d'admission par l'admin
-- [ ] Cercles de confiance 0, 1 et 2
+- [x] Création de compte (CID membre + clé Ed25519)
+- [x] Format identifiant réseau (`<cid_membre_court>@<cid_réseau_court>`)
+- [x] Nom affiché par réseau (choix libre, unique dans le réseau)
+- [x] Invitation d'un membre (lien ou CID)
+- [x] Validation d'admission par l'admin
+- [x] Cercles de confiance 0, 1 et 2
 
 ### Semaines 5–6 — Messagerie
 
-- [ ] Chiffrement E2E applicatif (clé de groupe — cercles 0-2)
-- [ ] Messages directs entre membres d'un même réseau
-- [ ] Fils de discussion dans le réseau
-- [ ] Synchronisation CRDT entre membres connectés
-- [ ] Queue locale + resync à la reconnexion (offline-first)
+- [x] Chiffrement E2E applicatif (clé de groupe — cercles 0-2)
+- [x] Messages directs entre membres d'un même réseau
+- [x] Fils de discussion dans le réseau
+- [x] Synchronisation CRDT entre membres connectés
+- [x] Queue locale + resync à la reconnexion (offline-first)
 
 ### Semaines 7–8 — Connexion inter-réseaux
 
-- [ ] Handshake : `CONNECT_REQUEST` / `CONNECT_RESPONSE`
-- [ ] États de connexion (Demandée → En validation → Active / Refusée / Bloquée)
-- [ ] Validation par l'admin (acceptation, refus simple, refus motivé, blocage)
-- [ ] Accord de Partage Civium (APC) signé cryptographiquement
-- [ ] Partage d'annuaire membres entre réseaux connectés
-- [ ] Révocation unilatérale d'une connexion
+- [x] Handshake : `CONNECT_REQUEST` / `CONNECT_RESPONSE`
+- [x] États de connexion (Demandée → En validation → Active / Refusée / Bloquée)
+- [x] Validation par l'admin (acceptation, refus simple, refus motivé, blocage)
+- [x] Accord de Partage Civium (APC) signé cryptographiquement
+- [x] Partage d'annuaire membres entre réseaux connectés
+- [x] Révocation unilatérale d'une connexion
 
 ### Semaines 9–10 — Interface Desktop + CLI
 
-- [ ] Application Tauri (interface React + Tailwind — base)
-- [ ] Onboarding : création de compte + réseau en < 5 min
-- [ ] CLI : commandes essentielles (`node start`, `network create/connect`, `member invite`)
+- [x] Application Tauri (interface React + Tailwind — base)
+- [x] Onboarding : création de compte + réseau en < 5 min
+- [x] CLI : commandes essentielles (`node start`, `network create/connect`, `member invite`)
 - [ ] Adressage hybride : direct (IP/URL) + P2P (CID via DHT)
-- [ ] Stockage local chiffré SQLCipher
+- [x] Stockage local SQLite (même schéma CLI + Tauri ; upgrade SQLCipher via feature flag)
 
 ### Semaines 11–12 — Stabilisation
 
@@ -158,4 +158,4 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-*Dernière mise à jour : 2026-05-12*
+*Dernière mise à jour : 2026-05-14 (semaines 9-10)*

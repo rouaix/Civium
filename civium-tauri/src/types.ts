@@ -1,0 +1,31 @@
+export interface IdentityInfo {
+  cid_short: string;
+  cid_full: string;
+  secret_b58: string;
+}
+
+export interface NetworkInfo {
+  cid_short: string;
+  cid_full: string;
+  name: string;
+  member_count: number;
+}
+
+export interface MemberInfo {
+  cid_short: string;
+  display_name: string;
+  circle: number;
+  role: string;
+}
+
+export interface PendingMemberInfo {
+  cid_short: string;
+  display_name: string;
+  requested_at: number;
+}
+
+export interface ConnectionInfo {
+  peer_cid_short: string;
+  peer_name: string;
+  state: string;
+}

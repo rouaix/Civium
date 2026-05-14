@@ -1,0 +1,20 @@
+[package]
+name    = "civium-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "civium"
+path = "src/main.rs"
+
+[dependencies]
+civium-core = { path = "../civium-core" }
+tokio.workspace     = true
+tracing.workspace   = true
+tracing-subscriber.workspace = true
+clap       = { version = "4", features = ["derive", "env"] }
+anyhow     = "1"
+serde.workspace      = true
+serde_json.workspace = true
+rusqlite = { version = "0.31", features = ["bundled"] }
