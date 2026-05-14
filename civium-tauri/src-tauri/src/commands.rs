@@ -1,7 +1,13 @@
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
-use civium_core::{network::{Invitation, Network}, CiviumKeypair, MemberRole, NodeCommand, TrustCircle};
+use civium_core::{
+    network::{Invitation, Network},
+    CiviumKeypair, GroupKey, MemberRole, Message, MessageKind, NodeCommand, TrustCircle,
+};
 
 use crate::{node::AppState, store};
 
@@ -267,4 +273,113 @@ pub fn member_reject(
     network.reject(&member_cid).map_err(|e| e.to_string())?;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Messaging commands ────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct MessageDisplay {
+    pub id: String,
+    pub author_cid_short: String,
+    pub author_name: String,
+    pub body: String,
+    pub sent_at: u64,
+    pub is_direct: bool,
+    pub to_cid_short: Option<String>,
+}
+
+/// Return decrypted thread messages for a network, ordered by sent_at.
+#[tauri::command]
+pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDisplay>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let group_key =
+        GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+    let member_names: HashMap<String, String> = network
+        .data
+        .members
+        .iter()
+        .map(|m| (m.cid_short.clone(), m.display_name.clone()))
+        .collect();
+
+    let messages = store::load_messages(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let mut result = Vec::with_capacity(messages.len());
+    for msg in messages {
+        let body = group_key
+            .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|_| "[message illisible]".into());
+
+        let author_name = member_names
+            .get(&msg.author_cid_short)
+            .cloned()
+            .unwrap_or_else(|| msg.author_cid_short.clone());
+
+        let (is_direct, to_cid_short) = match &msg.kind {
+            MessageKind::Direct { to_cid_short } => (true, Some(to_cid_short.clone())),
+            MessageKind::Thread => (false, None),
+        };
+
+        result.push(MessageDisplay {
+            id: msg.id,
+            author_cid_short: msg.author_cid_short,
+            author_name,
+            body,
+            sent_at: msg.sent_at,
+            is_direct,
+            to_cid_short,
+        });
+    }
+    Ok(result)
+}
+
+/// Encrypt and store a new thread message in the local network mailbox.
+#[tauri::command]
+pub fn message_send(
+    app: AppHandle,
+    network_cid: String,
+    body: String,
+) -> Result<MessageDisplay, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let author_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let group_key =
+        GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+    let (nonce_b58, ciphertext_b58) =
+        group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
+    let sent_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let msg = Message {
+        id: nonce_b58.clone(),
+        author_cid_short: author_cid.short().to_string(),
+        kind: MessageKind::Thread,
+        nonce_b58,
+        ciphertext_b58,
+        sent_at,
+    };
+    store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+
+    let author_name = network
+        .data
+        .members
+        .iter()
+        .find(|m| m.cid_short == author_cid.short())
+        .map(|m| m.display_name.clone())
+        .unwrap_or_else(|| author_cid.short().to_string());
+
+    Ok(MessageDisplay {
+        id: msg.id,
+        author_cid_short: msg.author_cid_short,
+        author_name,
+        body,
+        sent_at: msg.sent_at,
+        is_direct: false,
+        to_cid_short: None,
+    })
 }

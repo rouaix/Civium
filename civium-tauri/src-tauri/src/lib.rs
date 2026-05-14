@@ -55,6 +55,8 @@ pub fn run() {
             member_reject,
             node_status,
             node_sync,
+            message_list,
+            message_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
