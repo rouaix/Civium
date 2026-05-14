@@ -1,0 +1,154 @@
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import type { NetworkInfo, MemberInfo } from "../types";
+
+export default function Dashboard() {
+  const [networks, setNetworks] = useState<NetworkInfo[]>([]);
+  const [selected, setSelected] = useState<NetworkInfo | null>(null);
+  const [members, setMembers] = useState<MemberInfo[]>([]);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [loadingInvite, setLoadingInvite] = useState(false);
+
+  useEffect(() => {
+    invoke<NetworkInfo[]>("network_list").then(setNetworks);
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    invoke<MemberInfo[]>("member_list", { networkCid: selected.cid_short })
+      .then(setMembers);
+    setInviteLink(null);
+  }, [selected]);
+
+  async function generateInvite() {
+    if (!selected) return;
+    setLoadingInvite(true);
+    try {
+      const link = await invoke<string>("network_invite", {
+        networkCid: selected.cid_short,
+        expiresIn: 0,
+      });
+      setInviteLink(link);
+    } finally {
+      setLoadingInvite(false);
+    }
+  }
+
+  const circleLabel = (c: number) =>
+    ["Annuaire", "Connaissance", "Confiance"][c] ?? `Cercle ${c}`;
+
+  return (
+    <div className="flex h-screen bg-gray-50">
+      {/* Sidebar */}
+      <aside className="w-64 bg-civium-900 text-white flex flex-col">
+        <div className="px-5 py-4 border-b border-civium-700">
+          <h1 className="text-lg font-bold tracking-wide">Civium</h1>
+          <p className="text-xs text-civium-100 mt-0.5">Phase 0 MVP</p>
+        </div>
+        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+          {networks.length === 0 && (
+            <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau.</p>
+          )}
+          {networks.map((net) => (
+            <button
+              key={net.cid_short}
+              onClick={() => setSelected(net)}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                selected?.cid_short === net.cid_short
+                  ? "bg-civium-600 text-white"
+                  : "text-civium-100 hover:bg-civium-700"
+              }`}
+            >
+              <div className="font-medium truncate">{net.name}</div>
+              <div className="text-xs opacity-70">{net.member_count} membre(s)</div>
+            </button>
+          ))}
+        </nav>
+        <div className="px-3 py-3 border-t border-civium-700">
+          <p className="text-xs text-civium-100">
+            CLI : <code className="font-mono">civium --help</code>
+          </p>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 overflow-y-auto">
+        {!selected ? (
+          <div className="flex items-center justify-center h-full text-gray-400">
+            Sélectionnez un réseau
+          </div>
+        ) : (
+          <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
+            {/* Header */}
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">{selected.name}</h2>
+              <p className="text-xs text-gray-400 font-mono mt-0.5">{selected.cid_short}</p>
+            </div>
+
+            {/* Members */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                  Membres ({members.length})
+                </h3>
+                <button
+                  onClick={generateInvite}
+                  disabled={loadingInvite}
+                  className="text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg
+                             hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                >
+                  {loadingInvite ? "…" : "+ Inviter"}
+                </button>
+              </div>
+              <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+                {members.length === 0 && (
+                  <p className="px-4 py-3 text-sm text-gray-400">Aucun membre.</p>
+                )}
+                {members.map((m) => (
+                  <div key={m.cid_short} className="flex items-center px-4 py-3 gap-3">
+                    <div className="w-8 h-8 rounded-full bg-civium-100 flex items-center justify-center
+                                    text-civium-700 text-sm font-semibold">
+                      {m.display_name[0]?.toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{m.display_name}</div>
+                      <div className="text-xs text-gray-400 font-mono">{m.cid_short}</div>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
+                        {circleLabel(m.circle)}
+                      </span>
+                      {m.role === "admin" && (
+                        <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
+                          admin
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Invite link */}
+            {inviteLink && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                  Lien d'invitation
+                </h3>
+                <div
+                  className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs font-mono
+                             break-all text-gray-700 cursor-pointer hover:bg-gray-100 transition-colors"
+                  onClick={() => navigator.clipboard.writeText(inviteLink)}
+                  title="Cliquer pour copier"
+                >
+                  {inviteLink}
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Cliquer pour copier</p>
+              </section>
+            )}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

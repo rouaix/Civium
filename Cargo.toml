@@ -1,5 +1,6 @@
 [workspace]
-members = ["civium-core", "civium-cli"]
+members  = ["civium-core", "civium-cli", "civium-tauri/src-tauri"]
+exclude  = ["civium-tauri"]
 resolver = "2"
 
 [workspace.package]

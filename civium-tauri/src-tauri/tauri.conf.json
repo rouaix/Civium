@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Civium",
+  "version": "0.1.0",
+  "identifier": "com.civium.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Civium",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.ico"]
+  },
+  "plugins": {
+    "shell": {
+      "all": false,
+      "open": true
+    }
+  }
+}

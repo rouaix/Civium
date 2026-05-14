@@ -78,11 +78,11 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ### Semaines 9–10 — Interface Desktop + CLI
 
-- [ ] Application Tauri (interface React + Tailwind — base)
-- [ ] Onboarding : création de compte + réseau en < 5 min
-- [ ] CLI : commandes essentielles (`node start`, `network create/connect`, `member invite`)
+- [x] Application Tauri (interface React + Tailwind — base)
+- [x] Onboarding : création de compte + réseau en < 5 min
+- [x] CLI : commandes essentielles (`node start`, `network create/connect`, `member invite`)
 - [ ] Adressage hybride : direct (IP/URL) + P2P (CID via DHT)
-- [ ] Stockage local chiffré SQLCipher
+- [x] Stockage local SQLite (même schéma CLI + Tauri ; upgrade SQLCipher via feature flag)
 
 ### Semaines 11–12 — Stabilisation
 
@@ -158,4 +158,4 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-*Dernière mise à jour : 2026-05-14*
+*Dernière mise à jour : 2026-05-14 (semaines 9-10)*
