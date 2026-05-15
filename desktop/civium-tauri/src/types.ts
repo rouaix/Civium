@@ -207,6 +207,21 @@ export interface DocumentInfo {
   updated_at: number;
 }
 
+export interface PairingInitInfo {
+  link: string;
+  expires_at: number;
+  device_id: string;
+  device_label: string;
+}
+
+export interface PairedDeviceInfo {
+  id: string;
+  label: string;
+  paired_at: number;
+  revoked: boolean;
+  revoked_at: number | null;
+}
+
 export interface McpStatus {
   running: boolean;
   port: number | null;
