@@ -7,6 +7,8 @@ pub struct NodeConfig {
     pub listen_quic: String,
     /// Optional bootstrap peer multiaddrs to dial on startup
     pub bootstrap_peers: Vec<String>,
+    /// Port for the built-in MCP HTTP server (None = disabled)
+    pub mcp_port: Option<u16>,
 }
 
 impl Default for NodeConfig {
@@ -15,6 +17,7 @@ impl Default for NodeConfig {
             listen_tcp: "/ip4/0.0.0.0/tcp/0".into(),
             listen_quic: "/ip4/0.0.0.0/udp/0/quic-v1".into(),
             bootstrap_peers: vec![],
+            mcp_port: None,
         }
     }
 }

@@ -1,4 +1,5 @@
 mod commands;
+mod mcp;
 mod node;
 mod store;
 
@@ -15,6 +16,9 @@ pub fn run() {
         .manage(AppState {
             node_tx: Mutex::new(None),
             listen_addrs: Mutex::new(Vec::new()),
+            mcp_shutdown: Mutex::new(None),
+            mcp_token: Mutex::new(None),
+            mcp_port: Mutex::new(None),
         })
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -107,6 +111,9 @@ pub fn run() {
             document_list,
             document_update,
             document_delete,
+            mcp_start,
+            mcp_stop,
+            mcp_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
