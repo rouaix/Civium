@@ -66,6 +66,7 @@ impl Network {
         name: String,
         admin_cid: &Cid,
         admin_display_name: String,
+        admin_pub_key_b58: Option<String>,
     ) -> Result<Self, CiviumError> {
         let keypair = CiviumKeypair::generate()?;
         let cid = keypair.cid();
@@ -79,6 +80,7 @@ impl Network {
             role: MemberRole::Admin,
             joined_at: unix_now(),
             is_minor: false,
+            pub_key_b58: admin_pub_key_b58,
         };
 
         let data = NetworkData {
@@ -139,6 +141,7 @@ impl Network {
         member_cid: &Cid,
         display_name: String,
         invite: &Invitation,
+        pub_key_b58: Option<String>,
     ) -> Result<(), CiviumError> {
         invite.verify()?;
 
@@ -183,6 +186,7 @@ impl Network {
             display_name,
             requested_at: unix_now(),
             invite_nonce_b58: invite.nonce_b58().to_string(),
+            pub_key_b58,
         });
 
         Ok(())
@@ -227,6 +231,7 @@ impl Network {
             role,
             joined_at: unix_now(),
             is_minor: false,
+            pub_key_b58: pending.pub_key_b58,
         };
 
         self.data.members.push(record.clone());

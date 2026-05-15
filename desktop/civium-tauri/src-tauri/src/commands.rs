@@ -10,7 +10,7 @@ use civium_core::{
     ActivityKind, AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, Document, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
-    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PluginState, Proposal, ProposalStatus,
+    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PairKey, PluginState, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
 };
 
@@ -116,7 +116,7 @@ pub fn network_create(
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
 
-    let network = Network::create(name, &admin_cid, display_name)
+    let network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()))
         .map_err(|e| e.to_string())?;
 
     let info = NetworkInfo {
@@ -209,7 +209,7 @@ pub fn network_join(
         ))?;
 
     network
-        .submit_join_request(&member_cid, display_name, &invitation)
+        .submit_join_request(&member_cid, display_name, &invitation, Some(keypair.pub_key_b58()))
         .map_err(|e| e.to_string())?;
 
     let record = network
@@ -444,41 +444,81 @@ pub struct MessageDisplay {
     pub sent_at: u64,
     pub is_direct: bool,
     pub to_cid_short: Option<String>,
+    pub is_e2e: bool,
 }
 
 /// Return decrypted thread messages for a network, ordered by sent_at.
 #[tauri::command]
 pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDisplay>, String> {
     let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
     let group_key =
         GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
 
+    // Index member names and public keys for display + E2E decryption
     let member_names: HashMap<String, String> = network
         .data
         .members
         .iter()
         .map(|m| (m.cid_short.clone(), m.display_name.clone()))
         .collect();
+    let member_pubkeys: HashMap<String, String> = network
+        .data
+        .members
+        .iter()
+        .filter_map(|m| m.pub_key_b58.as_ref().map(|k| (m.cid_full.clone(), k.clone())))
+        .collect();
 
     let messages = store::load_messages(&conn, &network_cid).map_err(|e| e.to_string())?;
 
     let mut result = Vec::with_capacity(messages.len());
     for msg in messages {
-        let body = group_key
-            .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
-            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-            .unwrap_or_else(|_| "[message illisible]".into());
+        let (body, is_direct, is_e2e, to_cid_short) = match &msg.kind {
+            MessageKind::Thread => {
+                let body = group_key
+                    .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_else(|_| "[message illisible]".into());
+                (body, false, false, None)
+            }
+            MessageKind::Direct { to_cid_short } => {
+                let body = group_key
+                    .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_else(|_| "[message illisible]".into());
+                (body, true, false, Some(to_cid_short.clone()))
+            }
+            MessageKind::E2E { to_cid_full } => {
+                // Derive pair key: our secret + the other party's pubkey
+                let my_cid_full = keypair.cid().full().to_string();
+                let peer_cid_full = if msg.author_cid_short == keypair.cid().short() {
+                    to_cid_full.clone()
+                } else {
+                    my_cid_full.clone()
+                };
+                let body = member_pubkeys
+                    .get(&peer_cid_full)
+                    .and_then(|pk_b58| {
+                        let pk_bytes = bs58::decode(pk_b58).into_vec().ok()?;
+                        let pk_arr: [u8; 32] = pk_bytes.try_into().ok()?;
+                        let pair_key = PairKey::derive(keypair.secret_bytes(), &pk_arr).ok()?;
+                        let plain = pair_key.decrypt(&msg.nonce_b58, &msg.ciphertext_b58).ok()?;
+                        String::from_utf8(plain).ok()
+                    })
+                    .unwrap_or_else(|| "[message E2E — clé introuvable]".into());
+                // to_cid_short: resolve from cid_full
+                let to_short = network.data.members.iter()
+                    .find(|m| &m.cid_full == to_cid_full)
+                    .map(|m| m.cid_short.clone());
+                (body, true, true, to_short)
+            }
+        };
 
         let author_name = member_names
             .get(&msg.author_cid_short)
             .cloned()
             .unwrap_or_else(|| msg.author_cid_short.clone());
-
-        let (is_direct, to_cid_short) = match &msg.kind {
-            MessageKind::Direct { to_cid_short } => (true, Some(to_cid_short.clone())),
-            MessageKind::Thread => (false, None),
-        };
 
         result.push(MessageDisplay {
             id: msg.id,
@@ -488,6 +528,7 @@ pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDi
             sent_at: msg.sent_at,
             is_direct,
             to_cid_short,
+            is_e2e,
         });
     }
     Ok(result)
@@ -544,6 +585,7 @@ pub fn message_send(
         sent_at: msg.sent_at,
         is_direct: false,
         to_cid_short: None,
+        is_e2e: false,
     })
 }
 
@@ -602,6 +644,74 @@ pub fn message_send_direct(
         sent_at: msg.sent_at,
         is_direct: true,
         to_cid_short: Some(to_cid_short),
+        is_e2e: false,
+    })
+}
+
+/// Send a true end-to-end encrypted message (Cercle 3 — Intime).
+/// Only the sender and the recipient can decrypt. Uses X25519 DH pair key.
+#[tauri::command]
+pub fn message_send_e2e(
+    app: AppHandle,
+    network_cid: String,
+    to_cid_short: String,
+    body: String,
+) -> Result<MessageDisplay, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let author_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let author_cid_short = network.data.members.iter()
+        .find(|m| m.cid_full == author_cid.full())
+        .map(|m| m.cid_short.clone())
+        .ok_or_else(|| "vous n'êtes pas membre de ce réseau".to_string())?;
+
+    let recipient = network.data.members.iter()
+        .find(|m| m.cid_short == to_cid_short)
+        .ok_or_else(|| format!("membre '{}' introuvable dans ce réseau", to_cid_short))?;
+
+    let recipient_cid_full = recipient.cid_full.clone();
+
+    let pk_b58 = recipient.pub_key_b58.as_ref()
+        .ok_or_else(|| format!("clé publique de '{}' inconnue — mise à jour requise", to_cid_short))?;
+    let pk_bytes = bs58::decode(pk_b58)
+        .into_vec()
+        .map_err(|e| format!("clé publique invalide : {e}"))?;
+    let pk_arr: [u8; 32] = pk_bytes.try_into()
+        .map_err(|_| "la clé publique doit faire 32 octets".to_string())?;
+
+    let pair_key = PairKey::derive(keypair.secret_bytes(), &pk_arr)
+        .map_err(|e| e.to_string())?;
+    let (nonce_b58, ciphertext_b58) = pair_key.encrypt(body.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let sent_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let msg = Message {
+        id: nonce_b58.clone(),
+        author_cid_short: author_cid_short.clone(),
+        kind: MessageKind::E2E { to_cid_full: recipient_cid_full },
+        nonce_b58,
+        ciphertext_b58,
+        sent_at,
+    };
+    store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+
+    let author_name = network.data.members.iter()
+        .find(|m| m.cid_short == author_cid_short)
+        .map(|m| m.display_name.clone())
+        .unwrap_or_else(|| author_cid_short.clone());
+
+    Ok(MessageDisplay {
+        id: msg.id,
+        author_cid_short: msg.author_cid_short,
+        author_name,
+        body,
+        sent_at: msg.sent_at,
+        is_direct: true,
+        to_cid_short: Some(to_cid_short),
+        is_e2e: true,
     })
 }
 
@@ -1058,7 +1168,7 @@ pub fn directory_create(
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name)
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()))
         .map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Directory;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -1304,7 +1414,7 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name).map_err(|e| e.to_string())?;
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58())).map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Rrm;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
     Ok(NetworkInfo {

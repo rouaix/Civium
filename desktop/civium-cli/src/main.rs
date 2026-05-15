@@ -851,7 +851,7 @@ fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let network = Network::create(name.clone(), &admin_cid, display_name)
+            let network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             store::save_network(data, &network)?;
             println!("Network '{}' created.", name);
@@ -994,7 +994,7 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
             };
 
             network
-                .submit_join_request(&member_cid, name.clone(), &invitation)
+                .submit_join_request(&member_cid, name.clone(), &invitation, Some(keypair.pub_key_b58()))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             store::save_network(data, &network)?;
@@ -1746,7 +1746,7 @@ fn handle_inbound_request(
                 let member_cid = Cid::from_full(member_cid_full)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-                network.submit_join_request(&member_cid, display_name.clone(), &invitation)?;
+                network.submit_join_request(&member_cid, display_name.clone(), &invitation, None)?;
                 network.admit(member_cid.short(), TrustCircle::Connaissance, MemberRole::Member)?;
                 store::save_network(data, &network)?;
 
@@ -1851,6 +1851,7 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
             let label = match kind {
                 MessageKind::Thread => "thread".to_string(),
                 MessageKind::Direct { to_cid_short } => format!("DM → {to_cid_short}"),
+                MessageKind::E2E { to_cid_full } => format!("E2E → {}", &to_cid_full[..12.min(to_cid_full.len())]),
             };
             println!("Message sent ({label}) — id: {}", &msg_id[..8.min(msg_id.len())]);
         }
@@ -2186,7 +2187,7 @@ fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let mut network = Network::create(name.clone(), &admin_cid, display_name)
+            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             network.data.kind = NetworkKind::Directory;
             store::save_network(data, &network)?;
@@ -2374,7 +2375,7 @@ fn run_rrm(cmd: RrmCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let mut network = Network::create(name.clone(), &admin_cid, display_name)
+            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             network.data.kind = NetworkKind::Rrm;
             store::save_network(data, &network)?;

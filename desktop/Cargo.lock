@@ -656,11 +656,13 @@ dependencies = [
  "blake3",
  "bs58",
  "chacha20poly1305",
+ "curve25519-dalek",
  "futures",
  "libp2p",
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -673,6 +675,7 @@ name = "civium-tauri"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bs58",
  "civium-core",
  "rusqlite",
  "serde",

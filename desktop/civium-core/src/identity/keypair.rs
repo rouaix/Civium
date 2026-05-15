@@ -68,6 +68,16 @@ impl CiviumKeypair {
         &self.pub_key
     }
 
+    /// Raw 32-byte secret key — used internally for E2E key derivation.
+    pub fn secret_bytes(&self) -> &[u8; 32] {
+        &self.secret
+    }
+
+    /// Base58-encoded Ed25519 public key — safe to share, used for E2E key derivation.
+    pub fn pub_key_b58(&self) -> String {
+        bs58::encode(self.pub_key).into_string()
+    }
+
     /// Base58-encoded secret key — store securely, treat as a password.
     pub fn secret_b58(&self) -> String {
         bs58::encode(self.secret).into_string()

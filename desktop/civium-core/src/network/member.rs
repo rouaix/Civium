@@ -14,6 +14,8 @@ pub enum TrustCircle {
     Connaissance = 1,
     /// Confiance (2): full profile, content sharing, services.
     Confiance = 2,
+    /// Intime (3): true pair E2E encryption — only the two parties can read.
+    Intime = 3,
 }
 
 impl TrustCircle {
@@ -22,6 +24,7 @@ impl TrustCircle {
             0 => Some(Self::Annuaire),
             1 => Some(Self::Connaissance),
             2 => Some(Self::Confiance),
+            3 => Some(Self::Intime),
             _ => None,
         }
     }
@@ -31,6 +34,7 @@ impl TrustCircle {
             Self::Annuaire     => "Annuaire (0)",
             Self::Connaissance => "Connaissance (1)",
             Self::Confiance    => "Confiance (2)",
+            Self::Intime       => "Intime (3)",
         }
     }
 }
@@ -48,7 +52,8 @@ impl std::str::FromStr for TrustCircle {
             "0" | "annuaire"     => Ok(Self::Annuaire),
             "1" | "connaissance" => Ok(Self::Connaissance),
             "2" | "confiance"    => Ok(Self::Confiance),
-            _ => Err(format!("unknown circle '{s}' — use 0, 1 or 2")),
+            "3" | "intime"       => Ok(Self::Intime),
+            _ => Err(format!("unknown circle '{s}' — use 0, 1, 2 or 3")),
         }
     }
 }
@@ -91,6 +96,10 @@ pub struct MemberRecord {
     /// True if this member has been marked as a minor by an admin.
     #[serde(default)]
     pub is_minor: bool,
+    /// Base58-encoded Ed25519 public key — stored for E2E pair-key derivation (Cercle 3).
+    /// None for members created before Phase 4 (backward-compatible).
+    #[serde(default)]
+    pub pub_key_b58: Option<String>,
 }
 
 /// A pending join request waiting for admin admission.
@@ -102,4 +111,7 @@ pub struct PendingRecord {
     pub requested_at: u64,
     /// Nonce from the invitation used (to prevent replay).
     pub invite_nonce_b58: String,
+    /// Base58-encoded Ed25519 public key — carried through to MemberRecord on admission.
+    #[serde(default)]
+    pub pub_key_b58: Option<String>,
 }

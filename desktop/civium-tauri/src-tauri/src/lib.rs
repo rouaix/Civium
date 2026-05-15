@@ -63,6 +63,7 @@ pub fn run() {
             message_list,
             message_send,
             message_send_direct,
+            message_send_e2e,
             proposal_list,
             proposal_create,
             vote_cast,

@@ -64,6 +64,7 @@ export interface MessageDisplay {
   sent_at: number;
   is_direct: boolean;
   to_cid_short: string | null;
+  is_e2e: boolean;
 }
 
 export interface ProposalInfo {
