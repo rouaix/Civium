@@ -166,31 +166,122 @@ Les nœuds desktop (Tauri / CLI) **doivent écouter en WebSocket** en plus de TC
 
 Lien email ↔ CID stocké sur le RCC (déclaratif, pour les alertes push).
 
+## Migrations de base de données (serveur PHP)
+
+Le serveur PHP **ne doit jamais planter à cause d'un changement de schéma**. Tout changement de BDD passe par le système de migrations, appliqué automatiquement au démarrage.
+
+### Principe
+
+```
+website/src/migrations/
+  001_initial.sql           ← schéma initial complet
+  002_add_alerts.sql        ← ajout d'une table ou colonne
+  003_rename_column.sql     ← modification
+  ...
+
+Table MySQL `schema_migrations` :
+  version   INT  PRIMARY KEY   ← numéro appliqué
+  name      TEXT               ← nom du fichier
+  applied_at DATETIME
+```
+
+À chaque requête HTTP entrante (dans le bootstrap F3) :
+1. PHP lit les fichiers `migrations/*.sql` triés par numéro
+2. Compare avec la table `schema_migrations`
+3. Applique dans l'ordre les migrations manquantes dans une transaction
+4. Si une migration échoue → rollback, log l'erreur, retourne `HTTP 503` avec message clair
+5. Si toutes les migrations réussissent → traitement normal de la requête
+
+### Règles d'écriture des migrations
+
+- **Toujours additives en priorité** : `ALTER TABLE … ADD COLUMN`, `CREATE TABLE IF NOT EXISTS`
+- **Jamais destructives sans raison** : `DROP COLUMN` ou `DROP TABLE` uniquement si explicitement nécessaire
+- **Idempotentes quand possible** : utiliser `IF NOT EXISTS`, `IF EXISTS`
+- **Une migration = un fichier = une transaction** : si elle échoue à mi-chemin, tout est annulé
+- **Jamais modifier un fichier déjà appliqué** : créer un nouveau fichier numéroté à la place
+
+### Implémentation PHP
+
+```php
+// src/models/Migration.php
+class Migration {
+    public static function run(\DB\SQL $db): void {
+        // Crée la table de suivi si elle n'existe pas
+        $db->exec("CREATE TABLE IF NOT EXISTS schema_migrations (
+            version    INT          PRIMARY KEY,
+            name       VARCHAR(255) NOT NULL,
+            applied_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )");
+
+        $applied = array_column(
+            $db->exec("SELECT version FROM schema_migrations ORDER BY version"),
+            'version'
+        );
+
+        $files = glob(__DIR__ . '/../migrations/*.sql');
+        natsort($files);
+
+        foreach ($files as $file) {
+            preg_match('/(\d+)_/', basename($file), $m);
+            $version = (int)$m[1];
+            if (in_array($version, $applied)) continue;
+
+            $sql = file_get_contents($file);
+            try {
+                $db->begin();
+                $db->exec($sql);
+                $db->exec("INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+                    [$version, basename($file)]);
+                $db->commit();
+                error_log("[Migration] Applied: " . basename($file));
+            } catch (\Exception $e) {
+                $db->rollback();
+                error_log("[Migration] FAILED: " . basename($file) . " — " . $e->getMessage());
+                http_response_code(503);
+                die(json_encode(['error' => 'database_migration_failed',
+                                 'migration' => basename($file),
+                                 'message' => $e->getMessage()]));
+            }
+        }
+    }
+}
+```
+
+Appelé une fois dans `index.php` avant tout routing :
+```php
+Migration::run($db);
+```
+
 ## Repository structure
 
 ```
 civium/
-  desktop/                  ← Rust workspace
-    Cargo.toml              ← workspace racine
-    civium-core/            ← bibliothèque partagée (identité, P2P, gouvernance…)
-    civium-cli/             ← outil en ligne de commande
-    civium-tauri/           ← application Tauri (desktop GUI)
-  website/                  ← PHP F3 + Alpine.js
+  desktop/                    ← Rust workspace
+    Cargo.toml                ← workspace racine
+    civium-core/              ← bibliothèque partagée (identité, P2P, gouvernance…)
+    civium-cli/               ← outil en ligne de commande
+    civium-tauri/             ← application Tauri (desktop GUI)
+  website/                    ← PHP F3 + Alpine.js
     src/
+      migrations/             ← fichiers SQL numérotés (001_, 002_…)
+        001_initial.sql       ← schéma RCC initial
+        002_add_alerts.sql    ← etc.
       controllers/
-        ApiController.php   ← /api/register, /api/alert (RCC)
-        AuthController.php  ← magic link (generate, validate, session)
-        AppController.php   ← sert le client web WASM
+        ApiController.php     ← /api/register, /api/alert (RCC)
+        AuthController.php    ← magic link (generate, validate, session)
+        AppController.php     ← sert le client web WASM
       models/
-        Network.php         ← registre RCC (MySQL)
-        MagicLink.php       ← tokens temporaires
-        Alert.php           ← alertes fraude
+        Migration.php         ← système de migrations auto (run au bootstrap)
+        Network.php           ← registre RCC (MySQL)
+        MagicLink.php         ← tokens temporaires
+        Alert.php             ← alertes fraude
       www/
-        civium/             ← point d'entrée client web
-        wasm/               ← civium-core.wasm + bindings JS (wasm-pack output)
-  README.md                 ← spécification du protocole
-  ROADMAP.md                ← plan de développement
-  CLAUDE.md                 ← ce fichier
+        civium/               ← point d'entrée client web
+        wasm/                 ← civium-core.wasm + bindings JS (wasm-pack output)
+  README.md                   ← spécification du protocole
+  ROADMAP.md                  ← plan de développement
+  CLAUDE.md                   ← ce fichier
+```
 
 ## Décisions architecturales figées
 
@@ -198,4 +289,4 @@ civium/
 - L'enregistrement RCC est **obligatoire** et **non contournable** depuis les apps officielles.
 - La clé privée ne quitte jamais le périphérique de l'utilisateur (desktop, mobile, ou IndexedDB navigateur). Le serveur PHP ne la voit jamais.
 - Les nœuds desktop exposent WebSocket en plus de TCP/QUIC pour permettre la connexion des clients web.
-```
+- **Tout changement de schéma MySQL passe par un fichier de migration numéroté.** Ne jamais modifier directement la BDD en production ni modifier un fichier de migration déjà appliqué.

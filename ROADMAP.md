@@ -47,9 +47,11 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 > `website/` — PHP F3 + MySQL sur `https://www.rouaix.com/civium`
 
-- [ ] Table MySQL `networks` : network_cid (PK), network_name, admin_cid, admin_pubkey, admin_email, ip_address, registered_at, signature
-- [ ] Table MySQL `alerts` : id, type, description, network_cids_json, emitted_at, emitted_by
-- [ ] Table MySQL `magic_links` : token (PK), email, cid, expires_at, used
+- [ ] Système de migrations BDD automatiques (`src/models/Migration.php`) — appliqué au bootstrap, jamais de plantage serveur sur changement de schéma
+- [ ] Migration `001_initial.sql` : tables `schema_migrations`, `networks`, `alerts`, `magic_links`
+- [ ] Table `networks` : network_cid (PK), network_name, admin_cid, admin_pubkey, admin_email, ip_address, registered_at, signature
+- [ ] Table `alerts` : id, type, description, network_cids_json, emitted_at, emitted_by
+- [ ] Table `magic_links` : token (PK), email, cid, expires_at, used
 - [ ] `POST /api/register` — reçoit l'enregistrement d'un réseau, vérifie la signature Ed25519, stocke
 - [ ] `POST /api/alert` — (clé admin RCC requise) émet une alerte fraude
 - [ ] `GET /api/networks` — liste publique paginée des réseaux enregistrés (CID + nom uniquement)
