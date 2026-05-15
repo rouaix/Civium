@@ -99,6 +99,10 @@ pub fn run() {
             agenda_list,
             agenda_update,
             agenda_delete,
+            activity_list,
+            notification_list,
+            notification_unread_count,
+            notification_mark_read,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

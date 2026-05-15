@@ -12,6 +12,8 @@ import type {
   VoteResultInfo,
   AdminActionInfo,
   AgendaEventInfo,
+  ActivityEventInfo,
+  NotificationInfo,
   DelegationInfo,
   DirectoryEntryInfo,
   FederationInfo,
@@ -113,6 +115,11 @@ export default function Dashboard() {
   const [dmBody, setDmBody] = useState<Record<string, string>>({});
   const [sendingDm, setSendingDm] = useState<string | null>(null);
 
+  // Activity & Notifications
+  const [activityEvents, setActivityEvents] = useState<ActivityEventInfo[]>([]);
+  const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
   // Agenda state
   const [agendaEvents, setAgendaEvents] = useState<AgendaEventInfo[]>([]);
   const [showAgendaForm, setShowAgendaForm] = useState(false);
@@ -191,6 +198,14 @@ export default function Dashboard() {
     tauriInvoke<AgendaEventInfo[]>("agenda_list", { networkCidShort: cid }).then(setAgendaEvents).catch(() => {});
   }, []);
 
+  const refreshActivity = useCallback((cid: string) => {
+    tauriInvoke<ActivityEventInfo[]>("activity_list", { networkCidShort: cid }).then(setActivityEvents).catch(() => {});
+    tauriInvoke<NotificationInfo[]>("notification_list", { networkCidShort: cid }).then((notifs) => {
+      setNotifications(notifs);
+      setUnreadCount(notifs.filter((n) => !n.read).length);
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -209,6 +224,7 @@ export default function Dashboard() {
       refreshTrustedRrms(selected.cid_short);
     }
     refreshAgendaEvents(selected.cid_short);
+    refreshActivity(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -232,6 +248,9 @@ export default function Dashboard() {
     setNewGuardianCid("");
     setAgendaEvents([]);
     setShowAgendaForm(false);
+    setActivityEvents([]);
+    setNotifications([]);
+    setUnreadCount(0);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -293,6 +312,7 @@ export default function Dashboard() {
         circle,
       });
       refreshNetwork(selected.cid_short);
+      refreshActivity(selected.cid_short);
     } catch (e) {
       alert(String(e));
     } finally {
@@ -406,6 +426,7 @@ export default function Dashboard() {
       setPropHours(72);
       setShowProposalForm(false);
       refreshProposals(selected.cid_short);
+      refreshActivity(selected.cid_short);
     } catch (e) {
       alert(String(e));
     } finally {
@@ -427,6 +448,7 @@ export default function Dashboard() {
         proposalId,
       });
       setVoteResults((prev) => ({ ...prev, [proposalId]: result }));
+      refreshActivity(selected.cid_short);
     } catch (e) {
       alert(String(e));
     } finally {
@@ -700,6 +722,15 @@ export default function Dashboard() {
     }
   }
 
+  async function handleMarkAllRead() {
+    if (!selected) return;
+    const unread = notifications.filter((n) => !n.read);
+    await Promise.all(
+      unread.map((n) => tauriInvoke("notification_mark_read", { notifId: n.id }).catch(() => {}))
+    );
+    refreshActivity(selected.cid_short);
+  }
+
   async function handleCreateEvent() {
     if (!selected || !agendaTitle.trim() || !agendaStart) return;
     setCreatingEvent(true);
@@ -751,6 +782,7 @@ export default function Dashboard() {
       });
       setMessages((prev) => [...prev, msg]);
       setMsgBody("");
+      refreshActivity(selected.cid_short);
     } catch (e) {
       alert(String(e));
     } finally {
@@ -797,6 +829,11 @@ export default function Dashboard() {
                 )}
                 {net.is_rrm && (
                   <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                )}
+                {selected?.cid_short === net.cid_short && unreadCount > 0 && (
+                  <span className="ml-auto text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
+                    {unreadCount}
+                  </span>
                 )}
               </div>
               <div className="text-xs opacity-70">
@@ -1516,6 +1553,49 @@ export default function Dashboard() {
                   {sending ? "…" : "Envoyer"}
                 </button>
               </div>
+            </section>
+
+            {/* ── Activité section ── */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide flex items-center gap-2">
+                  Fil d'activité
+                  {unreadCount > 0 && (
+                    <span className="bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5">{unreadCount} non lu{unreadCount > 1 ? "es" : "e"}</span>
+                  )}
+                </h3>
+                {unreadCount > 0 && (
+                  <button
+                    onClick={handleMarkAllRead}
+                    className="text-xs text-indigo-500 hover:text-indigo-700"
+                  >
+                    Tout marquer lu
+                  </button>
+                )}
+              </div>
+
+              {activityEvents.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Aucune activité enregistrée.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {activityEvents.map((ev) => {
+                    const notif = notifications.find((n) => n.source_event_id === ev.id);
+                    const isUnread = notif && !notif.read;
+                    return (
+                      <div
+                        key={ev.id}
+                        className={`flex items-start gap-2 px-2 py-1.5 rounded text-xs ${isUnread ? "bg-indigo-50 border border-indigo-100" : "bg-gray-50"}`}
+                        onClick={() => notif && !notif.read && tauriInvoke("notification_mark_read", { notifId: notif.id }).then(() => refreshActivity(selected!.cid_short)).catch(() => {})}
+                        style={{ cursor: isUnread ? "pointer" : "default" }}
+                      >
+                        <span className="text-gray-400 font-mono flex-shrink-0 mt-0.5">{new Date(ev.occurred_at * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span>
+                        <span className="text-gray-600 flex-1">{ev.summary}</span>
+                        {isUnread && <span className="w-2 h-2 rounded-full bg-red-400 flex-shrink-0 mt-1" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             {/* ── Agenda section ── */}
