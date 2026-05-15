@@ -114,6 +114,10 @@ pub fn run() {
             mcp_start,
             mcp_stop,
             mcp_status,
+            pair_init,
+            pair_complete,
+            pair_list,
+            pair_revoke,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

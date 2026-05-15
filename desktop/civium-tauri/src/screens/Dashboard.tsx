@@ -15,6 +15,8 @@ import type {
   ActivityEventInfo,
   DocumentInfo,
   McpStatus,
+  PairingInitInfo,
+  PairedDeviceInfo,
   NotificationInfo,
   DelegationInfo,
   DirectoryEntryInfo,
@@ -143,6 +145,14 @@ export default function Dashboard() {
   const [mcpStatus, setMcpStatus] = useState<McpStatus>({ running: false, port: null, token: null, url: null });
   const [mcpPort, setMcpPort] = useState("7523");
   const [showMcpToken, setShowMcpToken] = useState(false);
+
+  // Pairing state
+  const [pairedDevices, setPairedDevices] = useState<PairedDeviceInfo[]>([]);
+  const [pairingSession, setPairingSession] = useState<PairingInitInfo | null>(null);
+  const [pairLabel, setPairLabel] = useState("");
+  const [pairLink, setPairLink] = useState("");
+  const [pairCompleteLabel, setPairCompleteLabel] = useState("");
+  const [showPairCompleteForm, setShowPairCompleteForm] = useState(false);
   const [creatingEvent, setCreatingEvent] = useState(false);
 
   // Plugin panel
@@ -165,6 +175,7 @@ export default function Dashboard() {
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
     tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
+    tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
   }, []);
 
   const refreshNetwork = useCallback((cid: string) => {
@@ -215,6 +226,10 @@ export default function Dashboard() {
 
   const refreshDocuments = useCallback((cid: string) => {
     tauriInvoke<DocumentInfo[]>("document_list", { networkCidShort: cid }).then(setDocuments).catch(() => {});
+  }, []);
+
+  const refreshPairedDevices = useCallback(() => {
+    tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
   }, []);
 
   const refreshActivity = useCallback((cid: string) => {
@@ -854,6 +869,42 @@ export default function Dashboard() {
     }
   }
 
+  async function handlePairInit() {
+    if (!pairLabel.trim()) return;
+    try {
+      const session = await tauriInvoke<PairingInitInfo>("pair_init", { label: pairLabel.trim() });
+      setPairingSession(session);
+      setPairLabel("");
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handlePairComplete() {
+    if (!pairLink.trim() || !pairCompleteLabel.trim()) return;
+    try {
+      const device = await tauriInvoke<PairedDeviceInfo>("pair_complete", {
+        link: pairLink.trim(),
+        label: pairCompleteLabel.trim(),
+      });
+      setPairedDevices((prev) => [...prev, device]);
+      setPairLink("");
+      setPairCompleteLabel("");
+      setShowPairCompleteForm(false);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handlePairRevoke(deviceId: string) {
+    try {
+      await tauriInvoke("pair_revoke", { deviceId });
+      refreshPairedDevices();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -1112,6 +1163,120 @@ export default function Dashboard() {
                   </button>
                 </div>
               )}
+            </div>
+
+            {/* ── Pairing section ── */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+              <h3 className="text-base font-semibold text-gray-800">
+                Appareils jumelés (Pairing multi-appareils)
+              </h3>
+              <p className="text-xs text-gray-500">
+                Jumelez un second appareil pour partager votre identité Civium. Le lien est chiffré
+                et expire en 10 minutes.
+              </p>
+
+              {/* Devices list */}
+              {pairedDevices.length > 0 && (
+                <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl">
+                  {pairedDevices.map((d) => (
+                    <div key={d.id} className="flex items-center px-4 py-3 gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-gray-800">{d.label}</div>
+                        <div className="text-xs text-gray-400 font-mono">{d.id.slice(0, 12)}…</div>
+                        <div className="text-xs text-gray-400">
+                          Jumelé le {new Date(d.paired_at * 1000).toLocaleDateString("fr-FR")}
+                          {d.revoked && (
+                            <span className="ml-2 text-red-500">— révoqué</span>
+                          )}
+                        </div>
+                      </div>
+                      {!d.revoked && (
+                        <button
+                          onClick={() => handlePairRevoke(d.id)}
+                          className="text-xs border border-red-200 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                        >
+                          Révoquer
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Generate pairing link */}
+              {pairingSession ? (
+                <div className="bg-indigo-50 rounded-xl p-4 space-y-2">
+                  <p className="text-xs font-medium text-indigo-800">Lien de jumelage généré :</p>
+                  <code className="block text-xs font-mono text-indigo-700 break-all bg-white p-2 rounded border border-indigo-100">
+                    {pairingSession.link}
+                  </code>
+                  <p className="text-xs text-indigo-600">
+                    Expire à {new Date(pairingSession.expires_at * 1000).toLocaleTimeString("fr-FR")}.
+                    Copiez ce lien sur le second appareil et utilisez la commande{" "}
+                    <code className="font-mono">civium pair complete</code>.
+                  </p>
+                  <button
+                    onClick={() => setPairingSession(null)}
+                    className="text-xs text-indigo-400 hover:text-indigo-600"
+                  >
+                    Fermer
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <input
+                    type="text"
+                    placeholder="Nom du nouvel appareil"
+                    value={pairLabel}
+                    onChange={(e) => setPairLabel(e.target.value)}
+                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5"
+                  />
+                  <button
+                    onClick={handlePairInit}
+                    disabled={!pairLabel.trim()}
+                    className="text-sm bg-civium-600 text-white rounded-lg px-4 py-1.5 hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                  >
+                    Générer un lien
+                  </button>
+                </div>
+              )}
+
+              {/* Complete pairing (receive a link from another device) */}
+              <div className="border-t border-gray-100 pt-4">
+                <button
+                  onClick={() => setShowPairCompleteForm((v) => !v)}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  {showPairCompleteForm ? "▲ Masquer" : "▼ Compléter un jumelage reçu"}
+                </button>
+                {showPairCompleteForm && (
+                  <div className="mt-3 space-y-2">
+                    <input
+                      type="text"
+                      placeholder="Lien civium://pair/…"
+                      value={pairLink}
+                      onChange={(e) => setPairLink(e.target.value)}
+                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono"
+                    />
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="text"
+                        placeholder="Nom de cet appareil"
+                        value={pairCompleteLabel}
+                        onChange={(e) => setPairCompleteLabel(e.target.value)}
+                        className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5"
+                      />
+                      <button
+                        onClick={handlePairComplete}
+                        disabled={!pairLink.trim() || !pairCompleteLabel.trim()}
+                        className="text-sm bg-green-600 text-white rounded-lg px-4 py-1.5 hover:bg-green-700 disabled:opacity-50 transition-colors"
+                      >
+                        Jumeler
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ) : !selected ? (

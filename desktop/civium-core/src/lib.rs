@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod agenda;
 pub mod document;
+pub mod pairing;
 pub mod cil;
 pub mod connection;
 pub mod crypto;
@@ -26,6 +27,7 @@ pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory, RrmEntry, Tru
 pub use activity::{ActivityEvent, ActivityKind, Notification};
 pub use agenda::AgendaEvent;
 pub use document::Document;
+pub use pairing::{PairedDevice, PairingInit, complete_pairing, init_pairing};
 pub use minor::{GuardianLink, MinorRestrictions};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};

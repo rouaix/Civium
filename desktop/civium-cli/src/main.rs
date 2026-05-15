@@ -6,6 +6,7 @@ use civium_core::{
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent, Document,
+    PairedDevice, complete_pairing, init_pairing,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
     GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
@@ -96,6 +97,11 @@ enum Command {
     Doc {
         #[command(subcommand)]
         action: DocCmd,
+    },
+    /// Pair this identity with a secondary device
+    Pair {
+        #[command(subcommand)]
+        action: PairCmd,
     },
 }
 
@@ -702,6 +708,33 @@ enum DocCmd {
     },
 }
 
+// ── Pairing sub-commands ──────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum PairCmd {
+    /// Generate a pairing link to share with a secondary device.
+    Init {
+        /// Human-readable label for the secondary device.
+        #[arg(long, default_value = "appareil secondaire")]
+        label: String,
+    },
+    /// Complete pairing on this device using a civium://pair/... link.
+    Complete {
+        /// The civium://pair/<payload> link generated on the primary device.
+        link: String,
+        /// Label to give to this device in the primary device's records.
+        #[arg(long, default_value = "appareil secondaire")]
+        label: String,
+    },
+    /// List all paired devices.
+    List,
+    /// Revoke a paired device (marks it as revoked locally).
+    Revoke {
+        /// Device ID prefix.
+        id: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -773,6 +806,7 @@ async fn main() -> Result<()> {
         Command::Agenda { action } => run_agenda(action, data),
         Command::Activity { action } => run_activity(action, data),
         Command::Doc { action } => run_doc(action, data),
+        Command::Pair { action } => run_pair(action, data),
     }
 }
 
@@ -2669,6 +2703,84 @@ fn run_doc(cmd: DocCmd, data: &PathBuf) -> Result<()> {
             let full_id = doc.id.clone();
             store::delete_document(data, net.cid_short(), &full_id)?;
             println!("Document '{full_id}' supprimé.");
+        }
+    }
+    Ok(())
+}
+
+// ── Pairing handler ───────────────────────────────────────────────────────────
+
+fn run_pair(cmd: PairCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        PairCmd::Init { label } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("aucune identité — exécutez `identity init`"))?;
+            let session = init_pairing(&keypair.secret_b58())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Save a device record on the primary device
+            let device = PairedDevice::new(label.clone());
+            store::save_paired_device(data, &device)?;
+
+            println!("Jumelage initié — partagez ce lien avec l'appareil secondaire :");
+            println!();
+            println!("  {}", session.link);
+            println!();
+            println!("Valide 10 minutes. L'appareil secondaire doit exécuter :");
+            println!("  civium pair complete \"{}\" --label \"{}\"", session.link, label);
+            println!();
+            println!("Appareil enregistré : {} ({})", device.id, device.label);
+        }
+
+        PairCmd::Complete { link, label } => {
+            let secret_b58 = complete_pairing(&link)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            // Restore identity from recovered secret
+            let keypair = civium_core::CiviumKeypair::from_secret_b58(&secret_b58)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            store::save_identity(data, &keypair)?;
+
+            // Record this device locally too
+            let device = PairedDevice::new(label.clone());
+            store::save_paired_device(data, &device)?;
+
+            println!("Jumelage réussi !");
+            println!("  CID        : {}", keypair.cid().short());
+            println!("  Appareil   : {}", label);
+            println!();
+            println!("Cette identité est maintenant disponible sur cet appareil.");
+        }
+
+        PairCmd::List => {
+            let devices = store::list_paired_devices(data)?;
+            if devices.is_empty() {
+                println!("Aucun appareil jumelé.");
+            } else {
+                println!("{:<18} {:<24} {:<10} {}", "ID", "LABEL", "STATUT", "JUMELÉ LE");
+                println!("{}", "-".repeat(72));
+                for d in &devices {
+                    let status = if d.revoked { "révoqué" } else { "actif" };
+                    println!("{:<18} {:<24} {:<10} {}",
+                        &d.id[..d.id.len().min(16)],
+                        d.label,
+                        status,
+                        d.paired_at);
+                }
+            }
+        }
+
+        PairCmd::Revoke { id } => {
+            let devices = store::list_paired_devices(data)?;
+            let mut device = devices.into_iter()
+                .find(|d| d.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("appareil '{id}' introuvable"))?;
+            if device.revoked {
+                bail!("l'appareil '{}' est déjà révoqué", device.id);
+            }
+            device.revoke();
+            store::save_paired_device(data, &device)?;
+            println!("Appareil '{}' ({}) révoqué.", &device.id[..device.id.len().min(16)], device.label);
         }
     }
     Ok(())

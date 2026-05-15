@@ -10,8 +10,8 @@ use civium_core::{
     ActivityKind, AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, Document, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
-    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
-    RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
+    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PluginState, Proposal, ProposalStatus,
+    RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -1954,4 +1954,88 @@ pub fn mcp_status(app: AppHandle) -> McpStatus {
         port,
         token,
     }
+}
+
+// ── Pairing ───────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct PairingInitInfo {
+    pub link: String,
+    pub expires_at: u64,
+    pub device_id: String,
+    pub device_label: String,
+}
+
+#[derive(Serialize)]
+pub struct PairedDeviceInfo {
+    pub id: String,
+    pub label: String,
+    pub paired_at: u64,
+    pub revoked: bool,
+    pub revoked_at: Option<u64>,
+}
+
+/// Generate a pairing link and register the secondary device.
+#[tauri::command]
+pub fn pair_init(app: AppHandle, label: String) -> Result<PairingInitInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let session = init_pairing(&keypair.secret_b58()).map_err(|e| e)?;
+    let device = PairedDevice::new(label.clone());
+    let device_id = device.id.clone();
+    store::save_paired_device(&conn, &device).map_err(|e| e.to_string())?;
+    Ok(PairingInitInfo {
+        link: session.link,
+        expires_at: session.expires_at,
+        device_id,
+        device_label: label,
+    })
+}
+
+/// Complete pairing: restore identity from a civium://pair/... link.
+#[tauri::command]
+pub fn pair_complete(app: AppHandle, link: String, label: String) -> Result<PairedDeviceInfo, String> {
+    let secret_b58 = complete_pairing(&link)?;
+    let conn = open(&app)?;
+    let keypair = CiviumKeypair::from_secret_b58(&secret_b58).map_err(|e| e.to_string())?;
+    store::save_identity(&conn, &keypair).map_err(|e| e.to_string())?;
+    let device = PairedDevice::new(label);
+    let info = PairedDeviceInfo {
+        id: device.id.clone(),
+        label: device.label.clone(),
+        paired_at: device.paired_at,
+        revoked: false,
+        revoked_at: None,
+    };
+    store::save_paired_device(&conn, &device).map_err(|e| e.to_string())?;
+    Ok(info)
+}
+
+/// List all paired devices.
+#[tauri::command]
+pub fn pair_list(app: AppHandle) -> Result<Vec<PairedDeviceInfo>, String> {
+    let conn = open(&app)?;
+    let devices = store::list_paired_devices(&conn).map_err(|e| e.to_string())?;
+    Ok(devices.into_iter().map(|d| PairedDeviceInfo {
+        id: d.id,
+        label: d.label,
+        paired_at: d.paired_at,
+        revoked: d.revoked,
+        revoked_at: d.revoked_at,
+    }).collect())
+}
+
+/// Revoke a paired device by ID.
+#[tauri::command]
+pub fn pair_revoke(app: AppHandle, device_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    let devices = store::list_paired_devices(&conn).map_err(|e| e.to_string())?;
+    let mut device = devices.into_iter()
+        .find(|d| d.id == device_id)
+        .ok_or_else(|| format!("appareil '{device_id}' introuvable"))?;
+    if device.revoked {
+        return Err(format!("l'appareil '{}' est déjà révoqué", device.label));
+    }
+    device.revoke();
+    store::save_paired_device(&conn, &device).map_err(|e| e.to_string())
 }

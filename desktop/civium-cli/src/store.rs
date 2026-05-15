@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
+use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PairedDevice, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -127,6 +127,10 @@ CREATE TABLE IF NOT EXISTS documents (
     doc_id      TEXT NOT NULL,
     doc_json    TEXT NOT NULL,
     PRIMARY KEY (network_cid, doc_id)
+);
+CREATE TABLE IF NOT EXISTS paired_devices (
+    device_id   TEXT PRIMARY KEY,
+    device_json TEXT NOT NULL
 );
 ";
 
@@ -911,6 +915,35 @@ pub fn delete_document(data_dir: &Path, network_cid_short: &str, doc_id: &str) -
         "DELETE FROM documents WHERE network_cid = ?1 AND doc_id = ?2",
         params![network_cid_short, doc_id],
     )?;
+    Ok(())
+}
+
+// ── Paired devices ───────────────────────────────────────────────────────────
+
+pub fn save_paired_device(data_dir: &Path, device: &PairedDevice) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(device).context("serialize paired device")?;
+    conn.execute(
+        "INSERT OR REPLACE INTO paired_devices (device_id, device_json) VALUES (?1, ?2)",
+        params![device.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_paired_devices(data_dir: &Path) -> Result<Vec<PairedDevice>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare("SELECT device_json FROM paired_devices ORDER BY rowid ASC")?;
+    let devices = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|r| r.map_err(anyhow::Error::from))
+        .map(|r| r.and_then(|json| serde_json::from_str(&json).context("invalid paired device")))
+        .collect::<Result<Vec<PairedDevice>>>()?;
+    Ok(devices)
+}
+
+pub fn delete_paired_device(data_dir: &Path, device_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute("DELETE FROM paired_devices WHERE device_id = ?1", params![device_id])?;
     Ok(())
 }
 
