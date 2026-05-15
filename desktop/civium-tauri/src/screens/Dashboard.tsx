@@ -119,6 +119,7 @@ export default function Dashboard() {
   // Direct messages state
   const [dmBody, setDmBody] = useState<Record<string, string>>({});
   const [sendingDm, setSendingDm] = useState<string | null>(null);
+  const [dmE2EMode, setDmE2EMode] = useState<Record<string, boolean>>({});
 
   // Activity & Notifications
   const [activityEvents, setActivityEvents] = useState<ActivityEventInfo[]>([]);
@@ -756,14 +757,17 @@ export default function Dashboard() {
   async function handleSendDm(toCidShort: string) {
     if (!selected || !dmBody[toCidShort]?.trim()) return;
     setSendingDm(toCidShort);
+    const isE2E = dmE2EMode[toCidShort] ?? false;
     try {
-      const msg = await tauriInvoke<MessageDisplay>("message_send_direct", {
+      const cmd = isE2E ? "message_send_e2e" : "message_send_direct";
+      const msg = await tauriInvoke<MessageDisplay>(cmd, {
         networkCid: selected.cid_short,
         toCidShort,
         body: dmBody[toCidShort].trim(),
       });
       setMessages((prev) => [...prev, msg]);
       setDmBody((prev) => ({ ...prev, [toCidShort]: "" }));
+      refreshOutboxCounts();
     } catch (e) {
       alert(String(e));
     } finally {
@@ -957,7 +961,7 @@ export default function Dashboard() {
   }
 
   const circleLabel = (c: number) =>
-    ["Annuaire", "Connaissance", "Confiance"][c] ?? `Cercle ${c}`;
+    ["Annuaire", "Connaissance", "Confiance", "Intime"][c] ?? `Cercle ${c}`;
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -1432,13 +1436,27 @@ export default function Dashboard() {
                       <div className="border-b border-gray-100 bg-gray-50">
                         {/* DM section */}
                         <div className="px-4 pt-2 pb-3">
-                          <p className="text-xs font-medium text-gray-500 mb-2">Message direct</p>
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-medium text-gray-500">Message direct</p>
+                            <button
+                              className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                dmE2EMode[m.cid_short]
+                                  ? "bg-purple-50 border-purple-400 text-purple-700 hover:bg-purple-100"
+                                  : "bg-gray-50 border-gray-300 text-gray-500 hover:bg-gray-100"
+                              }`}
+                              onClick={(e) => { e.stopPropagation(); setDmE2EMode((prev) => ({ ...prev, [m.cid_short]: !prev[m.cid_short] })); }}
+                              title="Chiffrement de bout en bout (Cercle 3 — Intime)"
+                            >
+                              {dmE2EMode[m.cid_short] ? "🔒 E2E (Intime)" : "🔓 Direct"}
+                            </button>
+                          </div>
                           {messages
                             .filter((msg) => msg.is_direct && (msg.author_cid_short === m.cid_short || msg.to_cid_short === m.cid_short))
                             .slice(-5)
                             .map((msg) => (
                               <div key={msg.id} className={`text-xs mb-1 ${msg.author_cid_short === m.cid_short ? "text-gray-600" : "text-civium-700"}`}>
                                 <span className="font-medium">{msg.author_name}</span>
+                                {msg.is_e2e && <span className="ml-1 text-purple-500" title="Chiffrement E2E — Intime">🔒</span>}
                                 <span className="text-gray-400"> {formatTime(msg.sent_at)} — </span>
                                 {msg.body}
                               </div>
@@ -1446,14 +1464,14 @@ export default function Dashboard() {
                           <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
                             <input
                               type="text"
-                              className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white"
-                              placeholder={`Message à ${m.display_name}…`}
+                              className={`flex-1 text-xs border rounded px-2 py-1 bg-white ${dmE2EMode[m.cid_short] ? "border-purple-300" : "border-gray-200"}`}
+                              placeholder={dmE2EMode[m.cid_short] ? `Message E2E à ${m.display_name}…` : `Message à ${m.display_name}…`}
                               value={dmBody[m.cid_short] ?? ""}
                               onChange={(e) => setDmBody((prev) => ({ ...prev, [m.cid_short]: e.target.value }))}
                               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendDm(m.cid_short); } }}
                             />
                             <button
-                              className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                              className={`text-xs text-white px-2 py-1 rounded disabled:opacity-50 ${dmE2EMode[m.cid_short] ? "bg-purple-600 hover:bg-purple-700" : "bg-civium-600 hover:bg-civium-700"}`}
                               disabled={sendingDm === m.cid_short || !dmBody[m.cid_short]?.trim()}
                               onClick={(e) => { e.stopPropagation(); handleSendDm(m.cid_short); }}
                             >

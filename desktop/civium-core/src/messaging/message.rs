@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 pub enum MessageKind {
     /// Broadcast to the whole network thread.
     Thread,
-    /// Direct message to a single member.
+    /// Direct message to a single member (group-key encrypted).
     Direct { to_cid_short: String },
+    /// True end-to-end message — encrypted with the sender/recipient pair key.
+    /// Only the two parties can decrypt, not even network admins.
+    E2E { to_cid_full: String },
 }
 
 /// An encrypted message persisted in a network mailbox.
