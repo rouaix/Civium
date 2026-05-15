@@ -14,6 +14,7 @@ import type {
   AgendaEventInfo,
   ActivityEventInfo,
   DocumentInfo,
+  McpStatus,
   NotificationInfo,
   DelegationInfo,
   DirectoryEntryInfo,
@@ -137,6 +138,11 @@ export default function Dashboard() {
   const [docBody, setDocBody] = useState("");
   const [creatingDoc, setCreatingDoc] = useState(false);
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
+
+  // MCP state
+  const [mcpStatus, setMcpStatus] = useState<McpStatus>({ running: false, port: null, token: null, url: null });
+  const [mcpPort, setMcpPort] = useState("7523");
+  const [showMcpToken, setShowMcpToken] = useState(false);
   const [creatingEvent, setCreatingEvent] = useState(false);
 
   // Plugin panel
@@ -283,6 +289,9 @@ export default function Dashboard() {
     };
     pollStatus();
     const interval = setInterval(pollStatus, 5000);
+
+    // Load MCP status once on mount
+    tauriInvoke<McpStatus>("mcp_status").then(setMcpStatus).catch(() => {});
 
     let unlisten: UnlistenFn | null = null;
     listen<string>("civium://sync-completed", (event) => {
@@ -824,6 +833,27 @@ export default function Dashboard() {
     }
   }
 
+  async function handleMcpStart() {
+    try {
+      const port = parseInt(mcpPort, 10) || 7523;
+      const status = await tauriInvoke<McpStatus>("mcp_start", { port });
+      setMcpStatus(status);
+      setShowMcpToken(true);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleMcpStop() {
+    try {
+      await tauriInvoke("mcp_stop");
+      setMcpStatus({ running: false, port: null, token: null, url: null });
+      setShowMcpToken(false);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -1006,6 +1036,83 @@ export default function Dashboard() {
             <p className="text-xs text-gray-400">
               Pour installer un plugin tiers : <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">civium plugin install manifest.json</code>
             </p>
+
+            {/* ── MCP section ── */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-gray-800">
+                  Serveur MCP (Model Context Protocol)
+                </h3>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${
+                  mcpStatus.running
+                    ? "bg-green-100 text-green-700"
+                    : "bg-gray-100 text-gray-500"
+                }`}>
+                  {mcpStatus.running ? "En cours" : "Arrêté"}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500">
+                Expose les données de vos réseaux en lecture seule à un assistant IA (Claude, etc.)
+                via le protocole MCP. Le CIL (Civium Integration Layer) contrôle chaque accès.
+              </p>
+
+              {!mcpStatus.running ? (
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-gray-500">Port :</label>
+                    <input
+                      type="number"
+                      min={1024}
+                      max={65535}
+                      value={mcpPort}
+                      onChange={(e) => setMcpPort(e.target.value)}
+                      className="w-24 text-sm border border-gray-200 rounded px-2 py-1 font-mono"
+                    />
+                  </div>
+                  <button
+                    onClick={handleMcpStart}
+                    className="text-sm bg-indigo-500 text-white rounded-lg px-4 py-1.5 hover:bg-indigo-600 transition-colors"
+                  >
+                    Démarrer
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">URL :</span>
+                      <code className="text-xs font-mono text-indigo-700">{mcpStatus.url}</code>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-gray-500">Jeton d'accès :</span>
+                      <div className="flex items-center gap-2">
+                        {showMcpToken ? (
+                          <code className="text-xs font-mono text-gray-700 break-all">{mcpStatus.token}</code>
+                        ) : (
+                          <span className="text-xs text-gray-400 font-mono">{"•".repeat(16)}</span>
+                        )}
+                        <button
+                          onClick={() => setShowMcpToken((v) => !v)}
+                          className="text-xs text-indigo-400 hover:text-indigo-600"
+                        >
+                          {showMcpToken ? "Masquer" : "Afficher"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    Dans Claude Desktop, configurez un serveur MCP avec l'URL et le jeton ci-dessus
+                    (transport HTTP, en-tête <code className="font-mono">Authorization: Bearer …</code>).
+                  </p>
+                  <button
+                    onClick={handleMcpStop}
+                    className="text-sm border border-red-200 text-red-600 rounded-lg px-4 py-1.5 hover:bg-red-50 transition-colors"
+                  >
+                    Arrêter le serveur
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         ) : !selected ? (
           <div className="flex items-center justify-center h-full text-gray-400">

@@ -23,6 +23,12 @@ pub struct AppState {
     pub node_tx: Mutex<Option<tokio::sync::mpsc::Sender<NodeCommand>>>,
     /// Multiaddrs the node is currently listening on.
     pub listen_addrs: Mutex<Vec<String>>,
+    /// Shutdown signal for the MCP server — None if the server isn't running.
+    pub mcp_shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Bearer token for the running MCP server.
+    pub mcp_token: Mutex<Option<String>>,
+    /// Port the MCP server is listening on.
+    pub mcp_port: Mutex<Option<u16>>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────

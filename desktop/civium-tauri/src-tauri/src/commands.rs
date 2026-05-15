@@ -365,6 +365,7 @@ pub async fn network_join_p2p(
         listen_tcp: "/ip4/0.0.0.0/tcp/0".into(),
         listen_quic: "/ip4/0.0.0.0/udp/0/quic-v1".into(),
         bootstrap_peers: vec![peer_addr.clone()],
+        mcp_port: None,
     };
     let (node, mut handle) =
         CiviumNode::new(keypair, config).await.map_err(|e| e.to_string())?;
@@ -1877,4 +1878,80 @@ pub fn document_delete(
 ) -> Result<(), String> {
     let conn = open(&app)?;
     store::delete_document(&conn, &network_cid_short, &doc_id).map_err(|e| e.to_string())
+}
+
+// ── MCP server ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct McpStatus {
+    pub running: bool,
+    pub port: Option<u16>,
+    pub token: Option<String>,
+    pub url: Option<String>,
+}
+
+/// Start the MCP HTTP server on the given port (default 7523).
+#[tauri::command]
+pub fn mcp_start(app: AppHandle, port: Option<u16>) -> Result<McpStatus, String> {
+    let state = app.state::<crate::node::AppState>();
+    {
+        let running = state.mcp_shutdown.lock().unwrap();
+        if running.is_some() {
+            return Err("Le serveur MCP est déjà en cours d'exécution.".to_string());
+        }
+    }
+
+    let port = port.unwrap_or(7523);
+    let token = crate::mcp::generate_token();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+    let data_dir = app.path().app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("./civium-data"));
+    let token_clone = token.clone();
+
+    tauri::async_runtime::spawn(async move {
+        crate::mcp::run_mcp_server(data_dir, port, token_clone, rx).await;
+    });
+
+    *state.mcp_shutdown.lock().unwrap() = Some(tx);
+    *state.mcp_token.lock().unwrap() = Some(token.clone());
+    *state.mcp_port.lock().unwrap() = Some(port);
+
+    Ok(McpStatus {
+        running: true,
+        port: Some(port),
+        token: Some(token.clone()),
+        url: Some(format!("http://127.0.0.1:{port}")),
+    })
+}
+
+/// Stop the running MCP server.
+#[tauri::command]
+pub fn mcp_stop(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<crate::node::AppState>();
+    let tx = state.mcp_shutdown.lock().unwrap().take();
+    match tx {
+        Some(sender) => {
+            let _ = sender.send(());
+            *state.mcp_token.lock().unwrap() = None;
+            *state.mcp_port.lock().unwrap() = None;
+            Ok(())
+        }
+        None => Err("Le serveur MCP n'est pas en cours d'exécution.".to_string()),
+    }
+}
+
+/// Return the current MCP server status (running, port, token).
+#[tauri::command]
+pub fn mcp_status(app: AppHandle) -> McpStatus {
+    let state = app.state::<crate::node::AppState>();
+    let running = state.mcp_shutdown.lock().unwrap().is_some();
+    let port = *state.mcp_port.lock().unwrap();
+    let token = state.mcp_token.lock().unwrap().clone();
+    McpStatus {
+        running,
+        url: port.map(|p| format!("http://127.0.0.1:{p}")),
+        port,
+        token,
+    }
 }

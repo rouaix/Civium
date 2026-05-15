@@ -207,6 +207,13 @@ export interface DocumentInfo {
   updated_at: number;
 }
 
+export interface McpStatus {
+  running: boolean;
+  port: number | null;
+  token: string | null;
+  url: string | null;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;
