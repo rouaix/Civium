@@ -160,7 +160,9 @@ async fn run_event_loop(
                                     eprintln!("[civium] Sync merge error: {e}");
                                 } else {
                                     eprintln!("[civium] Synced network {cid_short}");
+                                    let _ = store::clear_outbox(&conn2, &cid_short);
                                     let _ = app_handle.emit("civium://sync-completed", &cid_short);
+                                    let _ = app_handle.emit("civium://outbox-cleared", &cid_short);
                                 }
                             }
                             pending_sync.retain(|(s, _)| s != &cid_short);

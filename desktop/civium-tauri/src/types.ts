@@ -239,3 +239,8 @@ export interface AdminActionInfo {
   status: "active" | "confirmed" | "suspended" | "reversed" | "upheld";
   suspended_proposal_id: string | null;
 }
+
+export interface OutboxCountInfo {
+  network_cid_short: string;
+  count: number;
+}

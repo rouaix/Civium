@@ -7,6 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
+use std::time::{SystemTime, UNIX_EPOCH};
 use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PairedDevice, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -131,6 +132,12 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE TABLE IF NOT EXISTS paired_devices (
     device_id   TEXT PRIMARY KEY,
     device_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outbox_queue (
+    network_cid TEXT    NOT NULL,
+    message_id  TEXT    NOT NULL,
+    queued_at   INTEGER NOT NULL,
+    PRIMARY KEY (network_cid, message_id)
 );
 ";
 
@@ -1079,4 +1086,41 @@ pub fn merge_sync_data(
         )?;
     }
     Ok(())
+}
+
+// ── Outbox queue ─────────────────────────────────────────────────────────────
+
+pub fn enqueue_outbox(data_dir: &Path, network_cid_short: &str, message_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox_queue (network_cid, message_id, queued_at) VALUES (?1, ?2, ?3)",
+        params![network_cid_short, message_id, now as i64],
+    )?;
+    Ok(())
+}
+
+pub fn clear_outbox(data_dir: &Path, network_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute("DELETE FROM outbox_queue WHERE network_cid = ?1", params![network_cid_short])?;
+    Ok(())
+}
+
+pub fn count_outbox(data_dir: &Path, network_cid_short: &str) -> u64 {
+    let Ok(conn) = open_db(data_dir) else { return 0 };
+    conn.query_row(
+        "SELECT COUNT(*) FROM outbox_queue WHERE network_cid = ?1",
+        params![network_cid_short],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) as u64
+}
+
+pub fn count_all_outbox(data_dir: &Path) -> Vec<(String, u64)> {
+    let Ok(conn) = open_db(data_dir) else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT network_cid, COUNT(*) FROM outbox_queue GROUP BY network_cid",
+    ) else { return Vec::new() };
+    stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+        .map(|iter| iter.filter_map(|r| r.ok()).map(|(c, n)| (c, n as u64)).collect())
+        .unwrap_or_default()
 }
