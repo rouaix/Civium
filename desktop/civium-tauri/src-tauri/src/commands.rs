@@ -7,11 +7,11 @@ use tauri::{AppHandle, Manager};
 use civium_core::{
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus,
+    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, MemberRole, Message, MessageKind,
-    Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
-    TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
+    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
+    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
+    RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -32,6 +32,7 @@ pub struct NetworkInfo {
     pub name: String,
     pub member_count: usize,
     pub is_directory: bool,
+    pub is_rrm: bool,
 }
 
 #[derive(Serialize)]
@@ -40,6 +41,27 @@ pub struct MemberInfo {
     pub display_name: String,
     pub circle: u8,
     pub role: String,
+    pub is_minor: bool,
+}
+
+#[derive(Serialize)]
+pub struct GuardianLinkInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub minor_cid_short: String,
+    pub guardian_cid_short: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct MinorRestrictionsInfo {
+    pub network_cid_short: String,
+    pub minor_cid_short: String,
+    pub max_circle: u8,
+    pub allowed_cid_shorts: Vec<String>,
+    pub updated_by: String,
+    pub updated_at: u64,
 }
 
 #[derive(Serialize)]
@@ -103,6 +125,7 @@ pub fn network_create(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: false,
+        is_rrm: false,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -121,6 +144,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             name: n.name().to_string(),
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
+            is_rrm: n.data.kind == NetworkKind::Rrm,
         })
         .collect())
 }
@@ -154,6 +178,7 @@ pub fn member_list(
             display_name: m.display_name.clone(),
             circle: m.circle as u8,
             role: m.role.to_string(),
+            is_minor: m.is_minor,
         })
         .collect())
 }
@@ -197,6 +222,7 @@ pub fn network_join(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
+        is_rrm: network.data.kind == NetworkKind::Rrm,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -254,6 +280,7 @@ pub fn member_admit(
         display_name: record.display_name,
         circle: record.circle as u8,
         role: record.role.to_string(),
+        is_minor: record.is_minor,
     })
 }
 
@@ -398,6 +425,7 @@ pub async fn network_join_p2p(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
+        is_rrm: network.data.kind == NetworkKind::Rrm,
     })
 }
 
@@ -507,6 +535,63 @@ pub fn message_send(
         sent_at: msg.sent_at,
         is_direct: false,
         to_cid_short: None,
+    })
+}
+
+/// Send a direct message to a specific member (enforces minor restrictions on both sides).
+#[tauri::command]
+pub fn message_send_direct(
+    app: AppHandle,
+    network_cid: String,
+    to_cid_short: String,
+    body: String,
+) -> Result<MessageDisplay, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let author_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let author_cid_short = network.data.members.iter()
+        .find(|m| m.cid_full == author_cid.full())
+        .map(|m| m.cid_short.clone())
+        .ok_or_else(|| "you are not a member of this network".to_string())?;
+
+    if !network.data.members.iter().any(|m| m.cid_short == to_cid_short) {
+        return Err(format!("member '{}' not found in this network", to_cid_short));
+    }
+
+    // Enforce minor restrictions (both directions)
+    store::check_minor_interaction(&conn, &network_cid, &to_cid_short, &author_cid_short)
+        .map_err(|e| e.to_string())?;
+    store::check_minor_interaction(&conn, &network_cid, &author_cid_short, &to_cid_short)
+        .map_err(|e| e.to_string())?;
+
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let (nonce_b58, ciphertext_b58) = group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
+    let sent_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let msg = Message {
+        id: nonce_b58.clone(),
+        author_cid_short: author_cid_short.clone(),
+        kind: MessageKind::Direct { to_cid_short: to_cid_short.clone() },
+        nonce_b58,
+        ciphertext_b58,
+        sent_at,
+    };
+    store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+
+    let author_name = network.data.members.iter()
+        .find(|m| m.cid_short == author_cid_short)
+        .map(|m| m.display_name.clone())
+        .unwrap_or_else(|| author_cid_short.clone());
+
+    Ok(MessageDisplay {
+        id: msg.id,
+        author_cid_short: msg.author_cid_short,
+        author_name,
+        body,
+        sent_at: msg.sent_at,
+        is_direct: true,
+        to_cid_short: Some(to_cid_short),
     })
 }
 
@@ -951,6 +1036,7 @@ pub fn directory_create(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: true,
+        is_rrm: false,
     })
 }
 
@@ -968,6 +1054,7 @@ pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, Strin
             name: n.name().to_string(),
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
+            is_rrm: n.data.kind == NetworkKind::Rrm,
         })
         .collect())
 }
@@ -1129,4 +1216,478 @@ pub fn directory_federations(
             added_at: f.added_at,
         })
         .collect())
+}
+
+// ── RRM ───────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RrmEntryInfo {
+    pub id: String,
+    pub rrm_cid_short: String,
+    pub network_cid_short: String,
+    pub network_name: String,
+    pub reason: String,
+    pub evidence_url: Option<String>,
+    pub reported_by: String,
+    pub reported_at: u64,
+}
+
+impl From<RrmEntry> for RrmEntryInfo {
+    fn from(e: RrmEntry) -> Self {
+        Self {
+            id: e.id,
+            rrm_cid_short: e.rrm_cid_short,
+            network_cid_short: e.network_cid_short,
+            network_name: e.network_name,
+            reason: e.reason,
+            evidence_url: e.evidence_url,
+            reported_by: e.reported_by,
+            reported_at: e.reported_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct TrustedRrmInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub rrm_cid_short: String,
+    pub rrm_name: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct RrmWarning {
+    pub rrm_name: String,
+    pub rrm_cid_short: String,
+    pub network_name: String,
+    pub reason: String,
+    pub evidence_url: Option<String>,
+}
+
+/// Create an RRM network (kind = Rrm).
+#[tauri::command]
+pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
+    let mut network = Network::create(name, &admin_cid, display_name).map_err(|e| e.to_string())?;
+    network.data.kind = NetworkKind::Rrm;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+        is_directory: false,
+        is_rrm: true,
+    })
+}
+
+/// Report a network to an RRM.
+#[tauri::command]
+pub fn rrm_report(
+    app: AppHandle,
+    rrm_cid: String,
+    network_cid_short: String,
+    network_name: String,
+    reason: String,
+    evidence_url: Option<String>,
+) -> Result<RrmEntryInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let reporter = keypair.cid().short().to_string();
+
+    let rrm_net = store::load_network(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    if rrm_net.data.kind != NetworkKind::Rrm {
+        return Err(format!("network '{}' is not an RRM", rrm_cid));
+    }
+
+    let entry = RrmEntry::new(rrm_cid, network_cid_short, network_name, reason, evidence_url, reporter);
+    store::save_rrm_entry(&conn, &entry).map_err(|e| e.to_string())?;
+    Ok(RrmEntryInfo::from(entry))
+}
+
+/// List all reports in an RRM.
+#[tauri::command]
+pub fn rrm_list(app: AppHandle, rrm_cid: String) -> Result<Vec<RrmEntryInfo>, String> {
+    let conn = open(&app)?;
+    let entries = store::list_rrm_entries(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(RrmEntryInfo::from).collect())
+}
+
+/// Remove a report from an RRM.
+#[tauri::command]
+pub fn rrm_remove(app: AppHandle, rrm_cid: String, entry_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_rrm_entry(&conn, &rrm_cid, &entry_id).map_err(|e| e.to_string())
+}
+
+/// Trust an RRM — this network will consult it on connection checks.
+#[tauri::command]
+pub fn network_trust_rrm(
+    app: AppHandle,
+    network_cid: String,
+    rrm_cid: String,
+    rrm_name: String,
+) -> Result<TrustedRrmInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let rrm_net = store::load_network(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    if rrm_net.data.kind != NetworkKind::Rrm {
+        return Err(format!("network '{}' is not an RRM", rrm_cid));
+    }
+    let trust = TrustedRrm::new(
+        network_cid,
+        rrm_cid,
+        rrm_name,
+        keypair.cid().short().to_string(),
+    );
+    store::save_trusted_rrm(&conn, &trust).map_err(|e| e.to_string())?;
+    Ok(TrustedRrmInfo {
+        id: trust.id,
+        network_cid_short: trust.network_cid_short,
+        rrm_cid_short: trust.rrm_cid_short,
+        rrm_name: trust.rrm_name,
+        added_by: trust.added_by,
+        added_at: trust.added_at,
+    })
+}
+
+/// Stop trusting an RRM.
+#[tauri::command]
+pub fn network_untrust_rrm(app: AppHandle, network_cid: String, rrm_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_trusted_rrm(&conn, &network_cid, &rrm_cid).map_err(|e| e.to_string())
+}
+
+/// List all RRMs trusted by a network.
+#[tauri::command]
+pub fn network_trusted_rrms(app: AppHandle, network_cid: String) -> Result<Vec<TrustedRrmInfo>, String> {
+    let conn = open(&app)?;
+    let trusts = store::list_trusted_rrms(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(trusts.into_iter().map(|t| TrustedRrmInfo {
+        id: t.id,
+        network_cid_short: t.network_cid_short,
+        rrm_cid_short: t.rrm_cid_short,
+        rrm_name: t.rrm_name,
+        added_by: t.added_by,
+        added_at: t.added_at,
+    }).collect())
+}
+
+/// Check if a peer network is listed in any trusted RRM. Returns warnings if found.
+#[tauri::command]
+pub fn rrm_check(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid: String,
+) -> Result<Vec<RrmWarning>, String> {
+    let conn = open(&app)?;
+    let warnings = store::check_rrm_warnings(&conn, &network_cid, &peer_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(warnings.into_iter().map(|(trust, entry)| RrmWarning {
+        rrm_name: trust.rrm_name,
+        rrm_cid_short: trust.rrm_cid_short,
+        network_name: entry.network_name,
+        reason: entry.reason,
+        evidence_url: entry.evidence_url,
+    }).collect())
+}
+
+// ── Minor / Guardian ──────────────────────────────────────────────────────────
+
+/// Mark or unmark a network member as a minor (admin only).
+#[tauri::command]
+pub fn member_set_minor(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+    is_minor: bool,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_member_minor(&conn, &network_cid, &member_cid, is_minor)
+        .map_err(|e| e.to_string())
+}
+
+/// Add a guardian–minor link.
+#[tauri::command]
+pub fn member_set_guardian(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    guardian_cid: String,
+) -> Result<GuardianLinkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let link = GuardianLink::new(network_cid, minor_cid, guardian_cid, keypair.cid().short().to_string());
+    store::save_guardian_link(&conn, &link).map_err(|e| e.to_string())?;
+    Ok(GuardianLinkInfo {
+        id: link.id,
+        network_cid_short: link.network_cid_short,
+        minor_cid_short: link.minor_cid_short,
+        guardian_cid_short: link.guardian_cid_short,
+        added_by: link.added_by,
+        added_at: link.added_at,
+    })
+}
+
+/// Remove a guardian–minor link.
+#[tauri::command]
+pub fn member_remove_guardian(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    guardian_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_guardian_link(&conn, &network_cid, &minor_cid, &guardian_cid)
+        .map_err(|e| e.to_string())
+}
+
+/// List all guardians of a minor member.
+#[tauri::command]
+pub fn member_guardians(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+) -> Result<Vec<GuardianLinkInfo>, String> {
+    let conn = open(&app)?;
+    let links = store::list_guardians(&conn, &network_cid, &minor_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(links.into_iter().map(|l| GuardianLinkInfo {
+        id: l.id,
+        network_cid_short: l.network_cid_short,
+        minor_cid_short: l.minor_cid_short,
+        guardian_cid_short: l.guardian_cid_short,
+        added_by: l.added_by,
+        added_at: l.added_at,
+    }).collect())
+}
+
+/// List all minors for which a given member is guardian.
+#[tauri::command]
+pub fn member_wards(
+    app: AppHandle,
+    network_cid: String,
+    guardian_cid: String,
+) -> Result<Vec<GuardianLinkInfo>, String> {
+    let conn = open(&app)?;
+    let links = store::list_wards(&conn, &network_cid, &guardian_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(links.into_iter().map(|l| GuardianLinkInfo {
+        id: l.id,
+        network_cid_short: l.network_cid_short,
+        minor_cid_short: l.minor_cid_short,
+        guardian_cid_short: l.guardian_cid_short,
+        added_by: l.added_by,
+        added_at: l.added_at,
+    }).collect())
+}
+
+/// Set interaction restrictions for a minor member.
+#[tauri::command]
+pub fn member_set_restrictions(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    max_circle: u8,
+    allowed_cid_shorts: Vec<String>,
+) -> Result<MinorRestrictionsInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let r = MinorRestrictions::new(
+        network_cid,
+        minor_cid,
+        max_circle,
+        allowed_cid_shorts,
+        keypair.cid().short().to_string(),
+    );
+    store::save_minor_restrictions(&conn, &r).map_err(|e| e.to_string())?;
+    Ok(MinorRestrictionsInfo {
+        network_cid_short: r.network_cid_short,
+        minor_cid_short: r.minor_cid_short,
+        max_circle: r.max_circle,
+        allowed_cid_shorts: r.allowed_cid_shorts,
+        updated_by: r.updated_by,
+        updated_at: r.updated_at,
+    })
+}
+
+/// Get interaction restrictions for a minor member (returns null if not set).
+#[tauri::command]
+pub fn member_get_restrictions(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+) -> Result<Option<MinorRestrictionsInfo>, String> {
+    let conn = open(&app)?;
+    let r = store::get_minor_restrictions(&conn, &network_cid, &minor_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(r.map(|r| MinorRestrictionsInfo {
+        network_cid_short: r.network_cid_short,
+        minor_cid_short: r.minor_cid_short,
+        max_circle: r.max_circle,
+        allowed_cid_shorts: r.allowed_cid_shorts,
+        updated_by: r.updated_by,
+        updated_at: r.updated_at,
+    }))
+}
+
+// ── Plugin commands ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub author: String,
+    pub permissions: Vec<String>,
+    pub is_system: bool,
+    pub state: String,
+    pub installed_at: u64,
+}
+
+/// List all installed plugins.
+#[tauri::command]
+pub fn plugin_list(app: AppHandle) -> Result<Vec<PluginInfo>, String> {
+    let conn = open(&app)?;
+    let records = store::list_plugins(&conn).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(|r| PluginInfo {
+        id: r.manifest.id,
+        name: r.manifest.name,
+        version: r.manifest.version,
+        description: r.manifest.description,
+        author: r.manifest.author,
+        permissions: r.manifest.permissions.iter().map(|p| p.to_string()).collect(),
+        is_system: r.manifest.is_system,
+        state: r.state.to_string(),
+        installed_at: r.installed_at,
+    }).collect())
+}
+
+/// Enable a plugin by ID.
+#[tauri::command]
+pub fn plugin_enable(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_plugin_state(&conn, &plugin_id, PluginState::Enabled)
+        .map_err(|e| e.to_string())
+}
+
+/// Disable a plugin by ID (system plugins cannot be disabled).
+#[tauri::command]
+pub fn plugin_disable(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_plugin_state(&conn, &plugin_id, PluginState::Disabled)
+        .map_err(|e| e.to_string())
+}
+
+// ── Agenda ────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct AgendaEventInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub title: String,
+    pub description: String,
+    pub start_at: u64,
+    pub end_at: Option<u64>,
+    pub location: Option<String>,
+    pub created_by: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+fn event_to_info(e: AgendaEvent) -> AgendaEventInfo {
+    AgendaEventInfo {
+        id: e.id,
+        network_cid_short: e.network_cid_short,
+        title: e.title,
+        description: e.description,
+        start_at: e.start_at,
+        end_at: e.end_at,
+        location: e.location,
+        created_by: e.created_by,
+        created_at: e.created_at,
+        updated_at: e.updated_at,
+    }
+}
+
+/// Create a new agenda event.
+#[tauri::command]
+pub fn agenda_create(
+    app: AppHandle,
+    network_cid_short: String,
+    title: String,
+    description: String,
+    start_at: u64,
+    end_at: Option<u64>,
+    location: Option<String>,
+) -> Result<AgendaEventInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let created_by = keypair.cid().short().to_string();
+    let event = AgendaEvent::new(
+        network_cid_short,
+        title,
+        description,
+        start_at,
+        end_at,
+        location,
+        created_by,
+    );
+    store::save_agenda_event(&conn, &event).map_err(|e| e.to_string())?;
+    Ok(event_to_info(event))
+}
+
+/// List agenda events for a network.
+#[tauri::command]
+pub fn agenda_list(app: AppHandle, network_cid_short: String) -> Result<Vec<AgendaEventInfo>, String> {
+    let conn = open(&app)?;
+    let events = store::list_agenda_events(&conn, &network_cid_short)
+        .map_err(|e| e.to_string())?;
+    Ok(events.into_iter().map(event_to_info).collect())
+}
+
+/// Update an existing agenda event (title, description, start_at, end_at, location).
+#[tauri::command]
+pub fn agenda_update(
+    app: AppHandle,
+    network_cid_short: String,
+    event_id: String,
+    title: String,
+    description: String,
+    start_at: u64,
+    end_at: Option<u64>,
+    location: Option<String>,
+) -> Result<AgendaEventInfo, String> {
+    let conn = open(&app)?;
+    let mut event = store::get_agenda_event(&conn, &network_cid_short, &event_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("event '{}' not found", event_id))?;
+    event.title = title;
+    event.description = description;
+    event.start_at = start_at;
+    event.end_at = end_at;
+    event.location = location;
+    event.updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    store::save_agenda_event(&conn, &event).map_err(|e| e.to_string())?;
+    Ok(event_to_info(event))
+}
+
+/// Delete an agenda event.
+#[tauri::command]
+pub fn agenda_delete(
+    app: AppHandle,
+    network_cid_short: String,
+    event_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_agenda_event(&conn, &network_cid_short, &event_id)
+        .map_err(|e| e.to_string())
 }

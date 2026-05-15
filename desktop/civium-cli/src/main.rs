@@ -5,11 +5,12 @@ use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus,
+    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
-    MemberRole, NetworkKind, MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
-    Proposal, ShareTerms, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
+    GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
+    NodeCommand, NodeConfig, NodeEvent, PeerId, PluginManifest, PluginState,
+    Proposal, RrmEntry, ShareTerms, TrustCircle, TrustedRrm, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
 use clap::{Parser, Subcommand};
@@ -71,6 +72,21 @@ enum Command {
         #[command(subcommand)]
         action: DirectoryCmd,
     },
+    /// Manage Registres des Réseaux Malveillants (RRM)
+    Rrm {
+        #[command(subcommand)]
+        action: RrmCmd,
+    },
+    /// Manage installed plugins
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
+    },
+    /// Manage agenda events (calendar)
+    Agenda {
+        #[command(subcommand)]
+        action: AgendaCmd,
+    },
 }
 
 // ── Identity sub-commands ─────────────────────────────────────────────────────
@@ -113,6 +129,39 @@ enum NetworkCmd {
         #[arg(long, default_value = "0")]
         expires_in: u64,
     },
+    /// Trust an RRM — this network will consult it on connection checks.
+    TrustRrm {
+        /// Network CID short.
+        #[arg(long)]
+        network: String,
+        /// CID short of the RRM to trust.
+        #[arg(long)]
+        rrm: String,
+        /// Display name for this RRM.
+        #[arg(long)]
+        name: String,
+    },
+    /// Stop trusting an RRM.
+    UntrustRrm {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        rrm: String,
+    },
+    /// List RRMs trusted by a network.
+    TrustedRrms {
+        #[arg(long)]
+        network: String,
+    },
+    /// Check if a peer network is listed in any trusted RRM.
+    CheckRrm {
+        /// Network doing the check.
+        #[arg(long)]
+        network: String,
+        /// CID short of the peer to check.
+        #[arg(long)]
+        peer: String,
+    },
 }
 
 // ── Member sub-commands ───────────────────────────────────────────────────────
@@ -149,6 +198,65 @@ enum MemberCmd {
     Reject {
         network_cid: String,
         member_cid: String,
+    },
+    /// Mark a member as a minor (admin only).
+    SetMinor {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        member: String,
+    },
+    /// Remove the minor flag from a member (admin only).
+    UnsetMinor {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        member: String,
+    },
+    /// Add a guardian for a minor member (admin only).
+    SetGuardian {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// Remove a guardian–minor link (admin only).
+    RemoveGuardian {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// List guardians of a minor member.
+    Guardians {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+    },
+    /// List minors for which a member is guardian.
+    Wards {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// Set interaction restrictions for a minor member (admin only).
+    SetRestrictions {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        /// Max trust circle (0–2) the minor can interact in.
+        #[arg(long, default_value = "1")]
+        max_circle: u8,
+        /// CID shorts explicitly allowed beyond max_circle (comma-separated).
+        #[arg(long, default_value = "")]
+        allowed: String,
     },
 }
 
@@ -417,6 +525,113 @@ enum DirectoryCmd {
     },
 }
 
+// ── RRM sub-commands ─────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum RrmCmd {
+    /// Create a new RRM network (kind = rrm).
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "admin")]
+        display_name: String,
+    },
+    /// List all RRM networks in your data directory.
+    List,
+    /// Report a malicious network to an RRM.
+    Report {
+        /// RRM network CID short.
+        #[arg(long)]
+        rrm: String,
+        /// CID short of the network being reported.
+        #[arg(long)]
+        network: String,
+        /// Human-readable name of the reported network.
+        #[arg(long)]
+        name: String,
+        /// Reason for the report.
+        #[arg(long)]
+        reason: String,
+        /// Optional URL to evidence (article, screenshot, etc.).
+        #[arg(long)]
+        evidence: Option<String>,
+    },
+    /// Search reports in an RRM (optional free-text query).
+    Search {
+        #[arg(long)]
+        rrm: String,
+        /// Free-text query (name, CID, reason). Omit to list all.
+        query: Option<String>,
+    },
+    /// Remove a report from an RRM (by entry ID prefix).
+    Remove {
+        #[arg(long)]
+        rrm: String,
+        entry_id: String,
+    },
+}
+
+// ── Plugin sub-commands ───────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins and their status.
+    List,
+    /// Show details for a plugin.
+    Info {
+        /// Plugin ID (e.g. civium.messagerie)
+        id: String,
+    },
+    /// Enable a plugin.
+    Enable {
+        id: String,
+    },
+    /// Disable a plugin (system plugins cannot be disabled).
+    Disable {
+        id: String,
+    },
+    /// Install a plugin from a JSON manifest file.
+    Install {
+        /// Path to the manifest JSON file.
+        path: String,
+    },
+}
+
+// ── Agenda sub-commands ───────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum AgendaCmd {
+    /// Create a new calendar event.
+    Create {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Unix timestamp (seconds) for the event start.
+        #[arg(long)]
+        start: u64,
+        /// Unix timestamp (seconds) for the event end (optional).
+        #[arg(long)]
+        end: Option<u64>,
+        #[arg(long)]
+        location: Option<String>,
+    },
+    /// List events for a network.
+    List {
+        #[arg(long)]
+        network: String,
+    },
+    /// Delete an event by ID prefix.
+    Delete {
+        #[arg(long)]
+        network: String,
+        /// Event ID prefix.
+        id: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -483,6 +698,9 @@ async fn main() -> Result<()> {
         Command::Connect { action } => run_connect(action, data),
         Command::Governance { action } => run_governance(action, data),
         Command::Directory { action } => run_directory(action, data),
+        Command::Rrm { action } => run_rrm(action, data),
+        Command::Plugin { action } => run_plugin(action, data),
+        Command::Agenda { action } => run_agenda(action, data),
     }
 }
 
@@ -578,6 +796,62 @@ fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
                 println!("This invitation does not expire.");
             } else {
                 println!("Expires in {expires_in}h.");
+            }
+        }
+
+        NetworkCmd::TrustRrm { network, rrm, name } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let net = load_network_fuzzy(data, &network)?;
+            let rrm_net = load_network_fuzzy(data, &rrm)?;
+            if rrm_net.data.kind != NetworkKind::Rrm {
+                bail!("Network '{}' is not an RRM — create one with `rrm create`.", rrm);
+            }
+            let trust = TrustedRrm::new(
+                net.cid_short().to_string(),
+                rrm_net.cid_short().to_string(),
+                name.clone(),
+                keypair.cid().short().to_string(),
+            );
+            store::save_trusted_rrm(data, &trust)?;
+            println!("Network '{}' now trusts RRM '{name}' ({}).", net.name(), rrm_net.cid_short());
+        }
+
+        NetworkCmd::UntrustRrm { network, rrm } => {
+            let net = load_network_fuzzy(data, &network)?;
+            store::delete_trusted_rrm(data, net.cid_short(), &rrm)?;
+            println!("Network '{}' no longer trusts RRM '{rrm}'.", net.name());
+        }
+
+        NetworkCmd::TrustedRrms { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let trusts = store::list_trusted_rrms(data, net.cid_short())?;
+            if trusts.is_empty() {
+                println!("No trusted RRMs for network '{}'.", net.name());
+                return Ok(());
+            }
+            println!("Trusted RRMs for '{}':", net.name());
+            for t in &trusts {
+                println!("  {} — {}", t.rrm_name, t.rrm_cid_short);
+            }
+        }
+
+        NetworkCmd::CheckRrm { network, peer } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let warnings = store::check_rrm_warnings(data, net.cid_short(), &peer)?;
+            if warnings.is_empty() {
+                println!("✓ Peer '{peer}' is not listed in any trusted RRM for '{}'.", net.name());
+            } else {
+                println!("⚠ Peer '{peer}' is listed in {} RRM(s):", warnings.len());
+                for (trust, entry) in &warnings {
+                    println!("  RRM: {} ({})", trust.rrm_name, trust.rrm_cid_short);
+                    println!("  Reported network: {} ({})", entry.network_name, entry.network_cid_short);
+                    println!("  Reason: {}", entry.reason);
+                    if let Some(url) = &entry.evidence_url {
+                        println!("  Evidence: {url}");
+                    }
+                    println!("  Reported: {}", fmt_ts(entry.reported_at));
+                }
             }
         }
     }
@@ -721,6 +995,77 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
             network.reject(&member_cid).map_err(|e| anyhow::anyhow!("{e}"))?;
             store::save_network(data, &network)?;
             println!("Join request from {member_cid} rejected.");
+        }
+
+        MemberCmd::SetMinor { network, member } => {
+            store::set_member_minor(data, &network, &member, true)?;
+            println!("{member} marked as minor in network {network}.");
+        }
+
+        MemberCmd::UnsetMinor { network, member } => {
+            store::set_member_minor(data, &network, &member, false)?;
+            println!("{member} minor flag removed in network {network}.");
+        }
+
+        MemberCmd::SetGuardian { network, minor, guardian } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let link = GuardianLink::new(
+                network.clone(),
+                minor.clone(),
+                guardian.clone(),
+                keypair.cid().short().to_string(),
+            );
+            store::save_guardian_link(data, &link)?;
+            println!("{guardian} added as guardian of {minor} in network {network}.");
+        }
+
+        MemberCmd::RemoveGuardian { network, minor, guardian } => {
+            store::delete_guardian_link(data, &network, &minor, &guardian)?;
+            println!("Guardian link {guardian}→{minor} removed from network {network}.");
+        }
+
+        MemberCmd::Guardians { network, minor } => {
+            let links = store::list_guardians(data, &network, &minor)?;
+            if links.is_empty() {
+                println!("No guardians for {minor} in network {network}.");
+            } else {
+                println!("Guardians of {minor} in network {network}:");
+                for l in &links {
+                    println!("  {} (added by {} at {})", l.guardian_cid_short, l.added_by, l.added_at);
+                }
+            }
+        }
+
+        MemberCmd::Wards { network, guardian } => {
+            let links = store::list_wards(data, &network, &guardian)?;
+            if links.is_empty() {
+                println!("No minors under guardianship of {guardian} in network {network}.");
+            } else {
+                println!("Minors under {guardian} in network {network}:");
+                for l in &links {
+                    println!("  {} (added by {} at {})", l.minor_cid_short, l.added_by, l.added_at);
+                }
+            }
+        }
+
+        MemberCmd::SetRestrictions { network, minor, max_circle, allowed } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let allowed_cids: Vec<String> = if allowed.is_empty() {
+                vec![]
+            } else {
+                allowed.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            let r = MinorRestrictions::new(
+                network.clone(),
+                minor.clone(),
+                max_circle,
+                allowed_cids,
+                keypair.cid().short().to_string(),
+            );
+            store::save_minor_restrictions(data, &r)?;
+            println!("Restrictions set for {minor} in network {network}: max_circle={}, allowed={:?}", r.max_circle, r.allowed_cid_shorts);
         }
     }
     Ok(())
@@ -1373,6 +1718,15 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                         .find(|m| m.cid_short.starts_with(peer.as_str()))
                         .map(|m| m.cid_short.clone())
                         .unwrap();
+                    let author_cid_short = net.data.members.iter()
+                        .find(|m| m.cid_full == author_cid.full())
+                        .map(|m| m.cid_short.clone())
+                        .unwrap_or_default();
+                    // Enforce minor restrictions in both directions
+                    store::check_minor_interaction(data, net.cid_short(), &peer_cid_short, &author_cid_short)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    store::check_minor_interaction(data, net.cid_short(), &author_cid_short, &peer_cid_short)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                     MessageKind::Direct { to_cid_short: peer_cid_short }
                 }
                 None => MessageKind::Thread,
@@ -1903,6 +2257,214 @@ fn fmt_ts(unix: u64) -> String {
         year, month.min(12), day.min(31),
         hours % 24, mins % 60
     )
+}
+
+// ── RRM handlers ──────────────────────────────────────────────────────────────
+
+fn run_rrm(cmd: RrmCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        RrmCmd::Create { name, display_name } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let admin_cid = keypair.cid();
+            let mut network = Network::create(name.clone(), &admin_cid, display_name)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            network.data.kind = NetworkKind::Rrm;
+            store::save_network(data, &network)?;
+            println!("RRM network '{}' created.", name);
+            println!("  CID (short) : {}", network.cid_short());
+            println!("  CID (full)  : {}", network.cid_full());
+        }
+
+        RrmCmd::List => {
+            let cids = store::list_network_cids(data);
+            let rrms: Vec<_> = cids
+                .iter()
+                .filter_map(|cid| store::load_network(data, cid).ok())
+                .filter(|n| n.data.kind == NetworkKind::Rrm)
+                .collect();
+            if rrms.is_empty() {
+                println!("No RRM networks. Create one with `rrm create --name <name>`.");
+                return Ok(());
+            }
+            for n in &rrms {
+                let entries = store::list_rrm_entries(data, n.cid_short()).unwrap_or_default();
+                println!("{} — {} ({} reports)", n.cid_short(), n.name(), entries.len());
+            }
+        }
+
+        RrmCmd::Report { rrm, network, name, reason, evidence } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let reporter = keypair.cid().short().to_string();
+            let rrm_net = load_network_fuzzy(data, &rrm)?;
+            if rrm_net.data.kind != NetworkKind::Rrm {
+                bail!("Network '{}' is not an RRM.", rrm);
+            }
+            let entry = RrmEntry::new(
+                rrm_net.cid_short().to_string(),
+                network.clone(),
+                name.clone(),
+                reason.clone(),
+                evidence,
+                reporter,
+            );
+            store::save_rrm_entry(data, &entry)?;
+            println!("Network '{}' ({}) reported to RRM '{}'.", name, network, rrm_net.name());
+            println!("  Entry ID : {}", entry.id);
+        }
+
+        RrmCmd::Search { rrm, query } => {
+            let rrm_net = load_network_fuzzy(data, &rrm)?;
+            let entries = match &query {
+                Some(q) => store::search_rrm_entries(data, rrm_net.cid_short(), q)?,
+                None    => store::list_rrm_entries(data, rrm_net.cid_short())?,
+            };
+            if entries.is_empty() {
+                println!("No reports in RRM '{}'{}.",
+                    rrm_net.name(),
+                    query.as_deref().map(|q| format!(" for '{q}'")).unwrap_or_default());
+                return Ok(());
+            }
+            println!("Reports in '{}'{}:",
+                rrm_net.name(),
+                query.as_deref().map(|q| format!(" matching '{q}'")).unwrap_or_default());
+            for e in &entries {
+                println!("  [{}] {} — {}", e.id, e.network_name, e.network_cid_short);
+                println!("      Reason: {}", e.reason);
+                if let Some(url) = &e.evidence_url {
+                    println!("      Evidence: {url}");
+                }
+                println!("      Reported: {} by {}", fmt_ts(e.reported_at), e.reported_by);
+            }
+        }
+
+        RrmCmd::Remove { rrm, entry_id } => {
+            let rrm_net = load_network_fuzzy(data, &rrm)?;
+            let entries = store::list_rrm_entries(data, rrm_net.cid_short())?;
+            let entry = entries
+                .iter()
+                .find(|e| e.id.starts_with(&entry_id))
+                .ok_or_else(|| anyhow::anyhow!("no entry with ID starting with '{entry_id}'"))?;
+            let full_id = entry.id.clone();
+            store::delete_rrm_entry(data, rrm_net.cid_short(), &full_id)?;
+            println!("Entry '{full_id}' removed from RRM '{}'.", rrm_net.name());
+        }
+    }
+    Ok(())
+}
+
+// ── Plugin handler ────────────────────────────────────────────────────────────
+
+fn run_plugin(cmd: PluginCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        PluginCmd::List => {
+            let plugins = store::list_plugins(data)?;
+            if plugins.is_empty() {
+                println!("No plugins installed.");
+            } else {
+                println!("{:<30} {:<10} {:<8} {}", "ID", "VERSION", "STATUS", "NAME");
+                println!("{}", "-".repeat(70));
+                for p in &plugins {
+                    let lock = if p.manifest.is_system { " [system]" } else { "" };
+                    println!("{:<30} {:<10} {:<8} {}{}",
+                        p.manifest.id, p.manifest.version,
+                        p.state.to_string(), p.manifest.name, lock);
+                }
+            }
+        }
+
+        PluginCmd::Info { id } => {
+            let record = store::get_plugin(data, &id)?
+                .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", id))?;
+            println!("ID      : {}", record.manifest.id);
+            println!("Name    : {}", record.manifest.name);
+            println!("Version : {}", record.manifest.version);
+            println!("Author  : {}", record.manifest.author);
+            println!("Status  : {}{}", record.state, if record.manifest.is_system { " (system)" } else { "" });
+            println!("Desc    : {}", record.manifest.description);
+            println!("Perms   : {}", record.manifest.permissions.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", "));
+        }
+
+        PluginCmd::Enable { id } => {
+            store::set_plugin_state(data, &id, PluginState::Enabled)?;
+            println!("Plugin '{id}' enabled.");
+        }
+
+        PluginCmd::Disable { id } => {
+            store::set_plugin_state(data, &id, PluginState::Disabled)?;
+            println!("Plugin '{id}' disabled.");
+        }
+
+        PluginCmd::Install { path } => {
+            let json = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", path))?;
+            let manifest: PluginManifest = serde_json::from_str(&json)
+                .map_err(|e| anyhow::anyhow!("invalid manifest JSON: {e}"))?;
+            let id = manifest.id.clone();
+            let record = store::install_plugin(data, manifest)?;
+            println!("Plugin '{id}' installed (status: {}).", record.state);
+            println!("Run `civium plugin enable {id}` to activate it.");
+        }
+    }
+    Ok(())
+}
+
+// ── Agenda handler ────────────────────────────────────────────────────────────
+
+fn run_agenda(cmd: AgendaCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        AgendaCmd::Create { network, title, description, start, end, location } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let net = load_network_fuzzy(data, &network)?;
+            let event = AgendaEvent::new(
+                net.cid_short().to_string(),
+                title,
+                description,
+                start,
+                end,
+                location,
+                keypair.cid().short().to_string(),
+            );
+            let id = event.id.clone();
+            store::save_agenda_event(data, &event)?;
+            println!("Event created: {}", id);
+            println!("  Title     : {}", event.title);
+            println!("  Start     : {}", event.start_at);
+            if let Some(e) = event.end_at { println!("  End       : {e}"); }
+            if let Some(l) = &event.location { println!("  Location  : {l}"); }
+        }
+
+        AgendaCmd::List { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let events = store::list_agenda_events(data, net.cid_short())?;
+            if events.is_empty() {
+                println!("No events in '{}'.", net.name());
+            } else {
+                println!("{:<36} {:<12} {}", "ID", "START", "TITLE");
+                println!("{}", "-".repeat(70));
+                for e in &events {
+                    println!("{:<36} {:<12} {}", &e.id[..36.min(e.id.len())], e.start_at, e.title);
+                }
+            }
+        }
+
+        AgendaCmd::Delete { network, id } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let events = store::list_agenda_events(data, net.cid_short())?;
+            let event = events.iter()
+                .find(|e| e.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("no event with ID starting with '{id}'"))?;
+            let full_id = event.id.clone();
+            store::delete_agenda_event(data, net.cid_short(), &full_id)?;
+            println!("Event '{full_id}' deleted.");
+        }
+    }
+    Ok(())
 }
 
 /// Load a network by CID prefix — accepts short form or full CID.

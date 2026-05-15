@@ -10,6 +10,7 @@ export interface NetworkInfo {
   name: string;
   member_count: number;
   is_directory: boolean;
+  is_rrm: boolean;
 }
 
 export interface MemberInfo {
@@ -17,6 +18,25 @@ export interface MemberInfo {
   display_name: string;
   circle: number;
   role: string;
+  is_minor: boolean;
+}
+
+export interface GuardianLinkInfo {
+  id: string;
+  network_cid_short: string;
+  minor_cid_short: string;
+  guardian_cid_short: string;
+  added_by: string;
+  added_at: number;
+}
+
+export interface MinorRestrictionsInfo {
+  network_cid_short: string;
+  minor_cid_short: string;
+  max_circle: number;
+  allowed_cid_shorts: string[];
+  updated_by: string;
+  updated_at: number;
 }
 
 export interface PendingMemberInfo {
@@ -103,6 +123,59 @@ export interface FederationInfo {
   peer_addr: string | null;
   added_by: string;
   added_at: number;
+}
+
+export interface RrmEntryInfo {
+  id: string;
+  rrm_cid_short: string;
+  network_cid_short: string;
+  network_name: string;
+  reason: string;
+  evidence_url: string | null;
+  reported_by: string;
+  reported_at: number;
+}
+
+export interface TrustedRrmInfo {
+  id: string;
+  network_cid_short: string;
+  rrm_cid_short: string;
+  rrm_name: string;
+  added_by: string;
+  added_at: number;
+}
+
+export interface RrmWarning {
+  rrm_name: string;
+  rrm_cid_short: string;
+  network_name: string;
+  reason: string;
+  evidence_url: string | null;
+}
+
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  permissions: string[];
+  is_system: boolean;
+  state: "enabled" | "disabled";
+  installed_at: number;
+}
+
+export interface AgendaEventInfo {
+  id: string;
+  network_cid_short: string;
+  title: string;
+  description: string;
+  start_at: number;
+  end_at: number | null;
+  location: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface AdminActionInfo {

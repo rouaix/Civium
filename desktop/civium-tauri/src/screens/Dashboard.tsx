@@ -7,12 +7,17 @@ import type {
   PendingMemberInfo,
   NodeStatus,
   MessageDisplay,
+  PluginInfo,
   ProposalInfo,
   VoteResultInfo,
   AdminActionInfo,
+  AgendaEventInfo,
   DelegationInfo,
   DirectoryEntryInfo,
   FederationInfo,
+  GuardianLinkInfo,
+  RrmEntryInfo,
+  TrustedRrmInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -81,6 +86,48 @@ export default function Dashboard() {
   const [savingFed, setSavingFed] = useState(false);
   const [includeFederated, setIncludeFederated] = useState(false);
 
+  // RRM state
+  const [rrmEntries, setRrmEntries] = useState<RrmEntryInfo[]>([]);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportNetCid, setReportNetCid] = useState("");
+  const [reportNetName, setReportNetName] = useState("");
+  const [reportReason, setReportReason] = useState("");
+  const [reportEvidence, setReportEvidence] = useState("");
+  const [reporting, setReporting] = useState(false);
+
+  // Trusted RRMs state (for standard networks)
+  const [trustedRrms, setTrustedRrms] = useState<TrustedRrmInfo[]>([]);
+  const [showTrustForm, setShowTrustForm] = useState(false);
+  const [trustRrmCid, setTrustRrmCid] = useState("");
+  const [trustRrmName, setTrustRrmName] = useState("");
+  const [savingTrust, setSavingTrust] = useState(false);
+
+  // Minor / Guardian state
+  const [expandedMember, setExpandedMember] = useState<string | null>(null);
+  const [guardians, setGuardians] = useState<Record<string, GuardianLinkInfo[]>>({});
+  const [settingMinor, setSettingMinor] = useState<string | null>(null);
+  const [newGuardianCid, setNewGuardianCid] = useState("");
+  const [savingGuardian, setSavingGuardian] = useState(false);
+
+  // Direct messages state
+  const [dmBody, setDmBody] = useState<Record<string, string>>({});
+  const [sendingDm, setSendingDm] = useState<string | null>(null);
+
+  // Agenda state
+  const [agendaEvents, setAgendaEvents] = useState<AgendaEventInfo[]>([]);
+  const [showAgendaForm, setShowAgendaForm] = useState(false);
+  const [agendaTitle, setAgendaTitle] = useState("");
+  const [agendaDescription, setAgendaDescription] = useState("");
+  const [agendaStart, setAgendaStart] = useState("");
+  const [agendaEnd, setAgendaEnd] = useState("");
+  const [agendaLocation, setAgendaLocation] = useState("");
+  const [creatingEvent, setCreatingEvent] = useState(false);
+
+  // Plugin panel
+  const [showPlugins, setShowPlugins] = useState(false);
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -95,6 +142,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
+    tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
   }, []);
 
   const refreshNetwork = useCallback((cid: string) => {
@@ -131,6 +179,18 @@ export default function Dashboard() {
     tauriInvoke<FederationInfo[]>("directory_federations", { directoryCid: cid }).then(setFederations);
   }, []);
 
+  const refreshRrmEntries = useCallback((cid: string) => {
+    tauriInvoke<RrmEntryInfo[]>("rrm_list", { rrmCid: cid }).then(setRrmEntries);
+  }, []);
+
+  const refreshTrustedRrms = useCallback((cid: string) => {
+    tauriInvoke<TrustedRrmInfo[]>("network_trusted_rrms", { networkCid: cid }).then(setTrustedRrms);
+  }, []);
+
+  const refreshAgendaEvents = useCallback((cid: string) => {
+    tauriInvoke<AgendaEventInfo[]>("agenda_list", { networkCidShort: cid }).then(setAgendaEvents).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -142,6 +202,13 @@ export default function Dashboard() {
       refreshDirEntries(selected.cid_short);
       refreshFederations(selected.cid_short);
     }
+    if (selected.is_rrm) {
+      refreshRrmEntries(selected.cid_short);
+    }
+    if (!selected.is_directory && !selected.is_rrm) {
+      refreshTrustedRrms(selected.cid_short);
+    }
+    refreshAgendaEvents(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -156,6 +223,15 @@ export default function Dashboard() {
     setFederations([]);
     setShowFedForm(false);
     setIncludeFederated(false);
+    setRrmEntries([]);
+    setShowReportForm(false);
+    setTrustedRrms([]);
+    setShowTrustForm(false);
+    setExpandedMember(null);
+    setGuardians({});
+    setNewGuardianCid("");
+    setAgendaEvents([]);
+    setShowAgendaForm(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -459,6 +535,212 @@ export default function Dashboard() {
     }
   }
 
+  async function handleReport() {
+    if (!selected || !reportNetCid.trim() || !reportNetName.trim() || !reportReason.trim()) return;
+    setReporting(true);
+    try {
+      const entry = await tauriInvoke<RrmEntryInfo>("rrm_report", {
+        rrmCid: selected.cid_short,
+        networkCidShort: reportNetCid.trim(),
+        networkName: reportNetName.trim(),
+        reason: reportReason.trim(),
+        evidenceUrl: reportEvidence.trim() || null,
+      });
+      setRrmEntries((prev) => [entry, ...prev]);
+      setReportNetCid("");
+      setReportNetName("");
+      setReportReason("");
+      setReportEvidence("");
+      setShowReportForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setReporting(false);
+    }
+  }
+
+  async function handleRemoveRrmEntry(entryId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("rrm_remove", { rrmCid: selected.cid_short, entryId });
+      setRrmEntries((prev) => prev.filter((e) => e.id !== entryId));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleTrustRrm() {
+    if (!selected || !trustRrmCid.trim() || !trustRrmName.trim()) return;
+    setSavingTrust(true);
+    try {
+      const trust = await tauriInvoke<TrustedRrmInfo>("network_trust_rrm", {
+        networkCid: selected.cid_short,
+        rrmCid: trustRrmCid.trim(),
+        rrmName: trustRrmName.trim(),
+      });
+      setTrustedRrms((prev) => [...prev, trust]);
+      setTrustRrmCid("");
+      setTrustRrmName("");
+      setShowTrustForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingTrust(false);
+    }
+  }
+
+  async function handleUntrustRrm(rrmCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("network_untrust_rrm", { networkCid: selected.cid_short, rrmCid });
+      setTrustedRrms((prev) => prev.filter((t) => t.rrm_cid_short !== rrmCid));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleToggleMinor(memberCid: string, isMinor: boolean) {
+    if (!selected) return;
+    setSettingMinor(memberCid);
+    try {
+      await tauriInvoke("member_set_minor", {
+        networkCid: selected.cid_short,
+        memberCid,
+        isMinor,
+      });
+      refreshNetwork(selected.cid_short);
+      if (!isMinor) {
+        setGuardians((prev) => { const n = { ...prev }; delete n[memberCid]; return n; });
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSettingMinor(null);
+    }
+  }
+
+  async function handleExpandMember(memberCid: string) {
+    if (expandedMember === memberCid) { setExpandedMember(null); return; }
+    setExpandedMember(memberCid);
+    if (!selected) return;
+    const links = await tauriInvoke<GuardianLinkInfo[]>("member_guardians", {
+      networkCid: selected.cid_short,
+      minorCid: memberCid,
+    }).catch(() => []);
+    setGuardians((prev) => ({ ...prev, [memberCid]: links }));
+  }
+
+  async function handleAddGuardian(minorCid: string) {
+    if (!selected || !newGuardianCid.trim()) return;
+    setSavingGuardian(true);
+    try {
+      const link = await tauriInvoke<GuardianLinkInfo>("member_set_guardian", {
+        networkCid: selected.cid_short,
+        minorCid,
+        guardianCid: newGuardianCid.trim(),
+      });
+      setGuardians((prev) => ({ ...prev, [minorCid]: [...(prev[minorCid] ?? []), link] }));
+      setNewGuardianCid("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingGuardian(false);
+    }
+  }
+
+  async function handleRemoveGuardian(minorCid: string, guardianCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("member_remove_guardian", {
+        networkCid: selected.cid_short,
+        minorCid,
+        guardianCid,
+      });
+      setGuardians((prev) => ({
+        ...prev,
+        [minorCid]: (prev[minorCid] ?? []).filter((l) => l.guardian_cid_short !== guardianCid),
+      }));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleSendDm(toCidShort: string) {
+    if (!selected || !dmBody[toCidShort]?.trim()) return;
+    setSendingDm(toCidShort);
+    try {
+      const msg = await tauriInvoke<MessageDisplay>("message_send_direct", {
+        networkCid: selected.cid_short,
+        toCidShort,
+        body: dmBody[toCidShort].trim(),
+      });
+      setMessages((prev) => [...prev, msg]);
+      setDmBody((prev) => ({ ...prev, [toCidShort]: "" }));
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSendingDm(null);
+    }
+  }
+
+  async function handleTogglePlugin(pluginId: string, currentState: string) {
+    setTogglingPlugin(pluginId);
+    try {
+      if (currentState === "enabled") {
+        await tauriInvoke("plugin_disable", { pluginId });
+      } else {
+        await tauriInvoke("plugin_enable", { pluginId });
+      }
+      const updated = await tauriInvoke<PluginInfo[]>("plugin_list");
+      setPlugins(updated);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setTogglingPlugin(null);
+    }
+  }
+
+  async function handleCreateEvent() {
+    if (!selected || !agendaTitle.trim() || !agendaStart) return;
+    setCreatingEvent(true);
+    try {
+      const startTs = Math.floor(new Date(agendaStart).getTime() / 1000);
+      const endTs = agendaEnd ? Math.floor(new Date(agendaEnd).getTime() / 1000) : null;
+      await tauriInvoke("agenda_create", {
+        networkCidShort: selected.cid_short,
+        title: agendaTitle.trim(),
+        description: agendaDescription.trim(),
+        startAt: startTs,
+        endAt: endTs,
+        location: agendaLocation.trim() || null,
+      });
+      setAgendaTitle("");
+      setAgendaDescription("");
+      setAgendaStart("");
+      setAgendaEnd("");
+      setAgendaLocation("");
+      setShowAgendaForm(false);
+      refreshAgendaEvents(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setCreatingEvent(false);
+    }
+  }
+
+  async function handleDeleteEvent(eventId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("agenda_delete", {
+        networkCidShort: selected.cid_short,
+        eventId,
+      });
+      refreshAgendaEvents(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -492,7 +774,7 @@ export default function Dashboard() {
       <aside className="w-64 bg-civium-900 text-white flex flex-col">
         <div className="px-5 py-4 border-b border-civium-700">
           <h1 className="text-lg font-bold tracking-wide">Civium</h1>
-          <p className="text-xs text-civium-100 mt-0.5">Phase 1</p>
+          <p className="text-xs text-civium-100 mt-0.5">Phase 3</p>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
           {networks.length === 0 && (
@@ -513,13 +795,36 @@ export default function Dashboard() {
                 {net.is_directory && (
                   <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
                 )}
+                {net.is_rrm && (
+                  <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                )}
               </div>
               <div className="text-xs opacity-70">
-                {net.is_directory ? "Annuaire" : `${net.member_count} membre(s)`}
+                {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
               </div>
             </button>
           ))}
         </nav>
+
+        {/* Plugins nav */}
+        <div className="px-3 pb-2 border-t border-civium-700 pt-2">
+          <button
+            onClick={() => { setShowPlugins(true); setSelected(null); }}
+            className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+              showPlugins
+                ? "bg-civium-600 text-white"
+                : "text-civium-100 hover:bg-civium-700"
+            }`}
+          >
+            <div className="font-medium flex items-center gap-1.5">
+              Plugins
+              <span className="text-xs bg-civium-700 px-1.5 py-0.5 rounded-full">
+                {plugins.filter((p) => p.state === "enabled").length}/{plugins.length}
+              </span>
+            </div>
+            <div className="text-xs opacity-70">Gérer les plugins installés</div>
+          </button>
+        </div>
 
         {/* P2P node status */}
         <div className="px-4 py-3 border-t border-civium-700 space-y-0.5">
@@ -549,7 +854,71 @@ export default function Dashboard() {
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
-        {!selected ? (
+        {showPlugins ? (
+          <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-gray-900">Plugins</h2>
+              <button
+                className="text-xs text-gray-400 hover:text-gray-600"
+                onClick={() => setShowPlugins(false)}
+              >
+                ✕ Fermer
+              </button>
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
+              {plugins.length === 0 && (
+                <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucun plugin installé.</p>
+              )}
+              {plugins.map((p) => (
+                <div key={p.id} className="px-4 py-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-800">{p.name}</span>
+                      <span className="text-xs text-gray-400">v{p.version}</span>
+                      {p.is_system && (
+                        <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>
+                      )}
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        p.state === "enabled"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-gray-100 text-gray-500"
+                      }`}>
+                        {p.state === "enabled" ? "actif" : "inactif"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
+                    <p className="text-xs text-gray-400 mt-1 font-mono">{p.id}</p>
+                    {p.permissions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {p.permissions.map((perm) => (
+                          <span key={perm} className="text-xs px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-mono">
+                            {perm}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {!p.is_system && (
+                    <button
+                      className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                        p.state === "enabled"
+                          ? "border-gray-200 text-gray-600 hover:bg-gray-50"
+                          : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"
+                      }`}
+                      disabled={togglingPlugin === p.id}
+                      onClick={() => handleTogglePlugin(p.id, p.state)}
+                    >
+                      {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400">
+              Pour installer un plugin tiers : <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">civium plugin install manifest.json</code>
+            </p>
+          </div>
+        ) : !selected ? (
           <div className="flex items-center justify-center h-full text-gray-400">
             Sélectionnez un réseau
           </div>
@@ -636,25 +1005,122 @@ export default function Dashboard() {
                   <p className="px-4 py-3 text-sm text-gray-400">Aucun membre.</p>
                 )}
                 {members.map((m) => (
-                  <div key={m.cid_short} className="flex items-center px-4 py-3 gap-3">
-                    <div className="w-8 h-8 rounded-full bg-civium-100 flex items-center justify-center
-                                    text-civium-700 text-sm font-semibold">
-                      {m.display_name[0]?.toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{m.display_name}</div>
-                      <div className="text-xs text-gray-400 font-mono">{m.cid_short}</div>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
-                        {circleLabel(m.circle)}
-                      </span>
-                      {m.role === "admin" && (
-                        <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
-                          admin
+                  <div key={m.cid_short}>
+                    <div
+                      className="flex items-center px-4 py-3 gap-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                      onClick={() => handleExpandMember(m.cid_short)}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-civium-100 flex items-center justify-center
+                                      text-civium-700 text-sm font-semibold shrink-0">
+                        {m.display_name[0]?.toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">{m.display_name}</div>
+                        <div className="text-xs text-gray-400 font-mono">{m.cid_short}</div>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
+                          {circleLabel(m.circle)}
                         </span>
-                      )}
+                        {m.role === "admin" && (
+                          <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
+                            admin
+                          </span>
+                        )}
+                        {m.is_minor && (
+                          <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
+                            mineur
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    {expandedMember === m.cid_short && (
+                      <div className="border-b border-gray-100 bg-gray-50">
+                        {/* DM section */}
+                        <div className="px-4 pt-2 pb-3">
+                          <p className="text-xs font-medium text-gray-500 mb-2">Message direct</p>
+                          {messages
+                            .filter((msg) => msg.is_direct && (msg.author_cid_short === m.cid_short || msg.to_cid_short === m.cid_short))
+                            .slice(-5)
+                            .map((msg) => (
+                              <div key={msg.id} className={`text-xs mb-1 ${msg.author_cid_short === m.cid_short ? "text-gray-600" : "text-civium-700"}`}>
+                                <span className="font-medium">{msg.author_name}</span>
+                                <span className="text-gray-400"> {formatTime(msg.sent_at)} — </span>
+                                {msg.body}
+                              </div>
+                            ))}
+                          <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="text"
+                              className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white"
+                              placeholder={`Message à ${m.display_name}…`}
+                              value={dmBody[m.cid_short] ?? ""}
+                              onChange={(e) => setDmBody((prev) => ({ ...prev, [m.cid_short]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendDm(m.cid_short); } }}
+                            />
+                            <button
+                              className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                              disabled={sendingDm === m.cid_short || !dmBody[m.cid_short]?.trim()}
+                              onClick={(e) => { e.stopPropagation(); handleSendDm(m.cid_short); }}
+                            >
+                              {sendingDm === m.cid_short ? "…" : "Envoyer"}
+                            </button>
+                          </div>
+                        </div>
+                        {/* Admin section */}
+                        <div className="px-4 pb-3 space-y-2 border-t border-gray-100">
+                          <div className="flex items-center gap-2 pt-2">
+                            <span className="text-xs text-gray-500">Admin :</span>
+                            <button
+                              className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                m.is_minor
+                                  ? "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+                                  : "bg-gray-50 border-gray-300 text-gray-600 hover:bg-gray-100"
+                              }`}
+                              disabled={settingMinor === m.cid_short}
+                              onClick={(e) => { e.stopPropagation(); handleToggleMinor(m.cid_short, !m.is_minor); }}
+                            >
+                              {settingMinor === m.cid_short ? "…" : m.is_minor ? "Retirer le statut mineur" : "Marquer comme mineur"}
+                            </button>
+                          </div>
+                          {m.is_minor && (
+                            <div className="space-y-1">
+                              <p className="text-xs text-gray-500 font-medium">Tuteurs :</p>
+                              {(guardians[m.cid_short] ?? []).length === 0 && (
+                                <p className="text-xs text-gray-400">Aucun tuteur.</p>
+                              )}
+                              {(guardians[m.cid_short] ?? []).map((l) => (
+                                <div key={l.guardian_cid_short} className="flex items-center gap-2 text-xs text-gray-700">
+                                  <span className="font-mono">{l.guardian_cid_short}</span>
+                                  <button
+                                    className="text-red-500 hover:text-red-700 text-xs"
+                                    onClick={(e) => { e.stopPropagation(); handleRemoveGuardian(m.cid_short, l.guardian_cid_short); }}
+                                  >
+                                    Retirer
+                                  </button>
+                                </div>
+                              ))}
+                              <div className="flex gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="text"
+                                  className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white"
+                                  placeholder="CID short du tuteur"
+                                  value={newGuardianCid}
+                                  onChange={(e) => setNewGuardianCid(e.target.value)}
+                                />
+                                <button
+                                  className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                                  disabled={savingGuardian || !newGuardianCid.trim()}
+                                  onClick={() => handleAddGuardian(m.cid_short)}
+                                >
+                                  {savingGuardian ? "…" : "Ajouter tuteur"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1051,6 +1517,284 @@ export default function Dashboard() {
                 </button>
               </div>
             </section>
+
+            {/* ── Agenda section ── */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                  Agenda ({agendaEvents.length})
+                </h3>
+                <button
+                  onClick={() => setShowAgendaForm((v) => !v)}
+                  className="text-xs text-indigo-500 hover:text-indigo-700"
+                >
+                  {showAgendaForm ? "Annuler" : "+ Événement"}
+                </button>
+              </div>
+
+              {showAgendaForm && (
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                  <input
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                    placeholder="Titre *"
+                    value={agendaTitle}
+                    onChange={(e) => setAgendaTitle(e.target.value)}
+                  />
+                  <textarea
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1 resize-none"
+                    placeholder="Description"
+                    rows={2}
+                    value={agendaDescription}
+                    onChange={(e) => setAgendaDescription(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500">Début *</label>
+                      <input
+                        type="datetime-local"
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                        value={agendaStart}
+                        onChange={(e) => setAgendaStart(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500">Fin</label>
+                      <input
+                        type="datetime-local"
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                        value={agendaEnd}
+                        onChange={(e) => setAgendaEnd(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <input
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                    placeholder="Lieu (optionnel)"
+                    value={agendaLocation}
+                    onChange={(e) => setAgendaLocation(e.target.value)}
+                  />
+                  <button
+                    onClick={handleCreateEvent}
+                    disabled={creatingEvent || !agendaTitle.trim() || !agendaStart}
+                    className="w-full text-sm bg-indigo-500 text-white rounded px-3 py-1.5 hover:bg-indigo-600 disabled:opacity-50"
+                  >
+                    {creatingEvent ? "Enregistrement…" : "Créer l'événement"}
+                  </button>
+                </div>
+              )}
+
+              {agendaEvents.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Aucun événement.</p>
+              ) : (
+                <div className="space-y-2">
+                  {agendaEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="flex items-start justify-between gap-2 p-2 bg-gray-50 rounded border border-gray-100"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-800">{ev.title}</div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(ev.start_at * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
+                          {ev.end_at && (
+                            <> → {new Date(ev.end_at * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}</>
+                          )}
+                        </div>
+                        {ev.location && (
+                          <div className="text-xs text-gray-400">{ev.location}</div>
+                        )}
+                        {ev.description && (
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ev.description}</p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleDeleteEvent(ev.id)}
+                        className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                        title="Supprimer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* ── Annuaire section (directory networks only) ── */}
+            {/* ── RRM section (RRM networks only) ── */}
+            {selected.is_rrm && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Réseaux signalés ({rrmEntries.length})
+                  </h3>
+                  <button
+                    onClick={() => setShowReportForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-red-600 text-white rounded-lg
+                               hover:bg-red-700 transition-colors"
+                  >
+                    {showReportForm ? "Annuler" : "+ Signaler"}
+                  </button>
+                </div>
+
+                {showReportForm && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 space-y-3">
+                    <input
+                      value={reportNetCid}
+                      onChange={(e) => setReportNetCid(e.target.value)}
+                      placeholder="CID court du réseau à signaler"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportNetName}
+                      onChange={(e) => setReportNetName(e.target.value)}
+                      placeholder="Nom du réseau"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportReason}
+                      onChange={(e) => setReportReason(e.target.value)}
+                      placeholder="Motif du signalement"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportEvidence}
+                      onChange={(e) => setReportEvidence(e.target.value)}
+                      placeholder="URL preuve (optionnel)"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <button
+                      onClick={handleReport}
+                      disabled={reporting || !reportNetCid.trim() || !reportNetName.trim() || !reportReason.trim()}
+                      className="text-xs px-4 py-2 bg-red-600 text-white rounded-lg
+                                 hover:bg-red-700 disabled:opacity-50 transition-colors font-medium"
+                    >
+                      {reporting ? "Signalement…" : "Signaler"}
+                    </button>
+                  </div>
+                )}
+
+                {rrmEntries.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6">
+                    Aucun réseau signalé dans ce registre.
+                  </p>
+                ) : (
+                  <div className="bg-white border border-red-100 rounded-xl divide-y divide-red-50">
+                    {rrmEntries.map((entry) => (
+                      <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+                        <span className="mt-0.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0
+                                         bg-red-100 text-red-700">
+                          ⚠
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-900">{entry.network_name}</div>
+                          <div className="text-xs text-gray-400 font-mono">{entry.network_cid_short}</div>
+                          <p className="text-xs text-red-700 mt-0.5">{entry.reason}</p>
+                          {entry.evidence_url && (
+                            <p className="text-xs text-blue-500 mt-0.5 truncate">
+                              {entry.evidence_url}
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            par {entry.reported_by} · {new Date(entry.reported_at * 1000).toLocaleDateString("fr-FR")}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveRrmEntry(entry.id)}
+                          className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                          title="Supprimer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* ── Trusted RRMs section (standard networks only) ── */}
+            {!selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    RRM de confiance ({trustedRrms.length})
+                  </h3>
+                  <button
+                    onClick={() => setShowTrustForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-white border border-gray-200 text-gray-600
+                               rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    {showTrustForm ? "Annuler" : "+ Ajouter"}
+                  </button>
+                </div>
+
+                {showTrustForm && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-3 space-y-2">
+                    <input
+                      value={trustRrmCid}
+                      onChange={(e) => setTrustRrmCid(e.target.value)}
+                      placeholder="CID court du RRM"
+                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-orange-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={trustRrmName}
+                      onChange={(e) => setTrustRrmName(e.target.value)}
+                      placeholder="Nom du RRM"
+                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-orange-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <button
+                      onClick={handleTrustRrm}
+                      disabled={savingTrust || !trustRrmCid.trim() || !trustRrmName.trim()}
+                      className="text-xs px-3 py-1.5 bg-orange-600 text-white rounded-lg
+                                 hover:bg-orange-700 disabled:opacity-50 transition-colors"
+                    >
+                      {savingTrust ? "…" : "Faire confiance"}
+                    </button>
+                  </div>
+                )}
+
+                <div className="bg-orange-50 border border-orange-100 rounded-xl divide-y divide-orange-50">
+                  {trustedRrms.map((t) => (
+                    <div key={t.rrm_cid_short} className="flex items-center justify-between px-4 py-2.5 text-xs">
+                      <span className="text-orange-800">
+                        {t.rrm_name}
+                        <span className="text-orange-400 font-mono ml-1">({t.rrm_cid_short})</span>
+                      </span>
+                      <button
+                        onClick={() => handleUntrustRrm(t.rrm_cid_short)}
+                        className="text-orange-300 hover:text-red-400 transition-colors"
+                        title="Retirer la confiance"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* ── Add trusted RRM button when none yet ── */}
+            {!selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
+              <button
+                onClick={() => setShowTrustForm(true)}
+                className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
+              >
+                + Faire confiance à un RRM
+              </button>
+            )}
 
             {/* ── Annuaire section (directory networks only) ── */}
             {selected.is_directory && (

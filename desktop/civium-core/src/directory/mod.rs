@@ -114,6 +114,77 @@ impl FederatedDirectory {
     }
 }
 
+/// An entry in a Registre des Réseaux Malveillants (RRM) — a reported malicious network.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RrmEntry {
+    pub id: String,
+    pub rrm_cid_short: String,
+    pub network_cid_short: String,
+    pub network_name: String,
+    pub reason: String,
+    pub evidence_url: Option<String>,
+    pub reported_by: String,
+    pub reported_at: u64,
+}
+
+impl RrmEntry {
+    pub fn new(
+        rrm_cid_short: String,
+        network_cid_short: String,
+        network_name: String,
+        reason: String,
+        evidence_url: Option<String>,
+        reported_by: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            rrm_cid_short,
+            network_cid_short,
+            network_name,
+            reason,
+            evidence_url,
+            reported_by,
+            reported_at: unix_now(),
+        }
+    }
+
+    pub fn matches(&self, query: &str) -> bool {
+        let q = query.to_lowercase();
+        self.network_name.to_lowercase().contains(&q)
+            || self.network_cid_short.contains(&q)
+            || self.reason.to_lowercase().contains(&q)
+    }
+}
+
+/// A trust relationship: a standard network that consults a specific RRM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedRrm {
+    pub id: String,
+    pub network_cid_short: String,
+    pub rrm_cid_short: String,
+    pub rrm_name: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+impl TrustedRrm {
+    pub fn new(
+        network_cid_short: String,
+        rrm_cid_short: String,
+        rrm_name: String,
+        added_by: String,
+    ) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            network_cid_short,
+            rrm_cid_short,
+            rrm_name,
+            added_by,
+            added_at: unix_now(),
+        }
+    }
+}
+
 fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

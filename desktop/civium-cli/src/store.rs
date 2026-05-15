@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS vote_delegations (
     network_cid         TEXT NOT NULL,
     delegator_cid_short TEXT NOT NULL,
-    proposal_id         TEXT,
+    proposal_id         TEXT NOT NULL DEFAULT '',
     delegation_json     TEXT NOT NULL,
-    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+    PRIMARY KEY (network_cid, delegator_cid_short, proposal_id)
 );
 CREATE TABLE IF NOT EXISTS directory_entries (
     directory_cid   TEXT NOT NULL,
@@ -77,6 +77,41 @@ CREATE TABLE IF NOT EXISTS directory_federations (
     federation_json TEXT NOT NULL,
     PRIMARY KEY (host_cid, peer_cid)
 );
+CREATE TABLE IF NOT EXISTS rrm_entries (
+    rrm_cid         TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (rrm_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS trusted_rrms (
+    network_cid     TEXT NOT NULL,
+    rrm_cid         TEXT NOT NULL,
+    trust_json      TEXT NOT NULL,
+    PRIMARY KEY (network_cid, rrm_cid)
+);
+CREATE TABLE IF NOT EXISTS guardian_links (
+    network_cid     TEXT NOT NULL,
+    minor_cid       TEXT NOT NULL,
+    guardian_cid    TEXT NOT NULL,
+    link_json       TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid, guardian_cid)
+);
+CREATE TABLE IF NOT EXISTS minor_restrictions (
+    network_cid         TEXT NOT NULL,
+    minor_cid           TEXT NOT NULL,
+    restrictions_json   TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid)
+);
+CREATE TABLE IF NOT EXISTS plugins (
+    plugin_id   TEXT PRIMARY KEY,
+    record_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agenda_events (
+    network_cid TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    PRIMARY KEY (network_cid, event_id)
+);
 ";
 
 fn open_db(data_dir: &Path) -> Result<Connection> {
@@ -86,7 +121,27 @@ fn open_db(data_dir: &Path) -> Result<Connection> {
     let conn = Connection::open(&path)
         .with_context(|| format!("cannot open database at {}", path.display()))?;
     conn.execute_batch(SCHEMA).context("cannot initialize database schema")?;
+    seed_plugins(&conn)?;
     Ok(conn)
+}
+
+fn seed_plugins(conn: &Connection) -> Result<()> {
+    for (manifest, enabled) in preinstalled_plugins() {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE plugin_id = ?1",
+            params![&manifest.id],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if exists == 0 {
+            let record = if enabled { PluginRecord::new_enabled(manifest) } else { PluginRecord::new(manifest) };
+            let json = serde_json::to_string(&record)?;
+            conn.execute(
+                "INSERT INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+                params![&record.manifest.id, json],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 // ── Identity ───────────────────────────────────────────────────────────────────
@@ -306,16 +361,12 @@ pub fn list_votes(data_dir: &Path, proposal_id: &str) -> Result<Vec<Vote>> {
 pub fn save_delegation(data_dir: &Path, delegation: &VoteDelegation) -> Result<()> {
     let conn = open_db(data_dir)?;
     let json = serde_json::to_string(delegation)?;
+    let pid = delegation.proposal_id.as_deref().unwrap_or("");
     conn.execute(
         "INSERT OR REPLACE INTO vote_delegations
              (network_cid, delegator_cid_short, proposal_id, delegation_json)
          VALUES (?1, ?2, ?3, ?4)",
-        params![
-            &delegation.network_cid_short,
-            &delegation.delegator_cid_short,
-            &delegation.proposal_id,
-            json
-        ],
+        params![&delegation.network_cid_short, &delegation.delegator_cid_short, pid, json],
     )?;
     Ok(())
 }
@@ -327,12 +378,13 @@ pub fn delete_delegation(
     proposal_id: Option<&str>,
 ) -> Result<()> {
     let conn = open_db(data_dir)?;
+    let pid = proposal_id.unwrap_or("");
     conn.execute(
         "DELETE FROM vote_delegations
           WHERE network_cid = ?1
             AND delegator_cid_short = ?2
-            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
-        params![network_cid_short, delegator_cid_short, proposal_id],
+            AND proposal_id = ?3",
+        params![network_cid_short, delegator_cid_short, pid],
     )?;
     Ok(())
 }
@@ -455,6 +507,345 @@ pub fn delete_federation(data_dir: &Path, host_cid_short: &str, peer_cid_short: 
     conn.execute(
         "DELETE FROM directory_federations WHERE host_cid = ?1 AND peer_cid = ?2",
         params![host_cid_short, peer_cid_short],
+    )?;
+    Ok(())
+}
+
+// ── RRM entries ───────────────────────────────────────────────────────────────
+
+pub fn save_rrm_entry(data_dir: &Path, entry: &RrmEntry) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO rrm_entries (rrm_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.rrm_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_rrm_entries(data_dir: &Path, rrm_cid_short: &str) -> Result<Vec<RrmEntry>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM rrm_entries WHERE rrm_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![rrm_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: RrmEntry = serde_json::from_str(&json).context("invalid RRM entry in database")?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_rrm_entries(data_dir: &Path, rrm_cid_short: &str, query: &str) -> Result<Vec<RrmEntry>> {
+    let entries = list_rrm_entries(data_dir, rrm_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_rrm_entry(data_dir: &Path, rrm_cid_short: &str, entry_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM rrm_entries WHERE rrm_cid = ?1 AND entry_id = ?2",
+        params![rrm_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Trusted RRMs ──────────────────────────────────────────────────────────────
+
+pub fn save_trusted_rrm(data_dir: &Path, trust: &TrustedRrm) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(trust)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO trusted_rrms (network_cid, rrm_cid, trust_json)
+         VALUES (?1, ?2, ?3)",
+        params![&trust.network_cid_short, &trust.rrm_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_trusted_rrms(data_dir: &Path, network_cid_short: &str) -> Result<Vec<TrustedRrm>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT trust_json FROM trusted_rrms WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut trusts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let t: TrustedRrm = serde_json::from_str(&json).context("invalid trusted RRM in database")?;
+        trusts.push(t);
+    }
+    Ok(trusts)
+}
+
+pub fn delete_trusted_rrm(data_dir: &Path, network_cid_short: &str, rrm_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM trusted_rrms WHERE network_cid = ?1 AND rrm_cid = ?2",
+        params![network_cid_short, rrm_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Returns the (TrustedRrm, RrmEntry) pairs where `peer_cid_short` is listed in any
+/// RRM trusted by `network_cid_short`. Used for connection-time warnings.
+pub fn check_rrm_warnings(
+    data_dir: &Path,
+    network_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<Vec<(TrustedRrm, RrmEntry)>> {
+    let trusts = list_trusted_rrms(data_dir, network_cid_short)?;
+    let mut warnings = Vec::new();
+    for trust in trusts {
+        let entries = list_rrm_entries(data_dir, &trust.rrm_cid_short)?;
+        for entry in entries {
+            if entry.network_cid_short == peer_cid_short {
+                warnings.push((trust.clone(), entry));
+                break;
+            }
+        }
+    }
+    Ok(warnings)
+}
+
+// ── Minor / Guardian ─────────────────────────────────────────────────────────
+
+pub fn set_member_minor(data_dir: &Path, network_cid_short: &str, member_cid_short: &str, is_minor: bool) -> Result<()> {
+    let mut network = load_network(data_dir, network_cid_short)?;
+    let member = network.data.members.iter_mut()
+        .find(|m| m.cid_short == member_cid_short)
+        .ok_or_else(|| anyhow::anyhow!("member '{}' not found", member_cid_short))?;
+    member.is_minor = is_minor;
+    save_network(data_dir, &network)
+}
+
+pub fn save_guardian_link(data_dir: &Path, link: &GuardianLink) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(link)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO guardian_links (network_cid, minor_cid, guardian_cid, link_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&link.network_cid_short, &link.minor_cid_short, &link.guardian_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_guardians(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, minor_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json).context("invalid guardian link")?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn list_wards(data_dir: &Path, network_cid_short: &str, guardian_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND guardian_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, guardian_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json).context("invalid guardian link")?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn delete_guardian_link(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str, guardian_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 AND guardian_cid = ?3",
+        params![network_cid_short, minor_cid_short, guardian_cid_short],
+    )?;
+    Ok(())
+}
+
+pub fn save_minor_restrictions(data_dir: &Path, r: &MinorRestrictions) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(r)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO minor_restrictions (network_cid, minor_cid, restrictions_json)
+         VALUES (?1, ?2, ?3)",
+        params![&r.network_cid_short, &r.minor_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn get_minor_restrictions(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<Option<MinorRestrictions>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT restrictions_json FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid minor restrictions")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_minor_restrictions(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Check whether `peer_cid_short` is allowed to interact directly with `minor_cid_short`.
+/// Call for both sides of a direct message (sender and recipient).
+pub fn check_minor_interaction(
+    data_dir: &Path,
+    network_cid_short: &str,
+    minor_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<()> {
+    let network = load_network(data_dir, network_cid_short)?;
+    let minor = match network.data.members.iter().find(|m| m.cid_short == minor_cid_short) {
+        Some(m) if m.is_minor => m,
+        _ => return Ok(()),
+    };
+    let _ = minor;
+
+    let guardians = list_guardians(data_dir, network_cid_short, minor_cid_short)?;
+    if guardians.iter().any(|g| g.guardian_cid_short == peer_cid_short) {
+        return Ok(());
+    }
+
+    let peer_circle = network.data.members.iter()
+        .find(|m| m.cid_short == peer_cid_short)
+        .map(|m| m.circle as u8)
+        .unwrap_or(0);
+
+    let allowed = match get_minor_restrictions(data_dir, network_cid_short, minor_cid_short)? {
+        Some(r) => r.allows(peer_cid_short, peer_circle),
+        None    => peer_circle <= 1,
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "interaction refusée : '{}' est un compte mineur — seuls les tuteurs et membres au cercle ≤ max_circle peuvent interagir directement",
+            minor_cid_short
+        ))
+    }
+}
+
+// ── Plugins ──────────────────────────────────────────────────────────────────
+
+pub fn install_plugin(data_dir: &Path, manifest: PluginManifest) -> Result<PluginRecord> {
+    let conn = open_db(data_dir)?;
+    let record = PluginRecord::new(manifest);
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+        params![&record.manifest.id, json],
+    )?;
+    Ok(record)
+}
+
+pub fn list_plugins(data_dir: &Path) -> Result<Vec<PluginRecord>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare("SELECT record_json FROM plugins ORDER BY plugin_id")?;
+    let mut rows = stmt.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        records.push(serde_json::from_str(&json)?);
+    }
+    Ok(records)
+}
+
+pub fn get_plugin(data_dir: &Path, plugin_id: &str) -> Result<Option<PluginRecord>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT record_json FROM plugins WHERE plugin_id = ?1",
+        params![plugin_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn set_plugin_state(data_dir: &Path, plugin_id: &str, state: PluginState) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let mut record = get_plugin(data_dir, plugin_id)?
+        .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", plugin_id))?;
+    if record.manifest.is_system {
+        return Err(anyhow::anyhow!("les plugins système ne peuvent pas être désactivés"));
+    }
+    record.state = state;
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "UPDATE plugins SET record_json = ?1 WHERE plugin_id = ?2",
+        params![json, plugin_id],
+    )?;
+    Ok(())
+}
+
+// ── Agenda ───────────────────────────────────────────────────────────────────
+
+pub fn save_agenda_event(data_dir: &Path, event: &AgendaEvent) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(event)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agenda_events (network_cid, event_id, event_json) VALUES (?1, ?2, ?3)",
+        params![&event.network_cid_short, &event.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_agenda_events(data_dir: &Path, network_cid_short: &str) -> Result<Vec<AgendaEvent>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY event_id",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        events.push(serde_json::from_str(&json).context("invalid agenda event")?);
+    }
+    Ok(events)
+}
+
+pub fn get_agenda_event(data_dir: &Path, network_cid_short: &str, event_id: &str) -> Result<Option<AgendaEvent>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid agenda event")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_agenda_event(data_dir: &Path, network_cid_short: &str, event_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
     )?;
     Ok(())
 }

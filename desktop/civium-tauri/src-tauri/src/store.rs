@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, AgendaEvent, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -51,9 +51,9 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS vote_delegations (
     network_cid         TEXT NOT NULL,
     delegator_cid_short TEXT NOT NULL,
-    proposal_id         TEXT,
+    proposal_id         TEXT NOT NULL DEFAULT '',
     delegation_json     TEXT NOT NULL,
-    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+    PRIMARY KEY (network_cid, delegator_cid_short, proposal_id)
 );
 CREATE TABLE IF NOT EXISTS directory_entries (
     directory_cid   TEXT NOT NULL,
@@ -67,12 +67,48 @@ CREATE TABLE IF NOT EXISTS directory_federations (
     federation_json TEXT NOT NULL,
     PRIMARY KEY (host_cid, peer_cid)
 );
+CREATE TABLE IF NOT EXISTS rrm_entries (
+    rrm_cid         TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (rrm_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS trusted_rrms (
+    network_cid     TEXT NOT NULL,
+    rrm_cid         TEXT NOT NULL,
+    trust_json      TEXT NOT NULL,
+    PRIMARY KEY (network_cid, rrm_cid)
+);
+CREATE TABLE IF NOT EXISTS guardian_links (
+    network_cid     TEXT NOT NULL,
+    minor_cid       TEXT NOT NULL,
+    guardian_cid    TEXT NOT NULL,
+    link_json       TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid, guardian_cid)
+);
+CREATE TABLE IF NOT EXISTS minor_restrictions (
+    network_cid         TEXT NOT NULL,
+    minor_cid           TEXT NOT NULL,
+    restrictions_json   TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid)
+);
+CREATE TABLE IF NOT EXISTS plugins (
+    plugin_id   TEXT PRIMARY KEY,
+    record_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agenda_events (
+    network_cid TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    PRIMARY KEY (network_cid, event_id)
+);
 ";
 
 pub fn open_db(data_dir: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data_dir)?;
     let conn = Connection::open(data_dir.join("civium.db"))?;
     conn.execute_batch(SCHEMA)?;
+    seed_plugins(&conn)?;
     Ok(conn)
 }
 
@@ -236,16 +272,12 @@ pub fn list_votes(conn: &Connection, proposal_id: &str) -> Result<Vec<Vote>> {
 
 pub fn save_delegation(conn: &Connection, delegation: &VoteDelegation) -> Result<()> {
     let json = serde_json::to_string(delegation)?;
+    let pid = delegation.proposal_id.as_deref().unwrap_or("");
     conn.execute(
         "INSERT OR REPLACE INTO vote_delegations
              (network_cid, delegator_cid_short, proposal_id, delegation_json)
          VALUES (?1, ?2, ?3, ?4)",
-        params![
-            &delegation.network_cid_short,
-            &delegation.delegator_cid_short,
-            &delegation.proposal_id,
-            json
-        ],
+        params![&delegation.network_cid_short, &delegation.delegator_cid_short, pid, json],
     )?;
     Ok(())
 }
@@ -256,12 +288,13 @@ pub fn delete_delegation(
     delegator_cid_short: &str,
     proposal_id: Option<&str>,
 ) -> Result<()> {
+    let pid = proposal_id.unwrap_or("");
     conn.execute(
         "DELETE FROM vote_delegations
           WHERE network_cid = ?1
             AND delegator_cid_short = ?2
-            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
-        params![network_cid_short, delegator_cid_short, proposal_id],
+            AND proposal_id = ?3",
+        params![network_cid_short, delegator_cid_short, pid],
     )?;
     Ok(())
 }
@@ -378,6 +411,349 @@ pub fn delete_federation(conn: &Connection, host_cid_short: &str, peer_cid_short
     )?;
     Ok(())
 }
+
+// ── RRM entries ───────────────────────────────────────────────────────────────
+
+pub fn save_rrm_entry(conn: &Connection, entry: &RrmEntry) -> Result<()> {
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO rrm_entries (rrm_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.rrm_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_rrm_entries(conn: &Connection, rrm_cid_short: &str) -> Result<Vec<RrmEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM rrm_entries WHERE rrm_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![rrm_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: RrmEntry = serde_json::from_str(&json)?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn delete_rrm_entry(conn: &Connection, rrm_cid_short: &str, entry_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM rrm_entries WHERE rrm_cid = ?1 AND entry_id = ?2",
+        params![rrm_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Trusted RRMs ──────────────────────────────────────────────────────────────
+
+pub fn save_trusted_rrm(conn: &Connection, trust: &TrustedRrm) -> Result<()> {
+    let json = serde_json::to_string(trust)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO trusted_rrms (network_cid, rrm_cid, trust_json)
+         VALUES (?1, ?2, ?3)",
+        params![&trust.network_cid_short, &trust.rrm_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_trusted_rrms(conn: &Connection, network_cid_short: &str) -> Result<Vec<TrustedRrm>> {
+    let mut stmt = conn.prepare(
+        "SELECT trust_json FROM trusted_rrms WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut trusts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let t: TrustedRrm = serde_json::from_str(&json)?;
+        trusts.push(t);
+    }
+    Ok(trusts)
+}
+
+pub fn delete_trusted_rrm(conn: &Connection, network_cid_short: &str, rrm_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM trusted_rrms WHERE network_cid = ?1 AND rrm_cid = ?2",
+        params![network_cid_short, rrm_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Returns (TrustedRrm, RrmEntry) pairs where `peer_cid_short` is listed in any
+/// RRM trusted by `network_cid_short`. Used for connection-time warnings.
+pub fn check_rrm_warnings(
+    conn: &Connection,
+    network_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<Vec<(TrustedRrm, RrmEntry)>> {
+    let trusts = list_trusted_rrms(conn, network_cid_short)?;
+    let mut warnings = Vec::new();
+    for trust in trusts {
+        let entries = list_rrm_entries(conn, &trust.rrm_cid_short)?;
+        for entry in entries {
+            if entry.network_cid_short == peer_cid_short {
+                warnings.push((trust.clone(), entry));
+                break;
+            }
+        }
+    }
+    Ok(warnings)
+}
+
+// ── Minor / Guardian ─────────────────────────────────────────────────────────
+
+pub fn set_member_minor(conn: &Connection, network_cid_short: &str, member_cid_short: &str, is_minor: bool) -> Result<()> {
+    let mut network = load_network(conn, network_cid_short)?;
+    let member = network.data.members.iter_mut()
+        .find(|m| m.cid_short == member_cid_short)
+        .ok_or_else(|| anyhow::anyhow!("member '{}' not found", member_cid_short))?;
+    member.is_minor = is_minor;
+    save_network(conn, &network)
+}
+
+pub fn save_guardian_link(conn: &Connection, link: &GuardianLink) -> Result<()> {
+    let json = serde_json::to_string(link)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO guardian_links (network_cid, minor_cid, guardian_cid, link_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&link.network_cid_short, &link.minor_cid_short, &link.guardian_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_guardians(conn: &Connection, network_cid_short: &str, minor_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, minor_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json)?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn list_wards(conn: &Connection, network_cid_short: &str, guardian_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND guardian_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, guardian_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json)?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn delete_guardian_link(conn: &Connection, network_cid_short: &str, minor_cid_short: &str, guardian_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 AND guardian_cid = ?3",
+        params![network_cid_short, minor_cid_short, guardian_cid_short],
+    )?;
+    Ok(())
+}
+
+pub fn save_minor_restrictions(conn: &Connection, r: &MinorRestrictions) -> Result<()> {
+    let json = serde_json::to_string(r)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO minor_restrictions (network_cid, minor_cid, restrictions_json)
+         VALUES (?1, ?2, ?3)",
+        params![&r.network_cid_short, &r.minor_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn get_minor_restrictions(conn: &Connection, network_cid_short: &str, minor_cid_short: &str) -> Result<Option<MinorRestrictions>> {
+    let result = conn.query_row(
+        "SELECT restrictions_json FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_minor_restrictions(conn: &Connection, network_cid_short: &str, minor_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Check whether `peer_cid_short` is allowed to send a direct message to/from `minor_cid_short`.
+/// Returns `Ok(())` if allowed, `Err(...)` with a human-readable reason if blocked.
+/// The check is symmetrical — call this for both sides of a direct message (sender and recipient).
+pub fn check_minor_interaction(
+    conn: &Connection,
+    network_cid_short: &str,
+    minor_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<()> {
+    let network = load_network(conn, network_cid_short)?;
+    let minor = match network.data.members.iter().find(|m| m.cid_short == minor_cid_short) {
+        Some(m) if m.is_minor => m,
+        _ => return Ok(()),
+    };
+    let _ = minor;
+
+    // Guardians bypass all restrictions
+    let guardians = list_guardians(conn, network_cid_short, minor_cid_short)?;
+    if guardians.iter().any(|g| g.guardian_cid_short == peer_cid_short) {
+        return Ok(());
+    }
+
+    // Peer's circle in this network (unknown peer → circle 0)
+    let peer_circle = network.data.members.iter()
+        .find(|m| m.cid_short == peer_cid_short)
+        .map(|m| m.circle as u8)
+        .unwrap_or(0);
+
+    let allowed = match get_minor_restrictions(conn, network_cid_short, minor_cid_short)? {
+        Some(r) => r.allows(peer_cid_short, peer_circle),
+        None    => peer_circle <= 1, // default: Annuaire + Connaissance only
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "interaction refusée : '{}' est un compte mineur — seuls les tuteurs et membres au cercle ≤ max_circle peuvent interagir directement",
+            minor_cid_short
+        ))
+    }
+}
+
+// ── Plugins ───────────────────────────────────────────────────────────────────
+
+/// Seed pre-installed Civium plugins if they don't exist yet.
+fn seed_plugins(conn: &Connection) -> Result<()> {
+    for (manifest, enabled) in preinstalled_plugins() {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE plugin_id = ?1",
+            params![&manifest.id],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if exists == 0 {
+            let record = if enabled {
+                PluginRecord::new_enabled(manifest)
+            } else {
+                PluginRecord::new(manifest)
+            };
+            let json = serde_json::to_string(&record)?;
+            conn.execute(
+                "INSERT INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+                params![&record.manifest.id, json],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn install_plugin(conn: &Connection, manifest: PluginManifest) -> Result<PluginRecord> {
+    let record = PluginRecord::new(manifest);
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+        params![&record.manifest.id, json],
+    )?;
+    Ok(record)
+}
+
+pub fn list_plugins(conn: &Connection) -> Result<Vec<PluginRecord>> {
+    let mut stmt = conn.prepare("SELECT record_json FROM plugins ORDER BY plugin_id")?;
+    let mut rows = stmt.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let r: PluginRecord = serde_json::from_str(&json)?;
+        records.push(r);
+    }
+    Ok(records)
+}
+
+pub fn get_plugin(conn: &Connection, plugin_id: &str) -> Result<Option<PluginRecord>> {
+    let result = conn.query_row(
+        "SELECT record_json FROM plugins WHERE plugin_id = ?1",
+        params![plugin_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn set_plugin_state(conn: &Connection, plugin_id: &str, state: PluginState) -> Result<()> {
+    let mut record = get_plugin(conn, plugin_id)?
+        .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", plugin_id))?;
+    if record.manifest.is_system {
+        return Err(anyhow::anyhow!("les plugins système ne peuvent pas être désactivés"));
+    }
+    record.state = state;
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "UPDATE plugins SET record_json = ?1 WHERE plugin_id = ?2",
+        params![json, plugin_id],
+    )?;
+    Ok(())
+}
+
+// ── Agenda ───────────────────────────────────────────────────────────────────
+
+pub fn save_agenda_event(conn: &Connection, event: &AgendaEvent) -> Result<()> {
+    let json = serde_json::to_string(event)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agenda_events (network_cid, event_id, event_json) VALUES (?1, ?2, ?3)",
+        params![&event.network_cid_short, &event.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_agenda_events(conn: &Connection, network_cid_short: &str) -> Result<Vec<AgendaEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY rowid ASC",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        events.push(serde_json::from_str(&json).context("invalid agenda event")?);
+    }
+    Ok(events)
+}
+
+pub fn get_agenda_event(conn: &Connection, network_cid_short: &str, event_id: &str) -> Result<Option<AgendaEvent>> {
+    let result = conn.query_row(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid agenda event")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_agenda_event(conn: &Connection, network_cid_short: &str, event_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
+    )?;
+    Ok(())
+}
+
+// ── Sync ─────────────────────────────────────────────────────────────────────
 
 /// Merge members and messages received via P2P sync.
 /// Members already present (by cid_full) are skipped.
