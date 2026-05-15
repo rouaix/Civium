@@ -254,13 +254,13 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] CLI : `agenda create/list/delete` + `run_agenda()`
 - [x] Tauri : `agenda_create/list/update/delete` + Dashboard section Agenda
 
-### Semaines 5–6 — Fil d'activité + Notifications
+### Semaines 5–6 — Fil d'activité + Notifications ✅
 
-- [ ] `ActivityEvent` : kind (MemberJoined, MessagePosted, ProposalCreated, VoteCast, ConnectionEstablished…), actor, timestamp, payload
-- [ ] Table `activity_feed` dans les deux stores ; auto-émission sur chaque action
-- [ ] `Notification` : source_event_id, target_cid, read, created_at
-- [ ] CLI : `activity list`
-- [ ] Tauri : `activity_list` + `notification_list` + badge non-lu dans la sidebar
+- [x] `ActivityEvent` : kind (MemberJoined, MessagePosted, ProposalCreated, VoteCast, AgendaEventCreated…), actor, summary, occurred_at
+- [x] Table `activity_feed` dans les deux stores ; auto-émission sur chaque action clé
+- [x] `Notification` : source_event_id, target_cid, read, created_at
+- [x] CLI : `activity list [--unread]`
+- [x] Tauri : `activity_list` + `notification_list` + `notification_mark_read` + badge non-lu dans la sidebar
 
 ### Semaines 7–8 — Plugin Documents
 
