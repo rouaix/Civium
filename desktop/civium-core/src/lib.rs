@@ -5,6 +5,7 @@ pub mod error;
 pub mod governance;
 pub mod identity;
 pub mod messaging;
+pub mod minor;
 pub mod network;
 pub mod node;
 
@@ -17,6 +18,7 @@ pub use error::CiviumError;
 pub use identity::{Cid, CiviumKeypair};
 pub use messaging::{Mailbox, Message, MessageKind};
 pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory, RrmEntry, TrustedRrm};
+pub use minor::{GuardianLink, MinorRestrictions};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};
 pub use governance::{

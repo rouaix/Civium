@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS trusted_rrms (
     rrm_cid         TEXT NOT NULL,
     trust_json      TEXT NOT NULL,
     PRIMARY KEY (network_cid, rrm_cid)
+);
+CREATE TABLE IF NOT EXISTS guardian_links (
+    network_cid     TEXT NOT NULL,
+    minor_cid       TEXT NOT NULL,
+    guardian_cid    TEXT NOT NULL,
+    link_json       TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid, guardian_cid)
+);
+CREATE TABLE IF NOT EXISTS minor_restrictions (
+    network_cid         TEXT NOT NULL,
+    minor_cid           TEXT NOT NULL,
+    restrictions_json   TEXT NOT NULL,
+    PRIMARY KEY (network_cid, minor_cid)
 );
 ";
 
@@ -566,6 +579,101 @@ pub fn check_rrm_warnings(
         }
     }
     Ok(warnings)
+}
+
+// ── Minor / Guardian ─────────────────────────────────────────────────────────
+
+pub fn set_member_minor(data_dir: &Path, network_cid_short: &str, member_cid_short: &str, is_minor: bool) -> Result<()> {
+    let mut network = load_network(data_dir, network_cid_short)?;
+    let member = network.data.members.iter_mut()
+        .find(|m| m.cid_short == member_cid_short)
+        .ok_or_else(|| anyhow::anyhow!("member '{}' not found", member_cid_short))?;
+    member.is_minor = is_minor;
+    save_network(data_dir, &network)
+}
+
+pub fn save_guardian_link(data_dir: &Path, link: &GuardianLink) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(link)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO guardian_links (network_cid, minor_cid, guardian_cid, link_json)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![&link.network_cid_short, &link.minor_cid_short, &link.guardian_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_guardians(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, minor_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json).context("invalid guardian link")?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn list_wards(data_dir: &Path, network_cid_short: &str, guardian_cid_short: &str) -> Result<Vec<GuardianLink>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT link_json FROM guardian_links WHERE network_cid = ?1 AND guardian_cid = ?2 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short, guardian_cid_short])?;
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let l: GuardianLink = serde_json::from_str(&json).context("invalid guardian link")?;
+        links.push(l);
+    }
+    Ok(links)
+}
+
+pub fn delete_guardian_link(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str, guardian_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM guardian_links WHERE network_cid = ?1 AND minor_cid = ?2 AND guardian_cid = ?3",
+        params![network_cid_short, minor_cid_short, guardian_cid_short],
+    )?;
+    Ok(())
+}
+
+pub fn save_minor_restrictions(data_dir: &Path, r: &MinorRestrictions) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(r)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO minor_restrictions (network_cid, minor_cid, restrictions_json)
+         VALUES (?1, ?2, ?3)",
+        params![&r.network_cid_short, &r.minor_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn get_minor_restrictions(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<Option<MinorRestrictions>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT restrictions_json FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid minor restrictions")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_minor_restrictions(data_dir: &Path, network_cid_short: &str, minor_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM minor_restrictions WHERE network_cid = ?1 AND minor_cid = ?2",
+        params![network_cid_short, minor_cid_short],
+    )?;
+    Ok(())
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

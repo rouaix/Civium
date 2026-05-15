@@ -8,7 +8,8 @@ use civium_core::{
     AdminAction, AdminActionKind, AdminActionStatus,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
-    MemberRole, NetworkKind, MessageKind, Multiaddr, NodeCommand, NodeConfig, NodeEvent, PeerId,
+    GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
+    NodeCommand, NodeConfig, NodeEvent, PeerId,
     Proposal, RrmEntry, ShareTerms, TrustCircle, TrustedRrm, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
@@ -187,6 +188,65 @@ enum MemberCmd {
     Reject {
         network_cid: String,
         member_cid: String,
+    },
+    /// Mark a member as a minor (admin only).
+    SetMinor {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        member: String,
+    },
+    /// Remove the minor flag from a member (admin only).
+    UnsetMinor {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        member: String,
+    },
+    /// Add a guardian for a minor member (admin only).
+    SetGuardian {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// Remove a guardian–minor link (admin only).
+    RemoveGuardian {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// List guardians of a minor member.
+    Guardians {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+    },
+    /// List minors for which a member is guardian.
+    Wards {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        guardian: String,
+    },
+    /// Set interaction restrictions for a minor member (admin only).
+    SetRestrictions {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        minor: String,
+        /// Max trust circle (0–2) the minor can interact in.
+        #[arg(long, default_value = "1")]
+        max_circle: u8,
+        /// CID shorts explicitly allowed beyond max_circle (comma-separated).
+        #[arg(long, default_value = "")]
+        allowed: String,
     },
 }
 
@@ -862,6 +922,77 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
             network.reject(&member_cid).map_err(|e| anyhow::anyhow!("{e}"))?;
             store::save_network(data, &network)?;
             println!("Join request from {member_cid} rejected.");
+        }
+
+        MemberCmd::SetMinor { network, member } => {
+            store::set_member_minor(data, &network, &member, true)?;
+            println!("{member} marked as minor in network {network}.");
+        }
+
+        MemberCmd::UnsetMinor { network, member } => {
+            store::set_member_minor(data, &network, &member, false)?;
+            println!("{member} minor flag removed in network {network}.");
+        }
+
+        MemberCmd::SetGuardian { network, minor, guardian } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let link = GuardianLink::new(
+                network.clone(),
+                minor.clone(),
+                guardian.clone(),
+                keypair.cid().short().to_string(),
+            );
+            store::save_guardian_link(data, &link)?;
+            println!("{guardian} added as guardian of {minor} in network {network}.");
+        }
+
+        MemberCmd::RemoveGuardian { network, minor, guardian } => {
+            store::delete_guardian_link(data, &network, &minor, &guardian)?;
+            println!("Guardian link {guardian}→{minor} removed from network {network}.");
+        }
+
+        MemberCmd::Guardians { network, minor } => {
+            let links = store::list_guardians(data, &network, &minor)?;
+            if links.is_empty() {
+                println!("No guardians for {minor} in network {network}.");
+            } else {
+                println!("Guardians of {minor} in network {network}:");
+                for l in &links {
+                    println!("  {} (added by {} at {})", l.guardian_cid_short, l.added_by, l.added_at);
+                }
+            }
+        }
+
+        MemberCmd::Wards { network, guardian } => {
+            let links = store::list_wards(data, &network, &guardian)?;
+            if links.is_empty() {
+                println!("No minors under guardianship of {guardian} in network {network}.");
+            } else {
+                println!("Minors under {guardian} in network {network}:");
+                for l in &links {
+                    println!("  {} (added by {} at {})", l.minor_cid_short, l.added_by, l.added_at);
+                }
+            }
+        }
+
+        MemberCmd::SetRestrictions { network, minor, max_circle, allowed } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let allowed_cids: Vec<String> = if allowed.is_empty() {
+                vec![]
+            } else {
+                allowed.split(',').map(|s| s.trim().to_string()).collect()
+            };
+            let r = MinorRestrictions::new(
+                network.clone(),
+                minor.clone(),
+                max_circle,
+                allowed_cids,
+                keypair.cid().short().to_string(),
+            );
+            store::save_minor_restrictions(data, &r)?;
+            println!("Restrictions set for {minor} in network {network}: max_circle={}, allowed={:?}", r.max_circle, r.allowed_cid_shorts);
         }
     }
     Ok(())

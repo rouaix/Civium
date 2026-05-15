@@ -78,6 +78,7 @@ impl Network {
             circle: TrustCircle::Confiance,
             role: MemberRole::Admin,
             joined_at: unix_now(),
+            is_minor: false,
         };
 
         let data = NetworkData {
@@ -225,6 +226,7 @@ impl Network {
             circle,
             role,
             joined_at: unix_now(),
+            is_minor: false,
         };
 
         self.data.members.push(record.clone());

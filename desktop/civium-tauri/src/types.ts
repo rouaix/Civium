@@ -18,6 +18,25 @@ export interface MemberInfo {
   display_name: string;
   circle: number;
   role: string;
+  is_minor: boolean;
+}
+
+export interface GuardianLinkInfo {
+  id: string;
+  network_cid_short: string;
+  minor_cid_short: string;
+  guardian_cid_short: string;
+  added_by: string;
+  added_at: number;
+}
+
+export interface MinorRestrictionsInfo {
+  network_cid_short: string;
+  minor_cid_short: string;
+  max_circle: number;
+  allowed_cid_shorts: string[];
+  updated_by: string;
+  updated_at: number;
 }
 
 export interface PendingMemberInfo {

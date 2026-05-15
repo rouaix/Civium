@@ -9,8 +9,8 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, MemberRole, Message, MessageKind,
-    Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
+    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
+    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
@@ -41,6 +41,27 @@ pub struct MemberInfo {
     pub display_name: String,
     pub circle: u8,
     pub role: String,
+    pub is_minor: bool,
+}
+
+#[derive(Serialize)]
+pub struct GuardianLinkInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub minor_cid_short: String,
+    pub guardian_cid_short: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct MinorRestrictionsInfo {
+    pub network_cid_short: String,
+    pub minor_cid_short: String,
+    pub max_circle: u8,
+    pub allowed_cid_shorts: Vec<String>,
+    pub updated_by: String,
+    pub updated_at: u64,
 }
 
 #[derive(Serialize)]
@@ -157,6 +178,7 @@ pub fn member_list(
             display_name: m.display_name.clone(),
             circle: m.circle as u8,
             role: m.role.to_string(),
+            is_minor: m.is_minor,
         })
         .collect())
 }
@@ -258,6 +280,7 @@ pub fn member_admit(
         display_name: record.display_name,
         circle: record.circle as u8,
         role: record.role.to_string(),
+        is_minor: record.is_minor,
     })
 }
 
@@ -1314,4 +1337,143 @@ pub fn rrm_check(
         reason: entry.reason,
         evidence_url: entry.evidence_url,
     }).collect())
+}
+
+// ── Minor / Guardian ──────────────────────────────────────────────────────────
+
+/// Mark or unmark a network member as a minor (admin only).
+#[tauri::command]
+pub fn member_set_minor(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+    is_minor: bool,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_member_minor(&conn, &network_cid, &member_cid, is_minor)
+        .map_err(|e| e.to_string())
+}
+
+/// Add a guardian–minor link.
+#[tauri::command]
+pub fn member_set_guardian(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    guardian_cid: String,
+) -> Result<GuardianLinkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let link = GuardianLink::new(network_cid, minor_cid, guardian_cid, keypair.cid().short().to_string());
+    store::save_guardian_link(&conn, &link).map_err(|e| e.to_string())?;
+    Ok(GuardianLinkInfo {
+        id: link.id,
+        network_cid_short: link.network_cid_short,
+        minor_cid_short: link.minor_cid_short,
+        guardian_cid_short: link.guardian_cid_short,
+        added_by: link.added_by,
+        added_at: link.added_at,
+    })
+}
+
+/// Remove a guardian–minor link.
+#[tauri::command]
+pub fn member_remove_guardian(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    guardian_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_guardian_link(&conn, &network_cid, &minor_cid, &guardian_cid)
+        .map_err(|e| e.to_string())
+}
+
+/// List all guardians of a minor member.
+#[tauri::command]
+pub fn member_guardians(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+) -> Result<Vec<GuardianLinkInfo>, String> {
+    let conn = open(&app)?;
+    let links = store::list_guardians(&conn, &network_cid, &minor_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(links.into_iter().map(|l| GuardianLinkInfo {
+        id: l.id,
+        network_cid_short: l.network_cid_short,
+        minor_cid_short: l.minor_cid_short,
+        guardian_cid_short: l.guardian_cid_short,
+        added_by: l.added_by,
+        added_at: l.added_at,
+    }).collect())
+}
+
+/// List all minors for which a given member is guardian.
+#[tauri::command]
+pub fn member_wards(
+    app: AppHandle,
+    network_cid: String,
+    guardian_cid: String,
+) -> Result<Vec<GuardianLinkInfo>, String> {
+    let conn = open(&app)?;
+    let links = store::list_wards(&conn, &network_cid, &guardian_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(links.into_iter().map(|l| GuardianLinkInfo {
+        id: l.id,
+        network_cid_short: l.network_cid_short,
+        minor_cid_short: l.minor_cid_short,
+        guardian_cid_short: l.guardian_cid_short,
+        added_by: l.added_by,
+        added_at: l.added_at,
+    }).collect())
+}
+
+/// Set interaction restrictions for a minor member.
+#[tauri::command]
+pub fn member_set_restrictions(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+    max_circle: u8,
+    allowed_cid_shorts: Vec<String>,
+) -> Result<MinorRestrictionsInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let r = MinorRestrictions::new(
+        network_cid,
+        minor_cid,
+        max_circle,
+        allowed_cid_shorts,
+        keypair.cid().short().to_string(),
+    );
+    store::save_minor_restrictions(&conn, &r).map_err(|e| e.to_string())?;
+    Ok(MinorRestrictionsInfo {
+        network_cid_short: r.network_cid_short,
+        minor_cid_short: r.minor_cid_short,
+        max_circle: r.max_circle,
+        allowed_cid_shorts: r.allowed_cid_shorts,
+        updated_by: r.updated_by,
+        updated_at: r.updated_at,
+    })
+}
+
+/// Get interaction restrictions for a minor member (returns null if not set).
+#[tauri::command]
+pub fn member_get_restrictions(
+    app: AppHandle,
+    network_cid: String,
+    minor_cid: String,
+) -> Result<Option<MinorRestrictionsInfo>, String> {
+    let conn = open(&app)?;
+    let r = store::get_minor_restrictions(&conn, &network_cid, &minor_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(r.map(|r| MinorRestrictionsInfo {
+        network_cid_short: r.network_cid_short,
+        minor_cid_short: r.minor_cid_short,
+        max_circle: r.max_circle,
+        allowed_cid_shorts: r.allowed_cid_shorts,
+        updated_by: r.updated_by,
+        updated_at: r.updated_at,
+    }))
 }

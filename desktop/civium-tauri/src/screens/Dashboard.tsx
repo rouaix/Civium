@@ -13,6 +13,7 @@ import type {
   DelegationInfo,
   DirectoryEntryInfo,
   FederationInfo,
+  GuardianLinkInfo,
   RrmEntryInfo,
   TrustedRrmInfo,
 } from "../types";
@@ -98,6 +99,13 @@ export default function Dashboard() {
   const [trustRrmCid, setTrustRrmCid] = useState("");
   const [trustRrmName, setTrustRrmName] = useState("");
   const [savingTrust, setSavingTrust] = useState(false);
+
+  // Minor / Guardian state
+  const [expandedMember, setExpandedMember] = useState<string | null>(null);
+  const [guardians, setGuardians] = useState<Record<string, GuardianLinkInfo[]>>({});
+  const [settingMinor, setSettingMinor] = useState<string | null>(null);
+  const [newGuardianCid, setNewGuardianCid] = useState("");
+  const [savingGuardian, setSavingGuardian] = useState(false);
 
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
@@ -192,6 +200,9 @@ export default function Dashboard() {
     setShowReportForm(false);
     setTrustedRrms([]);
     setShowTrustForm(false);
+    setExpandedMember(null);
+    setGuardians({});
+    setNewGuardianCid("");
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -559,6 +570,72 @@ export default function Dashboard() {
     }
   }
 
+  async function handleToggleMinor(memberCid: string, isMinor: boolean) {
+    if (!selected) return;
+    setSettingMinor(memberCid);
+    try {
+      await tauriInvoke("member_set_minor", {
+        networkCid: selected.cid_short,
+        memberCid,
+        isMinor,
+      });
+      refreshNetwork(selected.cid_short);
+      if (!isMinor) {
+        setGuardians((prev) => { const n = { ...prev }; delete n[memberCid]; return n; });
+      }
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSettingMinor(null);
+    }
+  }
+
+  async function handleExpandMember(memberCid: string) {
+    if (expandedMember === memberCid) { setExpandedMember(null); return; }
+    setExpandedMember(memberCid);
+    if (!selected) return;
+    const links = await tauriInvoke<GuardianLinkInfo[]>("member_guardians", {
+      networkCid: selected.cid_short,
+      minorCid: memberCid,
+    }).catch(() => []);
+    setGuardians((prev) => ({ ...prev, [memberCid]: links }));
+  }
+
+  async function handleAddGuardian(minorCid: string) {
+    if (!selected || !newGuardianCid.trim()) return;
+    setSavingGuardian(true);
+    try {
+      const link = await tauriInvoke<GuardianLinkInfo>("member_set_guardian", {
+        networkCid: selected.cid_short,
+        minorCid,
+        guardianCid: newGuardianCid.trim(),
+      });
+      setGuardians((prev) => ({ ...prev, [minorCid]: [...(prev[minorCid] ?? []), link] }));
+      setNewGuardianCid("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingGuardian(false);
+    }
+  }
+
+  async function handleRemoveGuardian(minorCid: string, guardianCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("member_remove_guardian", {
+        networkCid: selected.cid_short,
+        minorCid,
+        guardianCid,
+      });
+      setGuardians((prev) => ({
+        ...prev,
+        [minorCid]: (prev[minorCid] ?? []).filter((l) => l.guardian_cid_short !== guardianCid),
+      }));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -739,25 +816,88 @@ export default function Dashboard() {
                   <p className="px-4 py-3 text-sm text-gray-400">Aucun membre.</p>
                 )}
                 {members.map((m) => (
-                  <div key={m.cid_short} className="flex items-center px-4 py-3 gap-3">
-                    <div className="w-8 h-8 rounded-full bg-civium-100 flex items-center justify-center
-                                    text-civium-700 text-sm font-semibold">
-                      {m.display_name[0]?.toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{m.display_name}</div>
-                      <div className="text-xs text-gray-400 font-mono">{m.cid_short}</div>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
-                        {circleLabel(m.circle)}
-                      </span>
-                      {m.role === "admin" && (
-                        <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
-                          admin
+                  <div key={m.cid_short}>
+                    <div
+                      className="flex items-center px-4 py-3 gap-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                      onClick={() => handleExpandMember(m.cid_short)}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-civium-100 flex items-center justify-center
+                                      text-civium-700 text-sm font-semibold shrink-0">
+                        {m.display_name[0]?.toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">{m.display_name}</div>
+                        <div className="text-xs text-gray-400 font-mono">{m.cid_short}</div>
+                      </div>
+                      <div className="flex gap-1.5 shrink-0">
+                        <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
+                          {circleLabel(m.circle)}
                         </span>
-                      )}
+                        {m.role === "admin" && (
+                          <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
+                            admin
+                          </span>
+                        )}
+                        {m.is_minor && (
+                          <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
+                            mineur
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    {expandedMember === m.cid_short && (
+                      <div className="px-4 pb-3 ml-11 space-y-2 border-b border-gray-100">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">Profil mineur :</span>
+                          <button
+                            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                              m.is_minor
+                                ? "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+                                : "bg-gray-50 border-gray-300 text-gray-600 hover:bg-gray-100"
+                            }`}
+                            disabled={settingMinor === m.cid_short}
+                            onClick={(e) => { e.stopPropagation(); handleToggleMinor(m.cid_short, !m.is_minor); }}
+                          >
+                            {settingMinor === m.cid_short ? "…" : m.is_minor ? "Retirer le statut mineur" : "Marquer comme mineur"}
+                          </button>
+                        </div>
+                        {m.is_minor && (
+                          <div className="space-y-1">
+                            <p className="text-xs text-gray-500 font-medium">Tuteurs :</p>
+                            {(guardians[m.cid_short] ?? []).length === 0 && (
+                              <p className="text-xs text-gray-400">Aucun tuteur.</p>
+                            )}
+                            {(guardians[m.cid_short] ?? []).map((l) => (
+                              <div key={l.guardian_cid_short} className="flex items-center gap-2 text-xs text-gray-700">
+                                <span className="font-mono">{l.guardian_cid_short}</span>
+                                <button
+                                  className="text-red-500 hover:text-red-700 text-xs"
+                                  onClick={(e) => { e.stopPropagation(); handleRemoveGuardian(m.cid_short, l.guardian_cid_short); }}
+                                >
+                                  Retirer
+                                </button>
+                              </div>
+                            ))}
+                            <div className="flex gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="text"
+                                className="flex-1 text-xs border border-gray-200 rounded px-2 py-1"
+                                placeholder="CID short du tuteur"
+                                value={newGuardianCid}
+                                onChange={(e) => setNewGuardianCid(e.target.value)}
+                              />
+                              <button
+                                className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                                disabled={savingGuardian || !newGuardianCid.trim()}
+                                onClick={() => handleAddGuardian(m.cid_short)}
+                              >
+                                {savingGuardian ? "…" : "Ajouter"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

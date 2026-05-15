@@ -88,6 +88,9 @@ pub struct MemberRecord {
     pub circle: TrustCircle,
     pub role: MemberRole,
     pub joined_at: u64,
+    /// True if this member has been marked as a minor by an admin.
+    #[serde(default)]
+    pub is_minor: bool,
 }
 
 /// A pending join request waiting for admin admission.

@@ -84,6 +84,13 @@ pub fn run() {
             network_untrust_rrm,
             network_trusted_rrms,
             rrm_check,
+            member_set_minor,
+            member_set_guardian,
+            member_remove_guardian,
+            member_guardians,
+            member_wards,
+            member_set_restrictions,
+            member_get_restrictions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
