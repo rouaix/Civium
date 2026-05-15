@@ -41,6 +41,8 @@ pub enum PluginPermission {
     ReadConnections,
     ReadAgenda,
     WriteAgenda,
+    ReadDocuments,
+    WriteDocuments,
 }
 
 impl std::fmt::Display for PluginPermission {
@@ -54,8 +56,10 @@ impl std::fmt::Display for PluginPermission {
             Self::ReadDirectory   => "read:directory",
             Self::WriteDirectory  => "write:directory",
             Self::ReadConnections => "read:connections",
-            Self::ReadAgenda     => "read:agenda",
-            Self::WriteAgenda    => "write:agenda",
+            Self::ReadAgenda      => "read:agenda",
+            Self::WriteAgenda     => "write:agenda",
+            Self::ReadDocuments   => "read:documents",
+            Self::WriteDocuments  => "write:documents",
         };
         f.write_str(s)
     }
@@ -160,6 +164,19 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
             permissions: vec![
                 PluginPermission::ReadAgenda,
                 PluginPermission::WriteAgenda,
+                PluginPermission::ReadMembers,
+            ],
+            is_system: false,
+        }, true),
+        (PluginManifest {
+            id: "civium.documents".to_string(),
+            name: "Documents".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Documents partagés et chiffrés au sein du réseau.".to_string(),
+            author: "Civium".to_string(),
+            permissions: vec![
+                PluginPermission::ReadDocuments,
+                PluginPermission::WriteDocuments,
                 PluginPermission::ReadMembers,
             ],
             is_system: false,

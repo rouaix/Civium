@@ -5,7 +5,7 @@ use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
+    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent, Document,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
     GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
@@ -91,6 +91,11 @@ enum Command {
     Activity {
         #[command(subcommand)]
         action: ActivityCmd,
+    },
+    /// Manage shared documents in a network
+    Doc {
+        #[command(subcommand)]
+        action: DocCmd,
     },
 }
 
@@ -651,6 +656,52 @@ enum ActivityCmd {
     },
 }
 
+// ── Document sub-commands ─────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum DocCmd {
+    /// Create a new document in a network.
+    Create {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        title: String,
+        /// Document body (plain text, encrypted before storage).
+        #[arg(long)]
+        body: String,
+    },
+    /// List documents in a network.
+    List {
+        #[arg(long)]
+        network: String,
+    },
+    /// Show the decrypted body of a document.
+    Show {
+        #[arg(long)]
+        network: String,
+        /// Document ID prefix.
+        id: String,
+    },
+    /// Update the title and/or body of a document.
+    Update {
+        #[arg(long)]
+        network: String,
+        /// Document ID prefix.
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Delete a document.
+    Delete {
+        #[arg(long)]
+        network: String,
+        /// Document ID prefix.
+        id: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -721,6 +772,7 @@ async fn main() -> Result<()> {
         Command::Plugin { action } => run_plugin(action, data),
         Command::Agenda { action } => run_agenda(action, data),
         Command::Activity { action } => run_activity(action, data),
+        Command::Doc { action } => run_doc(action, data),
     }
 }
 
@@ -2516,6 +2568,106 @@ fn run_activity(cmd: ActivityCmd, data: &PathBuf) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+// ── Document handler ──────────────────────────────────────────────────────────
+
+fn run_doc(cmd: DocCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        DocCmd::Create { network, title, body } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("aucune identité — exécutez `identity init`"))?;
+            let net = load_network_fuzzy(data, &network)?;
+            let group_key = GroupKey::from_b58(&net.data.group_key_b58)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (nonce_b58, body_ciphertext) = group_key
+                .encrypt(body.as_bytes())
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let doc = Document::new(
+                net.cid_short().to_string(),
+                title,
+                nonce_b58,
+                body_ciphertext,
+                keypair.cid().short().to_string(),
+            );
+            let id = doc.id.clone();
+            store::save_document(data, &doc)?;
+            println!("Document créé : {}", &id[..id.len().min(16)]);
+            println!("  Titre   : {}", doc.title);
+            println!("  Version : {}", doc.version);
+        }
+
+        DocCmd::List { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let docs = store::list_documents(data, net.cid_short())?;
+            if docs.is_empty() {
+                println!("Aucun document dans '{}'.", net.name());
+            } else {
+                println!("{:<18} {:>3}  {}", "ID", "V.", "TITRE");
+                println!("{}", "-".repeat(60));
+                for d in &docs {
+                    println!("{:<18} {:>3}  {}", &d.id[..d.id.len().min(16)], d.version, d.title);
+                }
+            }
+        }
+
+        DocCmd::Show { network, id } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let docs = store::list_documents(data, net.cid_short())?;
+            let doc = docs.iter()
+                .find(|d| d.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("document '{id}' introuvable"))?;
+            let group_key = GroupKey::from_b58(&net.data.group_key_b58)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let body = group_key
+                .decrypt(&doc.nonce_b58, &doc.body_ciphertext)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_else(|_| "[contenu illisible]".into());
+            println!("Titre   : {}", doc.title);
+            println!("Version : {}", doc.version);
+            println!("Auteur  : {}", doc.created_by);
+            println!();
+            println!("{body}");
+        }
+
+        DocCmd::Update { network, id, title, body } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let docs = store::list_documents(data, net.cid_short())?;
+            let doc = docs.iter()
+                .find(|d| d.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("document '{id}' introuvable"))?;
+            let mut doc = doc.clone();
+            if let Some(t) = title { doc.title = t; }
+            if let Some(b) = body {
+                let group_key = GroupKey::from_b58(&net.data.group_key_b58)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let (nonce_b58, body_ciphertext) = group_key
+                    .encrypt(b.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                doc.nonce_b58 = nonce_b58;
+                doc.body_ciphertext = body_ciphertext;
+            }
+            doc.version += 1;
+            doc.updated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            store::save_document(data, &doc)?;
+            println!("Document mis à jour — version {}", doc.version);
+        }
+
+        DocCmd::Delete { network, id } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let docs = store::list_documents(data, net.cid_short())?;
+            let doc = docs.iter()
+                .find(|d| d.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("document '{id}' introuvable"))?;
+            let full_id = doc.id.clone();
+            store::delete_document(data, net.cid_short(), &full_id)?;
+            println!("Document '{full_id}' supprimé.");
         }
     }
     Ok(())

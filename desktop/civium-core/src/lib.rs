@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agenda;
+pub mod document;
 pub mod cil;
 pub mod connection;
 pub mod crypto;
@@ -24,6 +25,7 @@ pub use messaging::{Mailbox, Message, MessageKind};
 pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory, RrmEntry, TrustedRrm};
 pub use activity::{ActivityEvent, ActivityKind, Notification};
 pub use agenda::AgendaEvent;
+pub use document::Document;
 pub use minor::{GuardianLink, MinorRestrictions};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};

@@ -14,6 +14,8 @@ pub enum CilAction {
     QueryConnections,
     QueryAgenda,
     WriteAgenda,
+    QueryDocuments,
+    WriteDocument,
 }
 
 impl CilAction {
@@ -30,6 +32,8 @@ impl CilAction {
             Self::QueryConnections  => PluginPermission::ReadConnections,
             Self::QueryAgenda       => PluginPermission::ReadAgenda,
             Self::WriteAgenda       => PluginPermission::WriteAgenda,
+            Self::QueryDocuments    => PluginPermission::ReadDocuments,
+            Self::WriteDocument     => PluginPermission::WriteDocuments,
         }
     }
 }

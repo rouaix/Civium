@@ -196,6 +196,17 @@ export interface NotificationInfo {
   created_at: number;
 }
 
+export interface DocumentInfo {
+  id: string;
+  network_cid_short: string;
+  title: string;
+  body: string;
+  version: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;

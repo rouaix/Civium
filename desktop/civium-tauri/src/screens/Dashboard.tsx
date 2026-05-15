@@ -13,6 +13,7 @@ import type {
   AdminActionInfo,
   AgendaEventInfo,
   ActivityEventInfo,
+  DocumentInfo,
   NotificationInfo,
   DelegationInfo,
   DirectoryEntryInfo,
@@ -128,6 +129,14 @@ export default function Dashboard() {
   const [agendaStart, setAgendaStart] = useState("");
   const [agendaEnd, setAgendaEnd] = useState("");
   const [agendaLocation, setAgendaLocation] = useState("");
+
+  // Documents state
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  const [showDocForm, setShowDocForm] = useState(false);
+  const [docTitle, setDocTitle] = useState("");
+  const [docBody, setDocBody] = useState("");
+  const [creatingDoc, setCreatingDoc] = useState(false);
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null);
   const [creatingEvent, setCreatingEvent] = useState(false);
 
   // Plugin panel
@@ -198,6 +207,10 @@ export default function Dashboard() {
     tauriInvoke<AgendaEventInfo[]>("agenda_list", { networkCidShort: cid }).then(setAgendaEvents).catch(() => {});
   }, []);
 
+  const refreshDocuments = useCallback((cid: string) => {
+    tauriInvoke<DocumentInfo[]>("document_list", { networkCidShort: cid }).then(setDocuments).catch(() => {});
+  }, []);
+
   const refreshActivity = useCallback((cid: string) => {
     tauriInvoke<ActivityEventInfo[]>("activity_list", { networkCidShort: cid }).then(setActivityEvents).catch(() => {});
     tauriInvoke<NotificationInfo[]>("notification_list", { networkCidShort: cid }).then((notifs) => {
@@ -224,6 +237,7 @@ export default function Dashboard() {
       refreshTrustedRrms(selected.cid_short);
     }
     refreshAgendaEvents(selected.cid_short);
+    refreshDocuments(selected.cid_short);
     refreshActivity(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
@@ -248,6 +262,9 @@ export default function Dashboard() {
     setNewGuardianCid("");
     setAgendaEvents([]);
     setShowAgendaForm(false);
+    setDocuments([]);
+    setShowDocForm(false);
+    setExpandedDocId(null);
     setActivityEvents([]);
     setNotifications([]);
     setUnreadCount(0);
@@ -772,6 +789,41 @@ export default function Dashboard() {
     }
   }
 
+  async function handleCreateDocument() {
+    if (!selected || !docTitle.trim() || !docBody.trim()) return;
+    setCreatingDoc(true);
+    try {
+      await tauriInvoke("document_create", {
+        networkCidShort: selected.cid_short,
+        title: docTitle.trim(),
+        body: docBody.trim(),
+      });
+      setDocTitle("");
+      setDocBody("");
+      setShowDocForm(false);
+      refreshDocuments(selected.cid_short);
+      refreshActivity(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setCreatingDoc(false);
+    }
+  }
+
+  async function handleDeleteDocument(docId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("document_delete", {
+        networkCidShort: selected.cid_short,
+        docId,
+      });
+      setExpandedDocId(null);
+      refreshDocuments(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -828,7 +880,7 @@ export default function Dashboard() {
                   <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
                 )}
                 {net.is_rrm && (
-                  <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                  <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM (Registre des Réseaux Malveillants)</span>
                 )}
                 {selected?.cid_short === net.cid_short && unreadCount > 0 && (
                   <span className="ml-auto text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
@@ -1700,8 +1752,90 @@ export default function Dashboard() {
               )}
             </section>
 
+            {/* ── Documents section ── */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                  Documents ({documents.length})
+                </h3>
+                <button
+                  onClick={() => setShowDocForm((v) => !v)}
+                  className="text-xs text-indigo-500 hover:text-indigo-700"
+                >
+                  {showDocForm ? "Annuler" : "+ Document"}
+                </button>
+              </div>
+
+              {showDocForm && (
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                  <input
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                    placeholder="Titre *"
+                    value={docTitle}
+                    onChange={(e) => setDocTitle(e.target.value)}
+                  />
+                  <textarea
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1 resize-none"
+                    placeholder="Contenu *"
+                    rows={5}
+                    value={docBody}
+                    onChange={(e) => setDocBody(e.target.value)}
+                  />
+                  <button
+                    onClick={handleCreateDocument}
+                    disabled={creatingDoc || !docTitle.trim() || !docBody.trim()}
+                    className="w-full text-sm bg-indigo-500 text-white rounded px-3 py-1.5 hover:bg-indigo-600 disabled:opacity-50"
+                  >
+                    {creatingDoc ? "Enregistrement…" : "Créer le document"}
+                  </button>
+                </div>
+              )}
+
+              {documents.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Aucun document.</p>
+              ) : (
+                <div className="space-y-2">
+                  {documents.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className="p-2 bg-gray-50 rounded border border-gray-100"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          onClick={() => setExpandedDocId(expandedDocId === doc.id ? null : doc.id)}
+                          className="text-sm font-medium text-gray-800 text-left hover:text-indigo-600 truncate"
+                        >
+                          {doc.title}
+                        </button>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="text-xs text-gray-400">v{doc.version}</span>
+                          <button
+                            onClick={() => handleDeleteDocument(doc.id)}
+                            className="text-xs text-gray-300 hover:text-red-400 transition-colors"
+                            title="Supprimer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                      {expandedDocId === doc.id && (
+                        <div className="mt-2">
+                          <pre className="text-xs text-gray-700 whitespace-pre-wrap bg-white border border-gray-100 rounded p-2 max-h-48 overflow-y-auto">
+                            {doc.body}
+                          </pre>
+                          <div className="text-xs text-gray-400 mt-1">
+                            Par {doc.created_by} · {new Date(doc.created_at * 1000).toLocaleDateString("fr-FR")}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
             {/* ── Annuaire section (directory networks only) ── */}
-            {/* ── RRM section (RRM networks only) ── */}
+            {/* ── RRM (Registre des Réseaux Malveillants) section (RRM networks only) ── */}
             {selected.is_rrm && (
               <section>
                 <div className="flex items-center justify-between mb-3">
@@ -1806,7 +1940,7 @@ export default function Dashboard() {
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
-                    RRM de confiance ({trustedRrms.length})
+                    Registres de Réseaux Malveillants de confiance ({trustedRrms.length})
                   </h3>
                   <button
                     onClick={() => setShowTrustForm((v) => !v)}
@@ -1822,7 +1956,7 @@ export default function Dashboard() {
                     <input
                       value={trustRrmCid}
                       onChange={(e) => setTrustRrmCid(e.target.value)}
-                      placeholder="CID court du RRM"
+                      placeholder="CID court du registre (RRM)"
                       className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
                                  focus:outline-none focus:ring-2 focus:ring-orange-400
                                  font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
@@ -1830,7 +1964,7 @@ export default function Dashboard() {
                     <input
                       value={trustRrmName}
                       onChange={(e) => setTrustRrmName(e.target.value)}
-                      placeholder="Nom du RRM"
+                      placeholder="Nom du registre (RRM)"
                       className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
                                  focus:outline-none focus:ring-2 focus:ring-orange-400
                                  placeholder:text-gray-400 bg-white"
@@ -1872,7 +2006,7 @@ export default function Dashboard() {
                 onClick={() => setShowTrustForm(true)}
                 className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
               >
-                + Faire confiance à un RRM
+                + Faire confiance à un RRM (Registre des Réseaux Malveillants)
               </button>
             )}
 
