@@ -107,6 +107,10 @@ export default function Dashboard() {
   const [newGuardianCid, setNewGuardianCid] = useState("");
   const [savingGuardian, setSavingGuardian] = useState(false);
 
+  // Direct messages state
+  const [dmBody, setDmBody] = useState<Record<string, string>>({});
+  const [sendingDm, setSendingDm] = useState<string | null>(null);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -636,6 +640,24 @@ export default function Dashboard() {
     }
   }
 
+  async function handleSendDm(toCidShort: string) {
+    if (!selected || !dmBody[toCidShort]?.trim()) return;
+    setSendingDm(toCidShort);
+    try {
+      const msg = await tauriInvoke<MessageDisplay>("message_send_direct", {
+        networkCid: selected.cid_short,
+        toCidShort,
+        body: dmBody[toCidShort].trim(),
+      });
+      setMessages((prev) => [...prev, msg]);
+      setDmBody((prev) => ({ ...prev, [toCidShort]: "" }));
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSendingDm(null);
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -846,56 +868,90 @@ export default function Dashboard() {
                       </div>
                     </div>
                     {expandedMember === m.cid_short && (
-                      <div className="px-4 pb-3 ml-11 space-y-2 border-b border-gray-100">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500">Profil mineur :</span>
-                          <button
-                            className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-                              m.is_minor
-                                ? "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
-                                : "bg-gray-50 border-gray-300 text-gray-600 hover:bg-gray-100"
-                            }`}
-                            disabled={settingMinor === m.cid_short}
-                            onClick={(e) => { e.stopPropagation(); handleToggleMinor(m.cid_short, !m.is_minor); }}
-                          >
-                            {settingMinor === m.cid_short ? "…" : m.is_minor ? "Retirer le statut mineur" : "Marquer comme mineur"}
-                          </button>
-                        </div>
-                        {m.is_minor && (
-                          <div className="space-y-1">
-                            <p className="text-xs text-gray-500 font-medium">Tuteurs :</p>
-                            {(guardians[m.cid_short] ?? []).length === 0 && (
-                              <p className="text-xs text-gray-400">Aucun tuteur.</p>
-                            )}
-                            {(guardians[m.cid_short] ?? []).map((l) => (
-                              <div key={l.guardian_cid_short} className="flex items-center gap-2 text-xs text-gray-700">
-                                <span className="font-mono">{l.guardian_cid_short}</span>
-                                <button
-                                  className="text-red-500 hover:text-red-700 text-xs"
-                                  onClick={(e) => { e.stopPropagation(); handleRemoveGuardian(m.cid_short, l.guardian_cid_short); }}
-                                >
-                                  Retirer
-                                </button>
+                      <div className="border-b border-gray-100 bg-gray-50">
+                        {/* DM section */}
+                        <div className="px-4 pt-2 pb-3">
+                          <p className="text-xs font-medium text-gray-500 mb-2">Message direct</p>
+                          {messages
+                            .filter((msg) => msg.is_direct && (msg.author_cid_short === m.cid_short || msg.to_cid_short === m.cid_short))
+                            .slice(-5)
+                            .map((msg) => (
+                              <div key={msg.id} className={`text-xs mb-1 ${msg.author_cid_short === m.cid_short ? "text-gray-600" : "text-civium-700"}`}>
+                                <span className="font-medium">{msg.author_name}</span>
+                                <span className="text-gray-400"> {formatTime(msg.sent_at)} — </span>
+                                {msg.body}
                               </div>
                             ))}
-                            <div className="flex gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="text"
-                                className="flex-1 text-xs border border-gray-200 rounded px-2 py-1"
-                                placeholder="CID short du tuteur"
-                                value={newGuardianCid}
-                                onChange={(e) => setNewGuardianCid(e.target.value)}
-                              />
-                              <button
-                                className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
-                                disabled={savingGuardian || !newGuardianCid.trim()}
-                                onClick={() => handleAddGuardian(m.cid_short)}
-                              >
-                                {savingGuardian ? "…" : "Ajouter"}
-                              </button>
-                            </div>
+                          <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="text"
+                              className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white"
+                              placeholder={`Message à ${m.display_name}…`}
+                              value={dmBody[m.cid_short] ?? ""}
+                              onChange={(e) => setDmBody((prev) => ({ ...prev, [m.cid_short]: e.target.value }))}
+                              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendDm(m.cid_short); } }}
+                            />
+                            <button
+                              className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                              disabled={sendingDm === m.cid_short || !dmBody[m.cid_short]?.trim()}
+                              onClick={(e) => { e.stopPropagation(); handleSendDm(m.cid_short); }}
+                            >
+                              {sendingDm === m.cid_short ? "…" : "Envoyer"}
+                            </button>
                           </div>
-                        )}
+                        </div>
+                        {/* Admin section */}
+                        <div className="px-4 pb-3 space-y-2 border-t border-gray-100">
+                          <div className="flex items-center gap-2 pt-2">
+                            <span className="text-xs text-gray-500">Admin :</span>
+                            <button
+                              className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                m.is_minor
+                                  ? "bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+                                  : "bg-gray-50 border-gray-300 text-gray-600 hover:bg-gray-100"
+                              }`}
+                              disabled={settingMinor === m.cid_short}
+                              onClick={(e) => { e.stopPropagation(); handleToggleMinor(m.cid_short, !m.is_minor); }}
+                            >
+                              {settingMinor === m.cid_short ? "…" : m.is_minor ? "Retirer le statut mineur" : "Marquer comme mineur"}
+                            </button>
+                          </div>
+                          {m.is_minor && (
+                            <div className="space-y-1">
+                              <p className="text-xs text-gray-500 font-medium">Tuteurs :</p>
+                              {(guardians[m.cid_short] ?? []).length === 0 && (
+                                <p className="text-xs text-gray-400">Aucun tuteur.</p>
+                              )}
+                              {(guardians[m.cid_short] ?? []).map((l) => (
+                                <div key={l.guardian_cid_short} className="flex items-center gap-2 text-xs text-gray-700">
+                                  <span className="font-mono">{l.guardian_cid_short}</span>
+                                  <button
+                                    className="text-red-500 hover:text-red-700 text-xs"
+                                    onClick={(e) => { e.stopPropagation(); handleRemoveGuardian(m.cid_short, l.guardian_cid_short); }}
+                                  >
+                                    Retirer
+                                  </button>
+                                </div>
+                              ))}
+                              <div className="flex gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="text"
+                                  className="flex-1 text-xs border border-gray-200 rounded px-2 py-1 bg-white"
+                                  placeholder="CID short du tuteur"
+                                  value={newGuardianCid}
+                                  onChange={(e) => setNewGuardianCid(e.target.value)}
+                                />
+                                <button
+                                  className="text-xs bg-civium-600 text-white px-2 py-1 rounded hover:bg-civium-700 disabled:opacity-50"
+                                  disabled={savingGuardian || !newGuardianCid.trim()}
+                                  onClick={() => handleAddGuardian(m.cid_short)}
+                                >
+                                  {savingGuardian ? "…" : "Ajouter tuteur"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

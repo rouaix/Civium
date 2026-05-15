@@ -578,6 +578,49 @@ pub fn delete_minor_restrictions(conn: &Connection, network_cid_short: &str, min
     Ok(())
 }
 
+/// Check whether `peer_cid_short` is allowed to send a direct message to/from `minor_cid_short`.
+/// Returns `Ok(())` if allowed, `Err(...)` with a human-readable reason if blocked.
+/// The check is symmetrical — call this for both sides of a direct message (sender and recipient).
+pub fn check_minor_interaction(
+    conn: &Connection,
+    network_cid_short: &str,
+    minor_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<()> {
+    let network = load_network(conn, network_cid_short)?;
+    let minor = match network.data.members.iter().find(|m| m.cid_short == minor_cid_short) {
+        Some(m) if m.is_minor => m,
+        _ => return Ok(()),
+    };
+    let _ = minor;
+
+    // Guardians bypass all restrictions
+    let guardians = list_guardians(conn, network_cid_short, minor_cid_short)?;
+    if guardians.iter().any(|g| g.guardian_cid_short == peer_cid_short) {
+        return Ok(());
+    }
+
+    // Peer's circle in this network (unknown peer → circle 0)
+    let peer_circle = network.data.members.iter()
+        .find(|m| m.cid_short == peer_cid_short)
+        .map(|m| m.circle as u8)
+        .unwrap_or(0);
+
+    let allowed = match get_minor_restrictions(conn, network_cid_short, minor_cid_short)? {
+        Some(r) => r.allows(peer_cid_short, peer_circle),
+        None    => peer_circle <= 1, // default: Annuaire + Connaissance only
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "interaction refusée : '{}' est un compte mineur — seuls les tuteurs et membres au cercle ≤ max_circle peuvent interagir directement",
+            minor_cid_short
+        ))
+    }
+}
+
 /// Merge members and messages received via P2P sync.
 /// Members already present (by cid_full) are skipped.
 /// Messages use INSERT OR IGNORE to avoid duplicates.

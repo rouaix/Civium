@@ -13,8 +13,8 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 | — | Site web de présentation | 🔲 Non démarré |
 | 0 | MVP | ✅ Terminé |
 | 1 | Transport P2P réel | ✅ Terminé |
-| 2 | Gouvernance & Annuaires | 🚧 En cours |
-| 3 | Services & Intégrations | ⏳ En attente Phase 2 |
+| 2 | Gouvernance & Annuaires | ✅ Terminé |
+| 3 | Services & Intégrations | 🚧 En cours |
 | 4 | Applications & Écosystème | ⏳ En attente Phase 3 |
 | 5 | Maturité | ⏳ En attente Phase 4 |
 
@@ -202,32 +202,32 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] Tauri : `directory_federate`, `directory_unfederate`, `directory_federations`, `directory_search` enrichi (`include_federated`, `source_dir_name`)
 - [x] Dashboard : section Fédérations (add/remove), checkbox "inclure fédérés", badge "via <nom>" sur résultats fédérés
 
-### Semaines 11–12 — RRM (Registre des Réseaux Malveillants)
+### Semaines 11–12 — RRM (Registre des Réseaux Malveillants) ✅
 
-- [ ] `NetworkKind::Rrm` dans civium-core
-- [ ] `RrmEntry` (network_cid, reason, evidence_url, reported_by, reported_at)
-- [ ] Table `rrm_entries` dans les deux stores
-- [ ] Logique de confiance configurable : chaque réseau choisit quels RRM il consulte
-- [ ] CLI : `rrm report/list/remove`, `network trust-rrm/untrust-rrm`
-- [ ] Tauri : commandes + Dashboard section RRM
-- [ ] Vérification automatique à la connexion inter-réseaux (avertissement si réseau listé)
+- [x] `NetworkKind::Rrm` dans civium-core
+- [x] `RrmEntry` (network_cid, reason, evidence_url, reported_by, reported_at) + `TrustedRrm`
+- [x] Tables `rrm_entries` + `trusted_rrms` dans les deux stores
+- [x] Logique de confiance configurable : chaque réseau choisit quels RRM il consulte
+- [x] CLI : `rrm create/list/report/search/remove` + `network trust-rrm/untrust-rrm/trusted-rrms/check-rrm`
+- [x] Tauri : 8 commandes IPC + Dashboard section RRM + section RRM de confiance
+- [x] `check_rrm_warnings` — avertissement si réseau listé dans un RRM de confiance
 
 ### Semaines 13–14 — Profils enfants et contrôle parental
 
-- [ ] Flag `is_minor` sur un compte membre
-- [ ] Restrictions configurables : cercles accessibles, plugins autorisés, contacts autorisés
-- [ ] Compte tuteur : lien parent-enfant, visibilité activité
-- [ ] CLI : `member set-minor/set-guardian`
-- [ ] Tauri : gestion depuis le Dashboard admin
-- [ ] Blocage automatique des interactions cercle 2-3 avec non-tuteurs pour les comptes mineurs
+- [x] Flag `is_minor` sur un compte membre
+- [x] Restrictions configurables : cercles accessibles, contacts autorisés (`MinorRestrictions`)
+- [x] Compte tuteur : lien parent-enfant (`GuardianLink`)
+- [x] CLI : `member set-minor/unset-minor/set-guardian/remove-guardian/guardians/wards/set-restrictions`
+- [x] Tauri : badge mineur + panneau admin expandable (toggle, gestion tuteurs)
+- [x] Blocage automatique des interactions cercle 2-3 avec non-tuteurs pour les comptes mineurs (`check_minor_interaction` + enforcement CLI `msg send --to` + commande Tauri `message_send_direct`)
 
 ### Critères de succès Phase 2
 
-- [ ] Un réseau peut créer et voter une proposition avec quorum et délégation
-- [ ] Une action admin contestée par la majorité est automatiquement suspendue
-- [ ] Un annuaire dédié peut référencer des réseaux et être fédéré avec d'autres annuaires
-- [ ] Un réseau peut consulter un RRM et refuser automatiquement les connexions listées
-- [ ] Un compte mineur est isolé des contenus et contacts non autorisés par son tuteur
+- [x] Un réseau peut créer et voter une proposition avec quorum et délégation
+- [x] Une action admin contestée par la majorité est automatiquement suspendue
+- [x] Un annuaire dédié peut référencer des réseaux et être fédéré avec d'autres annuaires
+- [x] Un réseau peut consulter un RRM et refuser automatiquement les connexions listées
+- [x] Un compte mineur est isolé des contenus et contacts non autorisés par son tuteur
 
 ---
 

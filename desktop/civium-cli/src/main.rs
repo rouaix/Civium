@@ -1645,6 +1645,15 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                         .find(|m| m.cid_short.starts_with(peer.as_str()))
                         .map(|m| m.cid_short.clone())
                         .unwrap();
+                    let author_cid_short = net.data.members.iter()
+                        .find(|m| m.cid_full == author_cid.full())
+                        .map(|m| m.cid_short.clone())
+                        .unwrap_or_default();
+                    // Enforce minor restrictions in both directions
+                    store::check_minor_interaction(data, net.cid_short(), &peer_cid_short, &author_cid_short)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    store::check_minor_interaction(data, net.cid_short(), &author_cid_short, &peer_cid_short)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                     MessageKind::Direct { to_cid_short: peer_cid_short }
                 }
                 None => MessageKind::Thread,

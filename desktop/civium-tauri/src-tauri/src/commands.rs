@@ -538,6 +538,63 @@ pub fn message_send(
     })
 }
 
+/// Send a direct message to a specific member (enforces minor restrictions on both sides).
+#[tauri::command]
+pub fn message_send_direct(
+    app: AppHandle,
+    network_cid: String,
+    to_cid_short: String,
+    body: String,
+) -> Result<MessageDisplay, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let author_cid = keypair.cid();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let author_cid_short = network.data.members.iter()
+        .find(|m| m.cid_full == author_cid.full())
+        .map(|m| m.cid_short.clone())
+        .ok_or_else(|| "you are not a member of this network".to_string())?;
+
+    if !network.data.members.iter().any(|m| m.cid_short == to_cid_short) {
+        return Err(format!("member '{}' not found in this network", to_cid_short));
+    }
+
+    // Enforce minor restrictions (both directions)
+    store::check_minor_interaction(&conn, &network_cid, &to_cid_short, &author_cid_short)
+        .map_err(|e| e.to_string())?;
+    store::check_minor_interaction(&conn, &network_cid, &author_cid_short, &to_cid_short)
+        .map_err(|e| e.to_string())?;
+
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let (nonce_b58, ciphertext_b58) = group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
+    let sent_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let msg = Message {
+        id: nonce_b58.clone(),
+        author_cid_short: author_cid_short.clone(),
+        kind: MessageKind::Direct { to_cid_short: to_cid_short.clone() },
+        nonce_b58,
+        ciphertext_b58,
+        sent_at,
+    };
+    store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+
+    let author_name = network.data.members.iter()
+        .find(|m| m.cid_short == author_cid_short)
+        .map(|m| m.display_name.clone())
+        .unwrap_or_else(|| author_cid_short.clone());
+
+    Ok(MessageDisplay {
+        id: msg.id,
+        author_cid_short: msg.author_cid_short,
+        author_name,
+        body,
+        sent_at: msg.sent_at,
+        is_direct: true,
+        to_cid_short: Some(to_cid_short),
+    })
+}
+
 // ── Governance commands ───────────────────────────────────────────────────────
 
 #[derive(Serialize)]

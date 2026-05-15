@@ -676,6 +676,46 @@ pub fn delete_minor_restrictions(data_dir: &Path, network_cid_short: &str, minor
     Ok(())
 }
 
+/// Check whether `peer_cid_short` is allowed to interact directly with `minor_cid_short`.
+/// Call for both sides of a direct message (sender and recipient).
+pub fn check_minor_interaction(
+    data_dir: &Path,
+    network_cid_short: &str,
+    minor_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<()> {
+    let network = load_network(data_dir, network_cid_short)?;
+    let minor = match network.data.members.iter().find(|m| m.cid_short == minor_cid_short) {
+        Some(m) if m.is_minor => m,
+        _ => return Ok(()),
+    };
+    let _ = minor;
+
+    let guardians = list_guardians(data_dir, network_cid_short, minor_cid_short)?;
+    if guardians.iter().any(|g| g.guardian_cid_short == peer_cid_short) {
+        return Ok(());
+    }
+
+    let peer_circle = network.data.members.iter()
+        .find(|m| m.cid_short == peer_cid_short)
+        .map(|m| m.circle as u8)
+        .unwrap_or(0);
+
+    let allowed = match get_minor_restrictions(data_dir, network_cid_short, minor_cid_short)? {
+        Some(r) => r.allows(peer_cid_short, peer_circle),
+        None    => peer_circle <= 1,
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "interaction refusée : '{}' est un compte mineur — seuls les tuteurs et membres au cercle ≤ max_circle peuvent interagir directement",
+            minor_cid_short
+        ))
+    }
+}
+
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
 /// Merge members and messages received via P2P sync into the local store.

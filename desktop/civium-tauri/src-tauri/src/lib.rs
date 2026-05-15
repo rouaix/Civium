@@ -58,6 +58,7 @@ pub fn run() {
             network_join_p2p,
             message_list,
             message_send,
+            message_send_direct,
             proposal_list,
             proposal_create,
             vote_cast,
