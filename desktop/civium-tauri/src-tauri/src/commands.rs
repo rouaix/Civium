@@ -12,6 +12,7 @@ use civium_core::{
     DirectoryEntry, Document, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PairKey, PluginState, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
+    RCC_URL,
 };
 
 use crate::{node::AppState, store};
@@ -2081,6 +2082,114 @@ pub fn mcp_status(app: AppHandle) -> McpStatus {
         port,
         token,
     }
+}
+
+// ── RCC — Registre Central Civium ────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RccStatusInfo {
+    pub network_cid_short: String,
+    pub network_name: String,
+    pub admin_email: String,
+    /// "pending" | "registered" | "failed"
+    pub status: String,
+    pub attempts: u32,
+    pub last_attempt: Option<u64>,
+    pub registered_at: u64,
+    pub rcc_url: String,
+}
+
+/// Initialise l'enregistrement RCC pour un réseau et lance la tentative en arrière-plan.
+/// Idempotent : si déjà enregistré, retourne le statut existant sans relancer.
+#[tauri::command]
+pub fn rcc_register(
+    app: AppHandle,
+    network_cid: String,
+    admin_email: String,
+) -> Result<RccStatusInfo, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    // Si déjà enregistré, renvoyer le statut existant
+    if let Some(existing) = store::get_rcc_registration(&conn, &network.cid_short().to_string()) {
+        if existing.status == "registered" {
+            return Ok(RccStatusInfo {
+                network_cid_short: existing.network_cid_short,
+                network_name: existing.network_name,
+                admin_email: existing.admin_email,
+                status: existing.status,
+                attempts: existing.attempts,
+                last_attempt: existing.last_attempt,
+                registered_at: existing.registered_at,
+                rcc_url: RCC_URL.to_string(),
+            });
+        }
+    }
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let reg = store::RccRegistration {
+        network_cid_short: network.cid_short().to_string(),
+        network_cid_full: network.cid_full().to_string(),
+        network_name: network.name().to_string(),
+        admin_email: admin_email.clone(),
+        status: "pending".to_string(),
+        attempts: 0,
+        last_attempt: None,
+        registered_at: now,
+    };
+    store::save_rcc_registration(&conn, &reg).map_err(|e| e.to_string())?;
+
+    // Lancer le retry en arrière-plan
+    let data_dir_bg = data_dir(&app);
+    let cid_short = network.cid_short().to_string();
+    let app_bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::rcc::register_with_retry(app_bg, data_dir_bg, cid_short).await;
+    });
+
+    Ok(RccStatusInfo {
+        network_cid_short: reg.network_cid_short,
+        network_name: reg.network_name,
+        admin_email: reg.admin_email,
+        status: reg.status,
+        attempts: reg.attempts,
+        last_attempt: reg.last_attempt,
+        registered_at: reg.registered_at,
+        rcc_url: RCC_URL.to_string(),
+    })
+}
+
+/// Retourner le statut RCC d'un réseau (None si jamais initié).
+#[tauri::command]
+pub fn rcc_status(app: AppHandle, network_cid: String) -> Result<Option<RccStatusInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(store::get_rcc_registration(&conn, network.cid_short()).map(|r| RccStatusInfo {
+        network_cid_short: r.network_cid_short,
+        network_name: r.network_name,
+        admin_email: r.admin_email,
+        status: r.status,
+        attempts: r.attempts,
+        last_attempt: r.last_attempt,
+        registered_at: r.registered_at,
+        rcc_url: RCC_URL.to_string(),
+    }))
+}
+
+/// Retourner le statut RCC de tous les réseaux enregistrés.
+#[tauri::command]
+pub fn rcc_status_list(app: AppHandle) -> Result<Vec<RccStatusInfo>, String> {
+    let conn = open(&app)?;
+    Ok(store::list_rcc_registrations(&conn).into_iter().map(|r| RccStatusInfo {
+        network_cid_short: r.network_cid_short,
+        network_name: r.network_name,
+        admin_email: r.admin_email,
+        status: r.status,
+        attempts: r.attempts,
+        last_attempt: r.last_attempt,
+        registered_at: r.registered_at,
+        rcc_url: RCC_URL.to_string(),
+    }).collect())
 }
 
 // ── Pairing ───────────────────────────────────────────────────────────────────

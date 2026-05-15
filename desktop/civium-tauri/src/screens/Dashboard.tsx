@@ -25,6 +25,7 @@ import type {
   RrmEntryInfo,
   TrustedRrmInfo,
   OutboxCountInfo,
+  RccStatusInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -151,6 +152,11 @@ export default function Dashboard() {
   // Outbox state
   const [outboxCounts, setOutboxCounts] = useState<Record<string, number>>({});
 
+  // RCC state
+  const [rccStatuses, setRccStatuses] = useState<Record<string, RccStatusInfo>>({});
+  const [rccEmail, setRccEmail] = useState("");
+  const [rccRegistering, setRccRegistering] = useState(false);
+
   // Pairing state
   const [pairedDevices, setPairedDevices] = useState<PairedDeviceInfo[]>([]);
   const [pairingSession, setPairingSession] = useState<PairingInitInfo | null>(null);
@@ -187,12 +193,23 @@ export default function Dashboard() {
       .catch(() => {});
   }, []);
 
+  const refreshRccStatuses = useCallback(() => {
+    tauriInvoke<RccStatusInfo[]>("rcc_status_list")
+      .then((items) => {
+        const map: Record<string, RccStatusInfo> = {};
+        for (const item of items) map[item.network_cid_short] = item;
+        setRccStatuses(map);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
     tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
     refreshOutboxCounts();
-  }, [refreshOutboxCounts]);
+    refreshRccStatuses();
+  }, [refreshOutboxCounts, refreshRccStatuses]);
 
   const refreshNetwork = useCallback((cid: string) => {
     tauriInvoke<MemberInfo[]>("member_list", { networkCid: cid }).then(setMembers);
@@ -326,6 +343,7 @@ export default function Dashboard() {
 
     let unlistenSync: UnlistenFn | null = null;
     let unlistenOutbox: UnlistenFn | null = null;
+    let unlistenRcc: UnlistenFn | null = null;
 
     listen<string>("civium://sync-completed", (event) => {
       const cid = event.payload;
@@ -347,13 +365,20 @@ export default function Dashboard() {
       unlistenOutbox = fn;
     });
 
+    listen("civium://rcc-status-changed", () => {
+      refreshRccStatuses();
+    }).then((fn) => {
+      unlistenRcc = fn;
+    });
+
     return () => {
       mounted = false;
       clearInterval(interval);
       unlistenSync?.();
       unlistenOutbox?.();
+      unlistenRcc?.();
     };
-  }, [refreshNetwork, refreshMessages, refreshOutboxCounts]);
+  }, [refreshNetwork, refreshMessages, refreshOutboxCounts, refreshRccStatuses]);
 
   async function generateInvite() {
     if (!selected) return;
@@ -925,6 +950,23 @@ export default function Dashboard() {
     }
   }
 
+  async function handleRccRegister() {
+    if (!selected || !rccEmail.trim()) return;
+    setRccRegistering(true);
+    try {
+      const info = await tauriInvoke<RccStatusInfo>("rcc_register", {
+        networkCid: selected.cid_short,
+        adminEmail: rccEmail.trim(),
+      });
+      setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
+      setRccEmail("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setRccRegistering(false);
+    }
+  }
+
   async function handlePairRevoke(deviceId: string) {
     try {
       await tauriInvoke("pair_revoke", { deviceId });
@@ -998,6 +1040,12 @@ export default function Dashboard() {
                     <span className="text-xs bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center" title="Messages en attente de synchronisation">
                       ↑{outboxCounts[net.cid_short]}
                     </span>
+                  )}
+                  {rccStatuses[net.cid_short]?.status === "registered" && (
+                    <span className="text-xs text-green-400" title="Enregistré au RCC">✓</span>
+                  )}
+                  {rccStatuses[net.cid_short]?.status === "pending" && (
+                    <span className="text-xs text-amber-400" title="Enregistrement RCC en cours…">↻</span>
                   )}
                   {selected?.cid_short === net.cid_short && unreadCount > 0 && (
                     <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
@@ -1555,6 +1603,59 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-400 mt-1">Cliquer pour copier</p>
               </section>
             )}
+
+            {/* RCC — Registre Central Civium */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                Enregistrement RCC (Registre Central Civium)
+              </h3>
+              {(() => {
+                const rcc = rccStatuses[selected.cid_short];
+                if (rcc?.status === "registered") {
+                  return (
+                    <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+                      <span className="text-base">✓</span>
+                      <span>Réseau enregistré au RCC — {rcc.admin_email}</span>
+                    </div>
+                  );
+                }
+                if (rcc?.status === "pending") {
+                  return (
+                    <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                      <span className="text-base animate-spin inline-block">↻</span>
+                      <span>Enregistrement en cours… ({rcc.attempts} tentative{rcc.attempts > 1 ? "s" : ""})</span>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-2">
+                    {rcc?.status === "failed" && (
+                      <p className="text-xs text-red-600">Enregistrement échoué après {rcc.attempts} tentatives.</p>
+                    )}
+                    <p className="text-xs text-gray-500">
+                      L'enregistrement est obligatoire (conformité légale). Votre email ne sera jamais affiché publiquement.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="email"
+                        className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 bg-white"
+                        placeholder="votre@email.com"
+                        value={rccEmail}
+                        onChange={(e) => setRccEmail(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") handleRccRegister(); }}
+                      />
+                      <button
+                        className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50"
+                        disabled={rccRegistering || !rccEmail.trim()}
+                        onClick={handleRccRegister}
+                      >
+                        {rccRegistering ? "…" : "Enregistrer"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </section>
 
             {/* Garde-fou majoritaire */}
             {adminActions.length > 0 && (

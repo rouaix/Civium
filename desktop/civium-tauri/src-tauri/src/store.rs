@@ -128,6 +128,17 @@ CREATE TABLE IF NOT EXISTS outbox_queue (
     queued_at   INTEGER NOT NULL,
     PRIMARY KEY (network_cid, message_id)
 );
+CREATE TABLE IF NOT EXISTS rcc_registrations (
+    network_cid_short TEXT    NOT NULL,
+    network_cid_full  TEXT    NOT NULL,
+    network_name      TEXT    NOT NULL DEFAULT '',
+    admin_email       TEXT    NOT NULL,
+    status            TEXT    NOT NULL DEFAULT 'pending',
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    last_attempt      INTEGER,
+    registered_at     INTEGER NOT NULL,
+    PRIMARY KEY (network_cid_short)
+);
 ";
 
 pub fn open_db(data_dir: &Path) -> Result<Connection> {
@@ -1027,4 +1038,90 @@ pub fn count_all_outbox(conn: &Connection) -> Vec<(String, u64)> {
         Ok(iter) => iter.filter_map(|r| r.ok()).map(|(c, n)| (c, n as u64)).collect(),
         Err(_) => Vec::new(),
     }
+}
+
+// ── RCC registrations ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct RccRegistration {
+    pub network_cid_short: String,
+    pub network_cid_full: String,
+    pub network_name: String,
+    pub admin_email: String,
+    pub status: String,
+    pub attempts: u32,
+    pub last_attempt: Option<u64>,
+    pub registered_at: u64,
+}
+
+pub fn save_rcc_registration(conn: &Connection, reg: &RccRegistration) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO rcc_registrations
+         (network_cid_short, network_cid_full, network_name, admin_email, status, attempts, last_attempt, registered_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            reg.network_cid_short, reg.network_cid_full, reg.network_name, reg.admin_email,
+            reg.status, reg.attempts as i64,
+            reg.last_attempt.map(|t| t as i64),
+            reg.registered_at as i64,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_rcc_registration(conn: &Connection, network_cid_short: &str) -> Option<RccRegistration> {
+    conn.query_row(
+        "SELECT network_cid_short, network_cid_full, network_name, admin_email, status, attempts, last_attempt, registered_at
+         FROM rcc_registrations WHERE network_cid_short = ?1",
+        params![network_cid_short],
+        |r| Ok(RccRegistration {
+            network_cid_short: r.get(0)?,
+            network_cid_full: r.get(1)?,
+            network_name: r.get(2)?,
+            admin_email: r.get(3)?,
+            status: r.get(4)?,
+            attempts: r.get::<_, i64>(5)? as u32,
+            last_attempt: r.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+            registered_at: r.get::<_, i64>(7)? as u64,
+        }),
+    ).ok()
+}
+
+pub fn list_rcc_registrations(conn: &Connection) -> Vec<RccRegistration> {
+    let mut stmt = match conn.prepare(
+        "SELECT network_cid_short, network_cid_full, network_name, admin_email, status, attempts, last_attempt, registered_at
+         FROM rcc_registrations",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |r| Ok(RccRegistration {
+        network_cid_short: r.get(0)?,
+        network_cid_full: r.get(1)?,
+        network_name: r.get(2)?,
+        admin_email: r.get(3)?,
+        status: r.get(4)?,
+        attempts: r.get::<_, i64>(5)? as u32,
+        last_attempt: r.get::<_, Option<i64>>(6)?.map(|t| t as u64),
+        registered_at: r.get::<_, i64>(7)? as u64,
+    }));
+    match rows {
+        Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn update_rcc_status(
+    conn: &Connection,
+    network_cid_short: &str,
+    status: &str,
+    attempts: u32,
+    last_attempt: u64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE rcc_registrations SET status = ?1, attempts = ?2, last_attempt = ?3
+         WHERE network_cid_short = ?4",
+        params![status, attempts as i64, last_attempt as i64, network_cid_short],
+    )?;
+    Ok(())
 }

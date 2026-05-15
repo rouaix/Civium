@@ -1,6 +1,7 @@
 mod commands;
 mod mcp;
 mod node;
+mod rcc;
 mod store;
 
 use commands::*;
@@ -120,6 +121,9 @@ pub fn run() {
             pair_list,
             pair_revoke,
             outbox_count_all,
+            rcc_register,
+            rcc_status,
+            rcc_status_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
