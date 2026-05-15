@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
+use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS activity_feed (
 CREATE TABLE IF NOT EXISTS notifications (
     notif_id    TEXT PRIMARY KEY,
     notif_json  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS documents (
+    network_cid TEXT NOT NULL,
+    doc_id      TEXT NOT NULL,
+    doc_json    TEXT NOT NULL,
+    PRIMARY KEY (network_cid, doc_id)
 );
 ";
 
@@ -856,6 +862,54 @@ pub fn delete_agenda_event(data_dir: &Path, network_cid_short: &str, event_id: &
     conn.execute(
         "DELETE FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
         params![network_cid_short, event_id],
+    )?;
+    Ok(())
+}
+
+// ── Documents ────────────────────────────────────────────────────────────────
+
+pub fn save_document(data_dir: &Path, doc: &Document) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(doc).context("serialize document")?;
+    conn.execute(
+        "INSERT OR REPLACE INTO documents (network_cid, doc_id, doc_json) VALUES (?1, ?2, ?3)",
+        params![doc.network_cid_short, doc.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_documents(data_dir: &Path, network_cid_short: &str) -> Result<Vec<Document>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT doc_json FROM documents WHERE network_cid = ?1 ORDER BY rowid ASC",
+    )?;
+    let docs = stmt
+        .query_map(params![network_cid_short], |row| row.get::<_, String>(0))?
+        .map(|r| r.map_err(anyhow::Error::from))
+        .map(|r| r.and_then(|json| serde_json::from_str(&json).context("invalid document")))
+        .collect::<Result<Vec<Document>>>()?;
+    Ok(docs)
+}
+
+pub fn get_document(data_dir: &Path, network_cid_short: &str, doc_id: &str) -> Result<Option<Document>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT doc_json FROM documents WHERE network_cid = ?1 AND doc_id = ?2",
+        params![network_cid_short, doc_id],
+        |row| row.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid document")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_document(data_dir: &Path, network_cid_short: &str, doc_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM documents WHERE network_cid = ?1 AND doc_id = ?2",
+        params![network_cid_short, doc_id],
     )?;
     Ok(())
 }

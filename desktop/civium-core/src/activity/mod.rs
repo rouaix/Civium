@@ -14,6 +14,7 @@ pub enum ActivityKind {
     AdminActionContested,
     ConnectionEstablished,
     AgendaEventCreated,
+    DocumentCreated,
 }
 
 impl std::fmt::Display for ActivityKind {
@@ -29,6 +30,7 @@ impl std::fmt::Display for ActivityKind {
             Self::AdminActionContested   => "admin_action_contested",
             Self::ConnectionEstablished  => "connection_established",
             Self::AgendaEventCreated     => "agenda_event_created",
+            Self::DocumentCreated        => "document_created",
         };
         f.write_str(s)
     }

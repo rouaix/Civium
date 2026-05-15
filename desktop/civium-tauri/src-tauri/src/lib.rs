@@ -103,6 +103,10 @@ pub fn run() {
             notification_list,
             notification_unread_count,
             notification_mark_read,
+            document_create,
+            document_list,
+            document_update,
+            document_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

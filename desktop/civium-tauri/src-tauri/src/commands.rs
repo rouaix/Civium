@@ -9,7 +9,7 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     ActivityKind, AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
+    DirectoryEntry, Document, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
@@ -1773,4 +1773,108 @@ pub fn notification_unread_count(app: AppHandle, network_cid_short: String) -> u
 pub fn notification_mark_read(app: AppHandle, notif_id: String) -> Result<(), String> {
     let conn = open(&app)?;
     store::mark_notification_read(&conn, &notif_id).map_err(|e| e.to_string())
+}
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct DocumentInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub title: String,
+    pub body: String,
+    pub version: u32,
+    pub created_by: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+fn doc_to_info(doc: Document, group_key: &GroupKey) -> DocumentInfo {
+    let body = group_key
+        .decrypt(&doc.nonce_b58, &doc.body_ciphertext)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_else(|_| "[contenu illisible]".into());
+    DocumentInfo {
+        id: doc.id,
+        network_cid_short: doc.network_cid_short,
+        title: doc.title,
+        body,
+        version: doc.version,
+        created_by: doc.created_by,
+        created_at: doc.created_at,
+        updated_at: doc.updated_at,
+    }
+}
+
+/// Encrypt and store a new document in the network.
+#[tauri::command]
+pub fn document_create(
+    app: AppHandle,
+    network_cid_short: String,
+    title: String,
+    body: String,
+) -> Result<DocumentInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let (nonce_b58, body_ciphertext) = group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
+    let doc = Document::new(
+        network_cid_short,
+        title,
+        nonce_b58,
+        body_ciphertext,
+        keypair.cid().short().to_string(),
+    );
+    store::save_document(&conn, &doc).map_err(|e| e.to_string())?;
+    let _ = store::emit_activity(&conn, &doc.network_cid_short, ActivityKind::DocumentCreated,
+        &doc.created_by,
+        &format!("Document créé : « {} »", doc.title));
+    Ok(doc_to_info(doc, &group_key))
+}
+
+/// List documents for a network (decrypted).
+#[tauri::command]
+pub fn document_list(app: AppHandle, network_cid_short: String) -> Result<Vec<DocumentInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let docs = store::list_documents(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    Ok(docs.into_iter().map(|d| doc_to_info(d, &group_key)).collect())
+}
+
+/// Update the title and/or body of an existing document.
+#[tauri::command]
+pub fn document_update(
+    app: AppHandle,
+    network_cid_short: String,
+    doc_id: String,
+    title: String,
+    body: String,
+) -> Result<DocumentInfo, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let mut doc = store::get_document(&conn, &network_cid_short, &doc_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("document '{doc_id}' introuvable"))?;
+    let (nonce_b58, body_ciphertext) = group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
+    doc.title = title;
+    doc.nonce_b58 = nonce_b58;
+    doc.body_ciphertext = body_ciphertext;
+    doc.version += 1;
+    doc.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    store::save_document(&conn, &doc).map_err(|e| e.to_string())?;
+    Ok(doc_to_info(doc, &group_key))
+}
+
+/// Delete a document.
+#[tauri::command]
+pub fn document_delete(
+    app: AppHandle,
+    network_cid_short: String,
+    doc_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_document(&conn, &network_cid_short, &doc_id).map_err(|e| e.to_string())
 }
