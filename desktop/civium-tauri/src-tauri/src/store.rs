@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, MemberRecord, Message, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -66,6 +66,18 @@ CREATE TABLE IF NOT EXISTS directory_federations (
     peer_cid        TEXT NOT NULL,
     federation_json TEXT NOT NULL,
     PRIMARY KEY (host_cid, peer_cid)
+);
+CREATE TABLE IF NOT EXISTS rrm_entries (
+    rrm_cid         TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (rrm_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS trusted_rrms (
+    network_cid     TEXT NOT NULL,
+    rrm_cid         TEXT NOT NULL,
+    trust_json      TEXT NOT NULL,
+    PRIMARY KEY (network_cid, rrm_cid)
 );
 ";
 
@@ -377,6 +389,95 @@ pub fn delete_federation(conn: &Connection, host_cid_short: &str, peer_cid_short
         params![host_cid_short, peer_cid_short],
     )?;
     Ok(())
+}
+
+// ── RRM entries ───────────────────────────────────────────────────────────────
+
+pub fn save_rrm_entry(conn: &Connection, entry: &RrmEntry) -> Result<()> {
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO rrm_entries (rrm_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.rrm_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_rrm_entries(conn: &Connection, rrm_cid_short: &str) -> Result<Vec<RrmEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM rrm_entries WHERE rrm_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![rrm_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: RrmEntry = serde_json::from_str(&json)?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn delete_rrm_entry(conn: &Connection, rrm_cid_short: &str, entry_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM rrm_entries WHERE rrm_cid = ?1 AND entry_id = ?2",
+        params![rrm_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Trusted RRMs ──────────────────────────────────────────────────────────────
+
+pub fn save_trusted_rrm(conn: &Connection, trust: &TrustedRrm) -> Result<()> {
+    let json = serde_json::to_string(trust)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO trusted_rrms (network_cid, rrm_cid, trust_json)
+         VALUES (?1, ?2, ?3)",
+        params![&trust.network_cid_short, &trust.rrm_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_trusted_rrms(conn: &Connection, network_cid_short: &str) -> Result<Vec<TrustedRrm>> {
+    let mut stmt = conn.prepare(
+        "SELECT trust_json FROM trusted_rrms WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut trusts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let t: TrustedRrm = serde_json::from_str(&json)?;
+        trusts.push(t);
+    }
+    Ok(trusts)
+}
+
+pub fn delete_trusted_rrm(conn: &Connection, network_cid_short: &str, rrm_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM trusted_rrms WHERE network_cid = ?1 AND rrm_cid = ?2",
+        params![network_cid_short, rrm_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Returns (TrustedRrm, RrmEntry) pairs where `peer_cid_short` is listed in any
+/// RRM trusted by `network_cid_short`. Used for connection-time warnings.
+pub fn check_rrm_warnings(
+    conn: &Connection,
+    network_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<Vec<(TrustedRrm, RrmEntry)>> {
+    let trusts = list_trusted_rrms(conn, network_cid_short)?;
+    let mut warnings = Vec::new();
+    for trust in trusts {
+        let entries = list_rrm_entries(conn, &trust.rrm_cid_short)?;
+        for entry in entries {
+            if entry.network_cid_short == peer_cid_short {
+                warnings.push((trust.clone(), entry));
+                break;
+            }
+        }
+    }
+    Ok(warnings)
 }
 
 /// Merge members and messages received via P2P sync.

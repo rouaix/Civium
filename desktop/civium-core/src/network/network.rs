@@ -22,13 +22,14 @@ impl std::fmt::Display for NetworkAddress {
     }
 }
 
-/// Whether a network acts as a general-purpose group or a public directory.
+/// Whether a network acts as a general-purpose group, a public directory, or a malicious-network registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkKind {
     #[default]
     Standard,
     Directory,
+    Rrm,
 }
 
 /// Serializable snapshot of a Network — persisted to JSON (Phase 0).

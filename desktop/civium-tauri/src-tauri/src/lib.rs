@@ -76,6 +76,14 @@ pub fn run() {
             directory_federate,
             directory_unfederate,
             directory_federations,
+            rrm_create,
+            rrm_report,
+            rrm_list,
+            rrm_remove,
+            network_trust_rrm,
+            network_untrust_rrm,
+            network_trusted_rrms,
+            rrm_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

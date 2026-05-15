@@ -11,7 +11,7 @@ use civium_core::{
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, MemberRole, Message, MessageKind,
     Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
-    TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
+    RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
 use crate::{node::AppState, store};
@@ -32,6 +32,7 @@ pub struct NetworkInfo {
     pub name: String,
     pub member_count: usize,
     pub is_directory: bool,
+    pub is_rrm: bool,
 }
 
 #[derive(Serialize)]
@@ -103,6 +104,7 @@ pub fn network_create(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: false,
+        is_rrm: false,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -121,6 +123,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             name: n.name().to_string(),
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
+            is_rrm: n.data.kind == NetworkKind::Rrm,
         })
         .collect())
 }
@@ -197,6 +200,7 @@ pub fn network_join(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
+        is_rrm: network.data.kind == NetworkKind::Rrm,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -398,6 +402,7 @@ pub async fn network_join_p2p(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
+        is_rrm: network.data.kind == NetworkKind::Rrm,
     })
 }
 
@@ -951,6 +956,7 @@ pub fn directory_create(
         name: network.name().to_string(),
         member_count: network.data.members.len(),
         is_directory: true,
+        is_rrm: false,
     })
 }
 
@@ -968,6 +974,7 @@ pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, Strin
             name: n.name().to_string(),
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
+            is_rrm: n.data.kind == NetworkKind::Rrm,
         })
         .collect())
 }
@@ -1129,4 +1136,182 @@ pub fn directory_federations(
             added_at: f.added_at,
         })
         .collect())
+}
+
+// ── RRM ───────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RrmEntryInfo {
+    pub id: String,
+    pub rrm_cid_short: String,
+    pub network_cid_short: String,
+    pub network_name: String,
+    pub reason: String,
+    pub evidence_url: Option<String>,
+    pub reported_by: String,
+    pub reported_at: u64,
+}
+
+impl From<RrmEntry> for RrmEntryInfo {
+    fn from(e: RrmEntry) -> Self {
+        Self {
+            id: e.id,
+            rrm_cid_short: e.rrm_cid_short,
+            network_cid_short: e.network_cid_short,
+            network_name: e.network_name,
+            reason: e.reason,
+            evidence_url: e.evidence_url,
+            reported_by: e.reported_by,
+            reported_at: e.reported_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct TrustedRrmInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub rrm_cid_short: String,
+    pub rrm_name: String,
+    pub added_by: String,
+    pub added_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct RrmWarning {
+    pub rrm_name: String,
+    pub rrm_cid_short: String,
+    pub network_name: String,
+    pub reason: String,
+    pub evidence_url: Option<String>,
+}
+
+/// Create an RRM network (kind = Rrm).
+#[tauri::command]
+pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let admin_cid = keypair.cid();
+    let mut network = Network::create(name, &admin_cid, display_name).map_err(|e| e.to_string())?;
+    network.data.kind = NetworkKind::Rrm;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+        is_directory: false,
+        is_rrm: true,
+    })
+}
+
+/// Report a network to an RRM.
+#[tauri::command]
+pub fn rrm_report(
+    app: AppHandle,
+    rrm_cid: String,
+    network_cid_short: String,
+    network_name: String,
+    reason: String,
+    evidence_url: Option<String>,
+) -> Result<RrmEntryInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let reporter = keypair.cid().short().to_string();
+
+    let rrm_net = store::load_network(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    if rrm_net.data.kind != NetworkKind::Rrm {
+        return Err(format!("network '{}' is not an RRM", rrm_cid));
+    }
+
+    let entry = RrmEntry::new(rrm_cid, network_cid_short, network_name, reason, evidence_url, reporter);
+    store::save_rrm_entry(&conn, &entry).map_err(|e| e.to_string())?;
+    Ok(RrmEntryInfo::from(entry))
+}
+
+/// List all reports in an RRM.
+#[tauri::command]
+pub fn rrm_list(app: AppHandle, rrm_cid: String) -> Result<Vec<RrmEntryInfo>, String> {
+    let conn = open(&app)?;
+    let entries = store::list_rrm_entries(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    Ok(entries.into_iter().map(RrmEntryInfo::from).collect())
+}
+
+/// Remove a report from an RRM.
+#[tauri::command]
+pub fn rrm_remove(app: AppHandle, rrm_cid: String, entry_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_rrm_entry(&conn, &rrm_cid, &entry_id).map_err(|e| e.to_string())
+}
+
+/// Trust an RRM — this network will consult it on connection checks.
+#[tauri::command]
+pub fn network_trust_rrm(
+    app: AppHandle,
+    network_cid: String,
+    rrm_cid: String,
+    rrm_name: String,
+) -> Result<TrustedRrmInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let rrm_net = store::load_network(&conn, &rrm_cid).map_err(|e| e.to_string())?;
+    if rrm_net.data.kind != NetworkKind::Rrm {
+        return Err(format!("network '{}' is not an RRM", rrm_cid));
+    }
+    let trust = TrustedRrm::new(
+        network_cid,
+        rrm_cid,
+        rrm_name,
+        keypair.cid().short().to_string(),
+    );
+    store::save_trusted_rrm(&conn, &trust).map_err(|e| e.to_string())?;
+    Ok(TrustedRrmInfo {
+        id: trust.id,
+        network_cid_short: trust.network_cid_short,
+        rrm_cid_short: trust.rrm_cid_short,
+        rrm_name: trust.rrm_name,
+        added_by: trust.added_by,
+        added_at: trust.added_at,
+    })
+}
+
+/// Stop trusting an RRM.
+#[tauri::command]
+pub fn network_untrust_rrm(app: AppHandle, network_cid: String, rrm_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_trusted_rrm(&conn, &network_cid, &rrm_cid).map_err(|e| e.to_string())
+}
+
+/// List all RRMs trusted by a network.
+#[tauri::command]
+pub fn network_trusted_rrms(app: AppHandle, network_cid: String) -> Result<Vec<TrustedRrmInfo>, String> {
+    let conn = open(&app)?;
+    let trusts = store::list_trusted_rrms(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(trusts.into_iter().map(|t| TrustedRrmInfo {
+        id: t.id,
+        network_cid_short: t.network_cid_short,
+        rrm_cid_short: t.rrm_cid_short,
+        rrm_name: t.rrm_name,
+        added_by: t.added_by,
+        added_at: t.added_at,
+    }).collect())
+}
+
+/// Check if a peer network is listed in any trusted RRM. Returns warnings if found.
+#[tauri::command]
+pub fn rrm_check(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid: String,
+) -> Result<Vec<RrmWarning>, String> {
+    let conn = open(&app)?;
+    let warnings = store::check_rrm_warnings(&conn, &network_cid, &peer_cid)
+        .map_err(|e| e.to_string())?;
+    Ok(warnings.into_iter().map(|(trust, entry)| RrmWarning {
+        rrm_name: trust.rrm_name,
+        rrm_cid_short: trust.rrm_cid_short,
+        network_name: entry.network_name,
+        reason: entry.reason,
+        evidence_url: entry.evidence_url,
+    }).collect())
 }

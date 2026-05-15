@@ -10,6 +10,7 @@ export interface NetworkInfo {
   name: string;
   member_count: number;
   is_directory: boolean;
+  is_rrm: boolean;
 }
 
 export interface MemberInfo {
@@ -103,6 +104,34 @@ export interface FederationInfo {
   peer_addr: string | null;
   added_by: string;
   added_at: number;
+}
+
+export interface RrmEntryInfo {
+  id: string;
+  rrm_cid_short: string;
+  network_cid_short: string;
+  network_name: string;
+  reason: string;
+  evidence_url: string | null;
+  reported_by: string;
+  reported_at: number;
+}
+
+export interface TrustedRrmInfo {
+  id: string;
+  network_cid_short: string;
+  rrm_cid_short: string;
+  rrm_name: string;
+  added_by: string;
+  added_at: number;
+}
+
+export interface RrmWarning {
+  rrm_name: string;
+  rrm_cid_short: string;
+  network_name: string;
+  reason: string;
+  evidence_url: string | null;
 }
 
 export interface AdminActionInfo {

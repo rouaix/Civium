@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, Mailbox, MemberRecord, Message, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS directory_federations (
     peer_cid        TEXT NOT NULL,
     federation_json TEXT NOT NULL,
     PRIMARY KEY (host_cid, peer_cid)
+);
+CREATE TABLE IF NOT EXISTS rrm_entries (
+    rrm_cid         TEXT NOT NULL,
+    entry_id        TEXT NOT NULL,
+    entry_json      TEXT NOT NULL,
+    PRIMARY KEY (rrm_cid, entry_id)
+);
+CREATE TABLE IF NOT EXISTS trusted_rrms (
+    network_cid     TEXT NOT NULL,
+    rrm_cid         TEXT NOT NULL,
+    trust_json      TEXT NOT NULL,
+    PRIMARY KEY (network_cid, rrm_cid)
 );
 ";
 
@@ -457,6 +469,106 @@ pub fn delete_federation(data_dir: &Path, host_cid_short: &str, peer_cid_short: 
         params![host_cid_short, peer_cid_short],
     )?;
     Ok(())
+}
+
+// ── RRM entries ───────────────────────────────────────────────────────────────
+
+pub fn save_rrm_entry(data_dir: &Path, entry: &RrmEntry) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(entry)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO rrm_entries (rrm_cid, entry_id, entry_json)
+         VALUES (?1, ?2, ?3)",
+        params![&entry.rrm_cid_short, &entry.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_rrm_entries(data_dir: &Path, rrm_cid_short: &str) -> Result<Vec<RrmEntry>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT entry_json FROM rrm_entries WHERE rrm_cid = ?1 ORDER BY rowid DESC",
+    )?;
+    let mut rows = stmt.query(params![rrm_cid_short])?;
+    let mut entries = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: RrmEntry = serde_json::from_str(&json).context("invalid RRM entry in database")?;
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
+pub fn search_rrm_entries(data_dir: &Path, rrm_cid_short: &str, query: &str) -> Result<Vec<RrmEntry>> {
+    let entries = list_rrm_entries(data_dir, rrm_cid_short)?;
+    Ok(entries.into_iter().filter(|e| e.matches(query)).collect())
+}
+
+pub fn delete_rrm_entry(data_dir: &Path, rrm_cid_short: &str, entry_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM rrm_entries WHERE rrm_cid = ?1 AND entry_id = ?2",
+        params![rrm_cid_short, entry_id],
+    )?;
+    Ok(())
+}
+
+// ── Trusted RRMs ──────────────────────────────────────────────────────────────
+
+pub fn save_trusted_rrm(data_dir: &Path, trust: &TrustedRrm) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(trust)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO trusted_rrms (network_cid, rrm_cid, trust_json)
+         VALUES (?1, ?2, ?3)",
+        params![&trust.network_cid_short, &trust.rrm_cid_short, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_trusted_rrms(data_dir: &Path, network_cid_short: &str) -> Result<Vec<TrustedRrm>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT trust_json FROM trusted_rrms WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut trusts = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let t: TrustedRrm = serde_json::from_str(&json).context("invalid trusted RRM in database")?;
+        trusts.push(t);
+    }
+    Ok(trusts)
+}
+
+pub fn delete_trusted_rrm(data_dir: &Path, network_cid_short: &str, rrm_cid_short: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    conn.execute(
+        "DELETE FROM trusted_rrms WHERE network_cid = ?1 AND rrm_cid = ?2",
+        params![network_cid_short, rrm_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Returns the (TrustedRrm, RrmEntry) pairs where `peer_cid_short` is listed in any
+/// RRM trusted by `network_cid_short`. Used for connection-time warnings.
+pub fn check_rrm_warnings(
+    data_dir: &Path,
+    network_cid_short: &str,
+    peer_cid_short: &str,
+) -> Result<Vec<(TrustedRrm, RrmEntry)>> {
+    let trusts = list_trusted_rrms(data_dir, network_cid_short)?;
+    let mut warnings = Vec::new();
+    for trust in trusts {
+        let entries = list_rrm_entries(data_dir, &trust.rrm_cid_short)?;
+        for entry in entries {
+            if entry.network_cid_short == peer_cid_short {
+                warnings.push((trust.clone(), entry));
+                break;
+            }
+        }
+    }
+    Ok(warnings)
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

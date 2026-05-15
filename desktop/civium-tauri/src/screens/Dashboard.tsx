@@ -13,6 +13,8 @@ import type {
   DelegationInfo,
   DirectoryEntryInfo,
   FederationInfo,
+  RrmEntryInfo,
+  TrustedRrmInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -81,6 +83,22 @@ export default function Dashboard() {
   const [savingFed, setSavingFed] = useState(false);
   const [includeFederated, setIncludeFederated] = useState(false);
 
+  // RRM state
+  const [rrmEntries, setRrmEntries] = useState<RrmEntryInfo[]>([]);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportNetCid, setReportNetCid] = useState("");
+  const [reportNetName, setReportNetName] = useState("");
+  const [reportReason, setReportReason] = useState("");
+  const [reportEvidence, setReportEvidence] = useState("");
+  const [reporting, setReporting] = useState(false);
+
+  // Trusted RRMs state (for standard networks)
+  const [trustedRrms, setTrustedRrms] = useState<TrustedRrmInfo[]>([]);
+  const [showTrustForm, setShowTrustForm] = useState(false);
+  const [trustRrmCid, setTrustRrmCid] = useState("");
+  const [trustRrmName, setTrustRrmName] = useState("");
+  const [savingTrust, setSavingTrust] = useState(false);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -131,6 +149,14 @@ export default function Dashboard() {
     tauriInvoke<FederationInfo[]>("directory_federations", { directoryCid: cid }).then(setFederations);
   }, []);
 
+  const refreshRrmEntries = useCallback((cid: string) => {
+    tauriInvoke<RrmEntryInfo[]>("rrm_list", { rrmCid: cid }).then(setRrmEntries);
+  }, []);
+
+  const refreshTrustedRrms = useCallback((cid: string) => {
+    tauriInvoke<TrustedRrmInfo[]>("network_trusted_rrms", { networkCid: cid }).then(setTrustedRrms);
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -141,6 +167,12 @@ export default function Dashboard() {
     if (selected.is_directory) {
       refreshDirEntries(selected.cid_short);
       refreshFederations(selected.cid_short);
+    }
+    if (selected.is_rrm) {
+      refreshRrmEntries(selected.cid_short);
+    }
+    if (!selected.is_directory && !selected.is_rrm) {
+      refreshTrustedRrms(selected.cid_short);
     }
     setInviteLink(null);
     setMessages([]);
@@ -156,6 +188,10 @@ export default function Dashboard() {
     setFederations([]);
     setShowFedForm(false);
     setIncludeFederated(false);
+    setRrmEntries([]);
+    setShowReportForm(false);
+    setTrustedRrms([]);
+    setShowTrustForm(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -459,6 +495,70 @@ export default function Dashboard() {
     }
   }
 
+  async function handleReport() {
+    if (!selected || !reportNetCid.trim() || !reportNetName.trim() || !reportReason.trim()) return;
+    setReporting(true);
+    try {
+      const entry = await tauriInvoke<RrmEntryInfo>("rrm_report", {
+        rrmCid: selected.cid_short,
+        networkCidShort: reportNetCid.trim(),
+        networkName: reportNetName.trim(),
+        reason: reportReason.trim(),
+        evidenceUrl: reportEvidence.trim() || null,
+      });
+      setRrmEntries((prev) => [entry, ...prev]);
+      setReportNetCid("");
+      setReportNetName("");
+      setReportReason("");
+      setReportEvidence("");
+      setShowReportForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setReporting(false);
+    }
+  }
+
+  async function handleRemoveRrmEntry(entryId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("rrm_remove", { rrmCid: selected.cid_short, entryId });
+      setRrmEntries((prev) => prev.filter((e) => e.id !== entryId));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function handleTrustRrm() {
+    if (!selected || !trustRrmCid.trim() || !trustRrmName.trim()) return;
+    setSavingTrust(true);
+    try {
+      const trust = await tauriInvoke<TrustedRrmInfo>("network_trust_rrm", {
+        networkCid: selected.cid_short,
+        rrmCid: trustRrmCid.trim(),
+        rrmName: trustRrmName.trim(),
+      });
+      setTrustedRrms((prev) => [...prev, trust]);
+      setTrustRrmCid("");
+      setTrustRrmName("");
+      setShowTrustForm(false);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSavingTrust(false);
+    }
+  }
+
+  async function handleUntrustRrm(rrmCid: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("network_untrust_rrm", { networkCid: selected.cid_short, rrmCid });
+      setTrustedRrms((prev) => prev.filter((t) => t.rrm_cid_short !== rrmCid));
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -513,9 +613,12 @@ export default function Dashboard() {
                 {net.is_directory && (
                   <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
                 )}
+                {net.is_rrm && (
+                  <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                )}
               </div>
               <div className="text-xs opacity-70">
-                {net.is_directory ? "Annuaire" : `${net.member_count} membre(s)`}
+                {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
               </div>
             </button>
           ))}
@@ -1051,6 +1154,182 @@ export default function Dashboard() {
                 </button>
               </div>
             </section>
+
+            {/* ── Annuaire section (directory networks only) ── */}
+            {/* ── RRM section (RRM networks only) ── */}
+            {selected.is_rrm && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Réseaux signalés ({rrmEntries.length})
+                  </h3>
+                  <button
+                    onClick={() => setShowReportForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-red-600 text-white rounded-lg
+                               hover:bg-red-700 transition-colors"
+                  >
+                    {showReportForm ? "Annuler" : "+ Signaler"}
+                  </button>
+                </div>
+
+                {showReportForm && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 space-y-3">
+                    <input
+                      value={reportNetCid}
+                      onChange={(e) => setReportNetCid(e.target.value)}
+                      placeholder="CID court du réseau à signaler"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportNetName}
+                      onChange={(e) => setReportNetName(e.target.value)}
+                      placeholder="Nom du réseau"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportReason}
+                      onChange={(e) => setReportReason(e.target.value)}
+                      placeholder="Motif du signalement"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={reportEvidence}
+                      onChange={(e) => setReportEvidence(e.target.value)}
+                      placeholder="URL preuve (optionnel)"
+                      className="w-full text-sm border border-red-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-red-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <button
+                      onClick={handleReport}
+                      disabled={reporting || !reportNetCid.trim() || !reportNetName.trim() || !reportReason.trim()}
+                      className="text-xs px-4 py-2 bg-red-600 text-white rounded-lg
+                                 hover:bg-red-700 disabled:opacity-50 transition-colors font-medium"
+                    >
+                      {reporting ? "Signalement…" : "Signaler"}
+                    </button>
+                  </div>
+                )}
+
+                {rrmEntries.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-6">
+                    Aucun réseau signalé dans ce registre.
+                  </p>
+                ) : (
+                  <div className="bg-white border border-red-100 rounded-xl divide-y divide-red-50">
+                    {rrmEntries.map((entry) => (
+                      <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+                        <span className="mt-0.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0
+                                         bg-red-100 text-red-700">
+                          ⚠
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-900">{entry.network_name}</div>
+                          <div className="text-xs text-gray-400 font-mono">{entry.network_cid_short}</div>
+                          <p className="text-xs text-red-700 mt-0.5">{entry.reason}</p>
+                          {entry.evidence_url && (
+                            <p className="text-xs text-blue-500 mt-0.5 truncate">
+                              {entry.evidence_url}
+                            </p>
+                          )}
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            par {entry.reported_by} · {new Date(entry.reported_at * 1000).toLocaleDateString("fr-FR")}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleRemoveRrmEntry(entry.id)}
+                          className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                          title="Supprimer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* ── Trusted RRMs section (standard networks only) ── */}
+            {!selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    RRM de confiance ({trustedRrms.length})
+                  </h3>
+                  <button
+                    onClick={() => setShowTrustForm((v) => !v)}
+                    className="text-xs px-3 py-1.5 bg-white border border-gray-200 text-gray-600
+                               rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    {showTrustForm ? "Annuler" : "+ Ajouter"}
+                  </button>
+                </div>
+
+                {showTrustForm && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-3 space-y-2">
+                    <input
+                      value={trustRrmCid}
+                      onChange={(e) => setTrustRrmCid(e.target.value)}
+                      placeholder="CID court du RRM"
+                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-orange-400
+                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                    />
+                    <input
+                      value={trustRrmName}
+                      onChange={(e) => setTrustRrmName(e.target.value)}
+                      placeholder="Nom du RRM"
+                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                 focus:outline-none focus:ring-2 focus:ring-orange-400
+                                 placeholder:text-gray-400 bg-white"
+                    />
+                    <button
+                      onClick={handleTrustRrm}
+                      disabled={savingTrust || !trustRrmCid.trim() || !trustRrmName.trim()}
+                      className="text-xs px-3 py-1.5 bg-orange-600 text-white rounded-lg
+                                 hover:bg-orange-700 disabled:opacity-50 transition-colors"
+                    >
+                      {savingTrust ? "…" : "Faire confiance"}
+                    </button>
+                  </div>
+                )}
+
+                <div className="bg-orange-50 border border-orange-100 rounded-xl divide-y divide-orange-50">
+                  {trustedRrms.map((t) => (
+                    <div key={t.rrm_cid_short} className="flex items-center justify-between px-4 py-2.5 text-xs">
+                      <span className="text-orange-800">
+                        {t.rrm_name}
+                        <span className="text-orange-400 font-mono ml-1">({t.rrm_cid_short})</span>
+                      </span>
+                      <button
+                        onClick={() => handleUntrustRrm(t.rrm_cid_short)}
+                        className="text-orange-300 hover:text-red-400 transition-colors"
+                        title="Retirer la confiance"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* ── Add trusted RRM button when none yet ── */}
+            {!selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
+              <button
+                onClick={() => setShowTrustForm(true)}
+                className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
+              >
+                + Faire confiance à un RRM
+              </button>
+            )}
 
             {/* ── Annuaire section (directory networks only) ── */}
             {selected.is_directory && (
