@@ -48,7 +48,7 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 > `website/` — PHP F3 + MySQL sur `https://www.rouaix.com/civium`
 
 - [ ] Système de migrations BDD automatiques (`src/models/Migration.php`) — appliqué au bootstrap, jamais de plantage serveur sur changement de schéma
-- [ ] Migration `001_initial.sql` : tables `schema_migrations`, `networks`, `alerts`, `magic_links`
+- [x] Migration `001_initial.sql` : `waitlist` (intégré depuis `civium.sql`) + `networks`, `alerts`, `magic_links` — `civium.sql` réduit au `CREATE DATABASE` uniquement
 - [ ] Table `networks` : network_cid (PK), network_name, admin_cid, admin_pubkey, admin_email, ip_address, registered_at, signature
 - [ ] Table `alerts` : id, type, description, network_cids_json, emitted_at, emitted_by
 - [ ] Table `magic_links` : token (PK), email, cid, expires_at, used

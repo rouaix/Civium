@@ -200,6 +200,14 @@ Table MySQL `schema_migrations` :
 - **Une migration = un fichier = une transaction** : si elle échoue à mi-chemin, tout est annulé
 - **Jamais modifier un fichier déjà appliqué** : créer un nouveau fichier numéroté à la place
 
+### Fichiers de référence
+
+| Fichier | Rôle |
+|---|---|
+| `website/civium.sql` | Bootstrap uniquement — `CREATE DATABASE IF NOT EXISTS civium`. À exécuter une seule fois à l'installation. Ne contient **pas** le schéma. |
+| `website/src/migrations/001_initial.sql` | Schéma initial complet : `waitlist` (existant) + `networks`, `alerts`, `magic_links` (RCC). Intègre l'ancien contenu de `civium.sql`. |
+| `website/src/migrations/NNN_*.sql` | Toute évolution future du schéma. Jamais modifier un fichier déjà appliqué. |
+
 ### Implémentation PHP
 
 ```php
