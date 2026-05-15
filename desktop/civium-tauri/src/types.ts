@@ -245,3 +245,15 @@ export interface OutboxCountInfo {
   network_cid_short: string;
   count: number;
 }
+
+export interface RccStatusInfo {
+  network_cid_short: string;
+  network_name: string;
+  admin_email: string;
+  /** "pending" | "registered" | "failed" */
+  status: string;
+  attempts: number;
+  last_attempt: number | null;
+  registered_at: number;
+  rcc_url: string;
+}

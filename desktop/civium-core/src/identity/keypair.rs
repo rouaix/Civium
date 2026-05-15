@@ -82,4 +82,9 @@ impl CiviumKeypair {
     pub fn secret_b58(&self) -> String {
         bs58::encode(self.secret).into_string()
     }
+
+    /// Sign arbitrary bytes with the Ed25519 key. Returns a 64-byte signature.
+    pub fn sign_bytes(&self, msg: &[u8]) -> Result<Vec<u8>, CiviumError> {
+        self.libp2p.sign(msg).map_err(|e| CiviumError::Crypto(e.to_string()))
+    }
 }

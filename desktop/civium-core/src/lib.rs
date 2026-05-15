@@ -15,6 +15,7 @@ pub mod minor;
 pub mod network;
 pub mod node;
 pub mod plugin;
+pub mod rcc;
 
 pub use connection::{
     AcceptPayload, ConnectionRecord, ConnectionState, RequestPayload, ShareAgreement, ShareTerms,
@@ -41,3 +42,4 @@ pub use governance::{
 pub use node::{peer_id_from_multiaddr, CiviumNode, CiviumRequest, CiviumResponse, NodeCommand, NodeConfig, NodeEvent, NodeHandle};
 pub use plugin::{PluginManifest, PluginPermission, PluginRecord, PluginState, preinstalled_plugins};
 pub use cil::{CilAction, check_cil};
+pub use rcc::{RccPayload, RCC_URL};
