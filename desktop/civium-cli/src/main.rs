@@ -1520,7 +1520,7 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let cid = keypair.cid();
 
-            let config = NodeConfig { listen_tcp, listen_quic, bootstrap_peers: peers, mcp_port: None };
+            let config = NodeConfig { listen_tcp, listen_quic, listen_ws: None, bootstrap_peers: peers, mcp_port: None };
 
             println!("Starting Civium node");
             println!("  CID        : {}", cid.short());
@@ -1600,7 +1600,7 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
 
             let network_cid_full = net.cid_full().to_string();
             let network_cid_short = net.cid_short().to_string();
-            let config = NodeConfig { listen_tcp, listen_quic, bootstrap_peers: vec![via.clone()], mcp_port: None };
+            let config = NodeConfig { listen_tcp, listen_quic, listen_ws: None, bootstrap_peers: vec![via.clone()], mcp_port: None };
 
             let (node, mut handle) = CiviumNode::new(keypair, config).await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1650,6 +1650,7 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
             let config = NodeConfig {
                 listen_tcp,
                 listen_quic,
+                listen_ws: None,
                 bootstrap_peers: vec![via.clone()],
                 mcp_port: None,
             };

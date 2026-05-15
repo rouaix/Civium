@@ -363,10 +363,11 @@ pub async fn network_join_p2p(
 
     // Start a short-lived P2P node for this join.
     let config = NodeConfig {
-        listen_tcp: "/ip4/0.0.0.0/tcp/0".into(),
-        listen_quic: "/ip4/0.0.0.0/udp/0/quic-v1".into(),
+        listen_tcp:      "/ip4/0.0.0.0/tcp/0".into(),
+        listen_quic:     "/ip4/0.0.0.0/udp/0/quic-v1".into(),
+        listen_ws:       None,
         bootstrap_peers: vec![peer_addr.clone()],
-        mcp_port: None,
+        mcp_port:        None,
     };
     let (node, mut handle) =
         CiviumNode::new(keypair, config).await.map_err(|e| e.to_string())?;

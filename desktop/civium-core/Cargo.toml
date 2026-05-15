@@ -9,6 +9,8 @@ libp2p = { version = "0.55", features = [
     "tokio",
     "tcp",
     "quic",
+    "websocket",
+    "dns",
     "noise",
     "yamux",
     "kad",

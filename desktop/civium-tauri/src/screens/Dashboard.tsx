@@ -1094,9 +1094,16 @@ export default function Dashboard() {
             </span>
           </div>
           {nodeStatus.running && nodeStatus.listen_addrs.length > 0 && (
-            <p className="text-xs text-civium-300 font-mono truncate pl-4">
-              {nodeStatus.listen_addrs[0]}
-            </p>
+            <div className="pl-4 space-y-1">
+              {nodeStatus.listen_addrs.filter(a => !a.includes('/ws')).slice(0, 1).map(a => (
+                <p key={a} className="text-xs text-civium-300 font-mono truncate">{a}</p>
+              ))}
+              {nodeStatus.listen_addrs.filter(a => a.includes('/ws')).slice(0, 1).map(a => (
+                <p key={a} className="text-xs text-green-400 font-mono truncate" title="Adresse WebSocket — accessible aux clients web">
+                  WS: {a}
+                </p>
+              ))}
+            </div>
           )}
         </div>
 
