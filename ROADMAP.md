@@ -235,24 +235,24 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 > Ajouter la couche plugin (manifeste + CIL + sandbox), les plugins préinstallés, l'accès IA via MCP, et la robustesse hors-ligne.
 
-### Semaines 1–2 — Fondations plugin (manifeste + CIL + registre)
+### Semaines 1–2 — Fondations plugin (manifeste + CIL + registre) ✅
 
-- [ ] `PluginManifest` : id, name, version, permissions, is_system
-- [ ] `PluginRecord` : état (Enabled/Disabled), installed_at
-- [ ] `PluginPermission` enum : ReadMembers, ReadMessages, WriteMessages, ReadGovernance…
-- [ ] `CIL` : `check_cil(plugin, action)` — applique les permissions déclarées
-- [ ] Table `plugins` dans les deux stores ; seed des plugins système au démarrage
-- [ ] Plugins préinstallés : Gouvernance, CIL, Messagerie, Annuaire (enabled par défaut)
-- [ ] CLI : `plugin list/info/enable/disable/install`
-- [ ] Tauri : `plugin_list`, `plugin_enable`, `plugin_disable`
-- [ ] Dashboard : section Plugins (liste + toggle activer/désactiver)
+- [x] `PluginManifest` : id, name, version, permissions, is_system
+- [x] `PluginRecord` : état (Enabled/Disabled), installed_at
+- [x] `PluginPermission` enum : ReadMembers, ReadMessages, WriteMessages, ReadGovernance…
+- [x] `CIL` : `check_cil(plugin, action)` — applique les permissions déclarées
+- [x] Table `plugins` dans les deux stores ; seed des plugins système au démarrage
+- [x] Plugins préinstallés : Gouvernance, CIL, Messagerie, Annuaire (enabled par défaut)
+- [x] CLI : `plugin list/info/enable/disable/install`
+- [x] Tauri : `plugin_list`, `plugin_enable`, `plugin_disable`
+- [x] Dashboard : panneau Plugins dans la sidebar (liste, badges permissions, toggle)
 
-### Semaines 3–4 — Plugin Agenda
+### Semaines 3–4 — Plugin Agenda ✅
 
-- [ ] Modèle de données : `AgendaEvent` (id, title, description, start_at, end_at, recurrence, network_cid, created_by)
-- [ ] Table `agenda_events` dans les deux stores
-- [ ] CLI : `agenda create/list/update/delete`
-- [ ] Tauri : commandes + Dashboard section Agenda
+- [x] Modèle de données : `AgendaEvent` (id, title, description, start_at, end_at, recurrence, network_cid, created_by)
+- [x] Table `agenda_events` dans les deux stores
+- [x] CLI : `agenda create/list/delete` + `run_agenda()`
+- [x] Tauri : `agenda_create/list/update/delete` + Dashboard section Agenda
 
 ### Semaines 5–6 — Fil d'activité + Notifications
 
