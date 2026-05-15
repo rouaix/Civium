@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS admin_actions (
 CREATE TABLE IF NOT EXISTS vote_delegations (
     network_cid         TEXT NOT NULL,
     delegator_cid_short TEXT NOT NULL,
-    proposal_id         TEXT,
+    proposal_id         TEXT NOT NULL DEFAULT '',
     delegation_json     TEXT NOT NULL,
-    PRIMARY KEY (network_cid, delegator_cid_short, COALESCE(proposal_id, ''))
+    PRIMARY KEY (network_cid, delegator_cid_short, proposal_id)
 );
 CREATE TABLE IF NOT EXISTS directory_entries (
     directory_cid   TEXT NOT NULL,
@@ -318,16 +318,12 @@ pub fn list_votes(data_dir: &Path, proposal_id: &str) -> Result<Vec<Vote>> {
 pub fn save_delegation(data_dir: &Path, delegation: &VoteDelegation) -> Result<()> {
     let conn = open_db(data_dir)?;
     let json = serde_json::to_string(delegation)?;
+    let pid = delegation.proposal_id.as_deref().unwrap_or("");
     conn.execute(
         "INSERT OR REPLACE INTO vote_delegations
              (network_cid, delegator_cid_short, proposal_id, delegation_json)
          VALUES (?1, ?2, ?3, ?4)",
-        params![
-            &delegation.network_cid_short,
-            &delegation.delegator_cid_short,
-            &delegation.proposal_id,
-            json
-        ],
+        params![&delegation.network_cid_short, &delegation.delegator_cid_short, pid, json],
     )?;
     Ok(())
 }
@@ -339,12 +335,13 @@ pub fn delete_delegation(
     proposal_id: Option<&str>,
 ) -> Result<()> {
     let conn = open_db(data_dir)?;
+    let pid = proposal_id.unwrap_or("");
     conn.execute(
         "DELETE FROM vote_delegations
           WHERE network_cid = ?1
             AND delegator_cid_short = ?2
-            AND COALESCE(proposal_id, '') = COALESCE(?3, '')",
-        params![network_cid_short, delegator_cid_short, proposal_id],
+            AND proposal_id = ?3",
+        params![network_cid_short, delegator_cid_short, pid],
     )?;
     Ok(())
 }
