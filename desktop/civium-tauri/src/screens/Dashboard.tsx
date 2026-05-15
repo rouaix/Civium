@@ -7,6 +7,7 @@ import type {
   PendingMemberInfo,
   NodeStatus,
   MessageDisplay,
+  PluginInfo,
   ProposalInfo,
   VoteResultInfo,
   AdminActionInfo,
@@ -111,6 +112,11 @@ export default function Dashboard() {
   const [dmBody, setDmBody] = useState<Record<string, string>>({});
   const [sendingDm, setSendingDm] = useState<string | null>(null);
 
+  // Plugin panel
+  const [showPlugins, setShowPlugins] = useState(false);
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -125,6 +131,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
+    tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
   }, []);
 
   const refreshNetwork = useCallback((cid: string) => {
@@ -658,6 +665,23 @@ export default function Dashboard() {
     }
   }
 
+  async function handleTogglePlugin(pluginId: string, currentState: string) {
+    setTogglingPlugin(pluginId);
+    try {
+      if (currentState === "enabled") {
+        await tauriInvoke("plugin_disable", { pluginId });
+      } else {
+        await tauriInvoke("plugin_enable", { pluginId });
+      }
+      const updated = await tauriInvoke<PluginInfo[]>("plugin_list");
+      setPlugins(updated);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setTogglingPlugin(null);
+    }
+  }
+
   async function handleSendMessage() {
     if (!selected || !msgBody.trim()) return;
     setSending(true);
@@ -691,7 +715,7 @@ export default function Dashboard() {
       <aside className="w-64 bg-civium-900 text-white flex flex-col">
         <div className="px-5 py-4 border-b border-civium-700">
           <h1 className="text-lg font-bold tracking-wide">Civium</h1>
-          <p className="text-xs text-civium-100 mt-0.5">Phase 1</p>
+          <p className="text-xs text-civium-100 mt-0.5">Phase 3</p>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
           {networks.length === 0 && (
@@ -723,6 +747,26 @@ export default function Dashboard() {
           ))}
         </nav>
 
+        {/* Plugins nav */}
+        <div className="px-3 pb-2 border-t border-civium-700 pt-2">
+          <button
+            onClick={() => { setShowPlugins(true); setSelected(null); }}
+            className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+              showPlugins
+                ? "bg-civium-600 text-white"
+                : "text-civium-100 hover:bg-civium-700"
+            }`}
+          >
+            <div className="font-medium flex items-center gap-1.5">
+              Plugins
+              <span className="text-xs bg-civium-700 px-1.5 py-0.5 rounded-full">
+                {plugins.filter((p) => p.state === "enabled").length}/{plugins.length}
+              </span>
+            </div>
+            <div className="text-xs opacity-70">Gérer les plugins installés</div>
+          </button>
+        </div>
+
         {/* P2P node status */}
         <div className="px-4 py-3 border-t border-civium-700 space-y-0.5">
           <div className="flex items-center gap-2">
@@ -751,7 +795,71 @@ export default function Dashboard() {
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
-        {!selected ? (
+        {showPlugins ? (
+          <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-gray-900">Plugins</h2>
+              <button
+                className="text-xs text-gray-400 hover:text-gray-600"
+                onClick={() => setShowPlugins(false)}
+              >
+                ✕ Fermer
+              </button>
+            </div>
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
+              {plugins.length === 0 && (
+                <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucun plugin installé.</p>
+              )}
+              {plugins.map((p) => (
+                <div key={p.id} className="px-4 py-4 flex items-start gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-gray-800">{p.name}</span>
+                      <span className="text-xs text-gray-400">v{p.version}</span>
+                      {p.is_system && (
+                        <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>
+                      )}
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        p.state === "enabled"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-gray-100 text-gray-500"
+                      }`}>
+                        {p.state === "enabled" ? "actif" : "inactif"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
+                    <p className="text-xs text-gray-400 mt-1 font-mono">{p.id}</p>
+                    {p.permissions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {p.permissions.map((perm) => (
+                          <span key={perm} className="text-xs px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-mono">
+                            {perm}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {!p.is_system && (
+                    <button
+                      className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                        p.state === "enabled"
+                          ? "border-gray-200 text-gray-600 hover:bg-gray-50"
+                          : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"
+                      }`}
+                      disabled={togglingPlugin === p.id}
+                      onClick={() => handleTogglePlugin(p.id, p.state)}
+                    >
+                      {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400">
+              Pour installer un plugin tiers : <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">civium plugin install manifest.json</code>
+            </p>
+          </div>
+        ) : !selected ? (
           <div className="flex items-center justify-center h-full text-gray-400">
             Sélectionnez un réseau
           </div>

@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -102,6 +102,10 @@ CREATE TABLE IF NOT EXISTS minor_restrictions (
     restrictions_json   TEXT NOT NULL,
     PRIMARY KEY (network_cid, minor_cid)
 );
+CREATE TABLE IF NOT EXISTS plugins (
+    plugin_id   TEXT PRIMARY KEY,
+    record_json TEXT NOT NULL
+);
 ";
 
 fn open_db(data_dir: &Path) -> Result<Connection> {
@@ -111,7 +115,27 @@ fn open_db(data_dir: &Path) -> Result<Connection> {
     let conn = Connection::open(&path)
         .with_context(|| format!("cannot open database at {}", path.display()))?;
     conn.execute_batch(SCHEMA).context("cannot initialize database schema")?;
+    seed_plugins(&conn)?;
     Ok(conn)
+}
+
+fn seed_plugins(conn: &Connection) -> Result<()> {
+    for (manifest, enabled) in preinstalled_plugins() {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE plugin_id = ?1",
+            params![&manifest.id],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if exists == 0 {
+            let record = if enabled { PluginRecord::new_enabled(manifest) } else { PluginRecord::new(manifest) };
+            let json = serde_json::to_string(&record)?;
+            conn.execute(
+                "INSERT INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+                params![&record.manifest.id, json],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 // ── Identity ───────────────────────────────────────────────────────────────────
@@ -714,6 +738,61 @@ pub fn check_minor_interaction(
             minor_cid_short
         ))
     }
+}
+
+// ── Plugins ──────────────────────────────────────────────────────────────────
+
+pub fn install_plugin(data_dir: &Path, manifest: PluginManifest) -> Result<PluginRecord> {
+    let conn = open_db(data_dir)?;
+    let record = PluginRecord::new(manifest);
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+        params![&record.manifest.id, json],
+    )?;
+    Ok(record)
+}
+
+pub fn list_plugins(data_dir: &Path) -> Result<Vec<PluginRecord>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare("SELECT record_json FROM plugins ORDER BY plugin_id")?;
+    let mut rows = stmt.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        records.push(serde_json::from_str(&json)?);
+    }
+    Ok(records)
+}
+
+pub fn get_plugin(data_dir: &Path, plugin_id: &str) -> Result<Option<PluginRecord>> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT record_json FROM plugins WHERE plugin_id = ?1",
+        params![plugin_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn set_plugin_state(data_dir: &Path, plugin_id: &str, state: PluginState) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let mut record = get_plugin(data_dir, plugin_id)?
+        .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", plugin_id))?;
+    if record.manifest.is_system {
+        return Err(anyhow::anyhow!("les plugins système ne peuvent pas être désactivés"));
+    }
+    record.state = state;
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "UPDATE plugins SET record_json = ?1 WHERE plugin_id = ?2",
+        params![json, plugin_id],
+    )?;
+    Ok(())
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────

@@ -9,7 +9,7 @@ use civium_core::{
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
     GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
-    NodeCommand, NodeConfig, NodeEvent, PeerId,
+    NodeCommand, NodeConfig, NodeEvent, PeerId, PluginManifest, PluginState,
     Proposal, RrmEntry, ShareTerms, TrustCircle, TrustedRrm, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 use tracing::warn;
@@ -76,6 +76,11 @@ enum Command {
     Rrm {
         #[command(subcommand)]
         action: RrmCmd,
+    },
+    /// Manage installed plugins
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCmd,
     },
 }
 
@@ -561,6 +566,32 @@ enum RrmCmd {
     },
 }
 
+// ── Plugin sub-commands ───────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    /// List installed plugins and their status.
+    List,
+    /// Show details for a plugin.
+    Info {
+        /// Plugin ID (e.g. civium.messagerie)
+        id: String,
+    },
+    /// Enable a plugin.
+    Enable {
+        id: String,
+    },
+    /// Disable a plugin (system plugins cannot be disabled).
+    Disable {
+        id: String,
+    },
+    /// Install a plugin from a JSON manifest file.
+    Install {
+        /// Path to the manifest JSON file.
+        path: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -628,6 +659,7 @@ async fn main() -> Result<()> {
         Command::Governance { action } => run_governance(action, data),
         Command::Directory { action } => run_directory(action, data),
         Command::Rrm { action } => run_rrm(action, data),
+        Command::Plugin { action } => run_plugin(action, data),
     }
 }
 
@@ -2276,6 +2308,65 @@ fn run_rrm(cmd: RrmCmd, data: &PathBuf) -> Result<()> {
             let full_id = entry.id.clone();
             store::delete_rrm_entry(data, rrm_net.cid_short(), &full_id)?;
             println!("Entry '{full_id}' removed from RRM '{}'.", rrm_net.name());
+        }
+    }
+    Ok(())
+}
+
+// ── Plugin handler ────────────────────────────────────────────────────────────
+
+fn run_plugin(cmd: PluginCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        PluginCmd::List => {
+            let plugins = store::list_plugins(data)?;
+            if plugins.is_empty() {
+                println!("No plugins installed.");
+            } else {
+                println!("{:<30} {:<10} {:<8} {}", "ID", "VERSION", "STATUS", "NAME");
+                println!("{}", "-".repeat(70));
+                for p in &plugins {
+                    let lock = if p.manifest.is_system { " [system]" } else { "" };
+                    println!("{:<30} {:<10} {:<8} {}{}",
+                        p.manifest.id, p.manifest.version,
+                        p.state.to_string(), p.manifest.name, lock);
+                }
+            }
+        }
+
+        PluginCmd::Info { id } => {
+            let record = store::get_plugin(data, &id)?
+                .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", id))?;
+            println!("ID      : {}", record.manifest.id);
+            println!("Name    : {}", record.manifest.name);
+            println!("Version : {}", record.manifest.version);
+            println!("Author  : {}", record.manifest.author);
+            println!("Status  : {}{}", record.state, if record.manifest.is_system { " (system)" } else { "" });
+            println!("Desc    : {}", record.manifest.description);
+            println!("Perms   : {}", record.manifest.permissions.iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", "));
+        }
+
+        PluginCmd::Enable { id } => {
+            store::set_plugin_state(data, &id, PluginState::Enabled)?;
+            println!("Plugin '{id}' enabled.");
+        }
+
+        PluginCmd::Disable { id } => {
+            store::set_plugin_state(data, &id, PluginState::Disabled)?;
+            println!("Plugin '{id}' disabled.");
+        }
+
+        PluginCmd::Install { path } => {
+            let json = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", path))?;
+            let manifest: PluginManifest = serde_json::from_str(&json)
+                .map_err(|e| anyhow::anyhow!("invalid manifest JSON: {e}"))?;
+            let id = manifest.id.clone();
+            let record = store::install_plugin(data, manifest)?;
+            println!("Plugin '{id}' installed (status: {}).", record.state);
+            println!("Run `civium plugin enable {id}` to activate it.");
         }
     }
     Ok(())

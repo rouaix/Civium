@@ -153,6 +153,18 @@ export interface RrmWarning {
   evidence_url: string | null;
 }
 
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  permissions: string[];
+  is_system: boolean;
+  state: "enabled" | "disabled";
+  installed_at: number;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;

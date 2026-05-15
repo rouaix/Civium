@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation};
+use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -92,12 +92,17 @@ CREATE TABLE IF NOT EXISTS minor_restrictions (
     restrictions_json   TEXT NOT NULL,
     PRIMARY KEY (network_cid, minor_cid)
 );
+CREATE TABLE IF NOT EXISTS plugins (
+    plugin_id   TEXT PRIMARY KEY,
+    record_json TEXT NOT NULL
+);
 ";
 
 pub fn open_db(data_dir: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data_dir)?;
     let conn = Connection::open(data_dir.join("civium.db"))?;
     conn.execute_batch(SCHEMA)?;
+    seed_plugins(&conn)?;
     Ok(conn)
 }
 
@@ -619,6 +624,82 @@ pub fn check_minor_interaction(
             minor_cid_short
         ))
     }
+}
+
+// ── Plugins ───────────────────────────────────────────────────────────────────
+
+/// Seed pre-installed Civium plugins if they don't exist yet.
+fn seed_plugins(conn: &Connection) -> Result<()> {
+    for (manifest, enabled) in preinstalled_plugins() {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE plugin_id = ?1",
+            params![&manifest.id],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if exists == 0 {
+            let record = if enabled {
+                PluginRecord::new_enabled(manifest)
+            } else {
+                PluginRecord::new(manifest)
+            };
+            let json = serde_json::to_string(&record)?;
+            conn.execute(
+                "INSERT INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+                params![&record.manifest.id, json],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn install_plugin(conn: &Connection, manifest: PluginManifest) -> Result<PluginRecord> {
+    let record = PluginRecord::new(manifest);
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO plugins (plugin_id, record_json) VALUES (?1, ?2)",
+        params![&record.manifest.id, json],
+    )?;
+    Ok(record)
+}
+
+pub fn list_plugins(conn: &Connection) -> Result<Vec<PluginRecord>> {
+    let mut stmt = conn.prepare("SELECT record_json FROM plugins ORDER BY plugin_id")?;
+    let mut rows = stmt.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let r: PluginRecord = serde_json::from_str(&json)?;
+        records.push(r);
+    }
+    Ok(records)
+}
+
+pub fn get_plugin(conn: &Connection, plugin_id: &str) -> Result<Option<PluginRecord>> {
+    let result = conn.query_row(
+        "SELECT record_json FROM plugins WHERE plugin_id = ?1",
+        params![plugin_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn set_plugin_state(conn: &Connection, plugin_id: &str, state: PluginState) -> Result<()> {
+    let mut record = get_plugin(conn, plugin_id)?
+        .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", plugin_id))?;
+    if record.manifest.is_system {
+        return Err(anyhow::anyhow!("les plugins système ne peuvent pas être désactivés"));
+    }
+    record.state = state;
+    let json = serde_json::to_string(&record)?;
+    conn.execute(
+        "UPDATE plugins SET record_json = ?1 WHERE plugin_id = ?2",
+        params![json, plugin_id],
+    )?;
+    Ok(())
 }
 
 /// Merge members and messages received via P2P sync.

@@ -231,17 +231,72 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-## Phase 3 — Services & Intégrations
+## Phase 3 — Services & Intégrations `~14 semaines` 🚧
 
-- [ ] API plugin complète : manifeste, CIL, sandbox WASM, hooks de cycle de vie
-- [ ] Plugins préinstallés : Agenda, Documents, Fil d'activité, Notifications
-- [ ] Plugin Marketplace (transactions + commission 1 %)
-- [ ] Connecteurs SaaS (Google Calendar, Stripe, Notion, Slack…)
-- [ ] Webhooks entrants et sortants
-- [ ] Serveur MCP (accès IA aux données du réseau)
-- [ ] Registre de Services Civium (RSC) — catalogue + publication
-- [ ] Pairing multi-appareils (QR code + sous-clés dérivées) *(reporté de Phase 0)*
-- [ ] Mode hors-ligne avancé : cache local + resync CRDT complet *(reporté de Phase 0)*
+> Ajouter la couche plugin (manifeste + CIL + sandbox), les plugins préinstallés, l'accès IA via MCP, et la robustesse hors-ligne.
+
+### Semaines 1–2 — Fondations plugin (manifeste + CIL + registre)
+
+- [ ] `PluginManifest` : id, name, version, permissions, is_system
+- [ ] `PluginRecord` : état (Enabled/Disabled), installed_at
+- [ ] `PluginPermission` enum : ReadMembers, ReadMessages, WriteMessages, ReadGovernance…
+- [ ] `CIL` : `check_cil(plugin, action)` — applique les permissions déclarées
+- [ ] Table `plugins` dans les deux stores ; seed des plugins système au démarrage
+- [ ] Plugins préinstallés : Gouvernance, CIL, Messagerie, Annuaire (enabled par défaut)
+- [ ] CLI : `plugin list/info/enable/disable/install`
+- [ ] Tauri : `plugin_list`, `plugin_enable`, `plugin_disable`
+- [ ] Dashboard : section Plugins (liste + toggle activer/désactiver)
+
+### Semaines 3–4 — Plugin Agenda
+
+- [ ] Modèle de données : `AgendaEvent` (id, title, description, start_at, end_at, recurrence, network_cid, created_by)
+- [ ] Table `agenda_events` dans les deux stores
+- [ ] CLI : `agenda create/list/update/delete`
+- [ ] Tauri : commandes + Dashboard section Agenda
+
+### Semaines 5–6 — Fil d'activité + Notifications
+
+- [ ] `ActivityEvent` : kind (MemberJoined, MessagePosted, ProposalCreated, VoteCast, ConnectionEstablished…), actor, timestamp, payload
+- [ ] Table `activity_feed` dans les deux stores ; auto-émission sur chaque action
+- [ ] `Notification` : source_event_id, target_cid, read, created_at
+- [ ] CLI : `activity list`
+- [ ] Tauri : `activity_list` + `notification_list` + badge non-lu dans la sidebar
+
+### Semaines 7–8 — Plugin Documents
+
+- [ ] `Document` : id, title, body (chiffré), version, network_cid, created_by, updated_at
+- [ ] Table `documents` dans les deux stores
+- [ ] CLI : `doc create/list/show/update/delete`
+- [ ] Tauri : commandes + Dashboard section Documents
+
+### Semaines 9–10 — Serveur MCP (accès IA)
+
+- [ ] Serveur MCP intégré exposant les données Civium en lecture
+- [ ] Resources : networks, members, messages, proposals, directory entries
+- [ ] CIL appliqué sur chaque requête MCP
+- [ ] Configuration dans `NodeConfig` (port MCP, token d'accès)
+- [ ] Tauri : `mcp_start`/`mcp_stop` + affichage token dans Dashboard
+
+### Semaines 11–12 — Pairing multi-appareils
+
+- [ ] Dérivation de sous-clés depuis le secret primaire (HKDF)
+- [ ] QR code de pairing (deep link `civium://pair/<token>`)
+- [ ] Protocole de transfert d'identité chiffré entre deux nœuds P2P
+- [ ] Révocation d'un appareil secondaire
+
+### Semaines 13–14 — Mode hors-ligne avancé
+
+- [ ] CRDT G-Set pour members et messages (merge complet sans conflits)
+- [ ] Queue de messages en attente de sync (outbox P2P)
+- [ ] Indicateur de "messages non synchronisés" dans la sidebar
+- [ ] Résolution automatique des conflits sur reconnexion
+
+### Critères de succès Phase 3
+
+- [ ] Un plugin tiers peut lire les membres d'un réseau via le CIL sans accès direct au store
+- [ ] L'Agenda et les Documents sont utilisables en autonomie dans le Dashboard
+- [ ] Un assistant IA peut interroger un réseau via MCP (lecture seule, CIL appliqué)
+- [ ] L'app fonctionne hors-ligne et se resynchronise automatiquement à la reconnexion
 
 ---
 

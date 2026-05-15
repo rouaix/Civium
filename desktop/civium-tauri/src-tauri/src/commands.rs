@@ -10,7 +10,7 @@ use civium_core::{
     AdminAction, AdminActionKind, AdminActionStatus,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
-    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, Proposal, ProposalStatus,
+    MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, peer_id_from_multiaddr,
 };
 
@@ -1533,4 +1533,53 @@ pub fn member_get_restrictions(
         updated_by: r.updated_by,
         updated_at: r.updated_at,
     }))
+}
+
+// ── Plugin commands ───────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub author: String,
+    pub permissions: Vec<String>,
+    pub is_system: bool,
+    pub state: String,
+    pub installed_at: u64,
+}
+
+/// List all installed plugins.
+#[tauri::command]
+pub fn plugin_list(app: AppHandle) -> Result<Vec<PluginInfo>, String> {
+    let conn = open(&app)?;
+    let records = store::list_plugins(&conn).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(|r| PluginInfo {
+        id: r.manifest.id,
+        name: r.manifest.name,
+        version: r.manifest.version,
+        description: r.manifest.description,
+        author: r.manifest.author,
+        permissions: r.manifest.permissions.iter().map(|p| p.to_string()).collect(),
+        is_system: r.manifest.is_system,
+        state: r.state.to_string(),
+        installed_at: r.installed_at,
+    }).collect())
+}
+
+/// Enable a plugin by ID.
+#[tauri::command]
+pub fn plugin_enable(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_plugin_state(&conn, &plugin_id, PluginState::Enabled)
+        .map_err(|e| e.to_string())
+}
+
+/// Disable a plugin by ID (system plugins cannot be disabled).
+#[tauri::command]
+pub fn plugin_disable(app: AppHandle, plugin_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_plugin_state(&conn, &plugin_id, PluginState::Disabled)
+        .map_err(|e| e.to_string())
 }

@@ -92,6 +92,9 @@ pub fn run() {
             member_wards,
             member_set_restrictions,
             member_get_restrictions,
+            plugin_list,
+            plugin_enable,
+            plugin_disable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

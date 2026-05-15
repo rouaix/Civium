@@ -1,3 +1,4 @@
+pub mod cil;
 pub mod connection;
 pub mod crypto;
 pub mod directory;
@@ -8,6 +9,7 @@ pub mod messaging;
 pub mod minor;
 pub mod network;
 pub mod node;
+pub mod plugin;
 
 pub use connection::{
     AcceptPayload, ConnectionRecord, ConnectionState, RequestPayload, ShareAgreement, ShareTerms,
@@ -27,3 +29,5 @@ pub use governance::{
     Proposal, ProposalStatus, Vote, VoteDelegation, VoteResult,
 };
 pub use node::{peer_id_from_multiaddr, CiviumNode, CiviumRequest, CiviumResponse, NodeCommand, NodeConfig, NodeEvent, NodeHandle};
+pub use plugin::{PluginManifest, PluginPermission, PluginRecord, PluginState, preinstalled_plugins};
+pub use cil::{CilAction, check_cil};
