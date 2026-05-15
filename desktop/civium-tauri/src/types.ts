@@ -165,6 +165,19 @@ export interface PluginInfo {
   installed_at: number;
 }
 
+export interface AgendaEventInfo {
+  id: string;
+  network_cid_short: string;
+  title: string;
+  description: string;
+  start_at: number;
+  end_at: number | null;
+  location: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;

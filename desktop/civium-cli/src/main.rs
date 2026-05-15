@@ -5,7 +5,7 @@ use civium_core::{
     connection::ShareAgreement,
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus,
+    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     Cid, CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     ConnectionRecord, ConnectionState, DirectoryEntry, EntryKind, FederatedDirectory, GroupKey,
     GuardianLink, MemberRole, MinorRestrictions, NetworkKind, MessageKind, Multiaddr,
@@ -81,6 +81,11 @@ enum Command {
     Plugin {
         #[command(subcommand)]
         action: PluginCmd,
+    },
+    /// Manage agenda events (calendar)
+    Agenda {
+        #[command(subcommand)]
+        action: AgendaCmd,
     },
 }
 
@@ -592,6 +597,41 @@ enum PluginCmd {
     },
 }
 
+// ── Agenda sub-commands ───────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum AgendaCmd {
+    /// Create a new calendar event.
+    Create {
+        #[arg(long)]
+        network: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Unix timestamp (seconds) for the event start.
+        #[arg(long)]
+        start: u64,
+        /// Unix timestamp (seconds) for the event end (optional).
+        #[arg(long)]
+        end: Option<u64>,
+        #[arg(long)]
+        location: Option<String>,
+    },
+    /// List events for a network.
+    List {
+        #[arg(long)]
+        network: String,
+    },
+    /// Delete an event by ID prefix.
+    Delete {
+        #[arg(long)]
+        network: String,
+        /// Event ID prefix.
+        id: String,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -660,6 +700,7 @@ async fn main() -> Result<()> {
         Command::Directory { action } => run_directory(action, data),
         Command::Rrm { action } => run_rrm(action, data),
         Command::Plugin { action } => run_plugin(action, data),
+        Command::Agenda { action } => run_agenda(action, data),
     }
 }
 
@@ -2367,6 +2408,60 @@ fn run_plugin(cmd: PluginCmd, data: &PathBuf) -> Result<()> {
             let record = store::install_plugin(data, manifest)?;
             println!("Plugin '{id}' installed (status: {}).", record.state);
             println!("Run `civium plugin enable {id}` to activate it.");
+        }
+    }
+    Ok(())
+}
+
+// ── Agenda handler ────────────────────────────────────────────────────────────
+
+fn run_agenda(cmd: AgendaCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        AgendaCmd::Create { network, title, description, start, end, location } => {
+            let keypair = store::load_identity(data)
+                .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
+            let net = load_network_fuzzy(data, &network)?;
+            let event = AgendaEvent::new(
+                net.cid_short().to_string(),
+                title,
+                description,
+                start,
+                end,
+                location,
+                keypair.cid().short().to_string(),
+            );
+            let id = event.id.clone();
+            store::save_agenda_event(data, &event)?;
+            println!("Event created: {}", id);
+            println!("  Title     : {}", event.title);
+            println!("  Start     : {}", event.start_at);
+            if let Some(e) = event.end_at { println!("  End       : {e}"); }
+            if let Some(l) = &event.location { println!("  Location  : {l}"); }
+        }
+
+        AgendaCmd::List { network } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let events = store::list_agenda_events(data, net.cid_short())?;
+            if events.is_empty() {
+                println!("No events in '{}'.", net.name());
+            } else {
+                println!("{:<36} {:<12} {}", "ID", "START", "TITLE");
+                println!("{}", "-".repeat(70));
+                for e in &events {
+                    println!("{:<36} {:<12} {}", &e.id[..36.min(e.id.len())], e.start_at, e.title);
+                }
+            }
+        }
+
+        AgendaCmd::Delete { network, id } => {
+            let net = load_network_fuzzy(data, &network)?;
+            let events = store::list_agenda_events(data, net.cid_short())?;
+            let event = events.iter()
+                .find(|e| e.id.starts_with(&id))
+                .ok_or_else(|| anyhow::anyhow!("no event with ID starting with '{id}'"))?;
+            let full_id = event.id.clone();
+            store::delete_agenda_event(data, net.cid_short(), &full_id)?;
+            println!("Event '{full_id}' deleted.");
         }
     }
     Ok(())

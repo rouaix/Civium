@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
+use civium_core::{network::Network, AdminAction, AgendaEvent, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -95,6 +95,12 @@ CREATE TABLE IF NOT EXISTS minor_restrictions (
 CREATE TABLE IF NOT EXISTS plugins (
     plugin_id   TEXT PRIMARY KEY,
     record_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agenda_events (
+    network_cid TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    PRIMARY KEY (network_cid, event_id)
 );
 ";
 
@@ -701,6 +707,53 @@ pub fn set_plugin_state(conn: &Connection, plugin_id: &str, state: PluginState) 
     )?;
     Ok(())
 }
+
+// ── Agenda ───────────────────────────────────────────────────────────────────
+
+pub fn save_agenda_event(conn: &Connection, event: &AgendaEvent) -> Result<()> {
+    let json = serde_json::to_string(event)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agenda_events (network_cid, event_id, event_json) VALUES (?1, ?2, ?3)",
+        params![&event.network_cid_short, &event.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn list_agenda_events(conn: &Connection, network_cid_short: &str) -> Result<Vec<AgendaEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY rowid ASC",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        events.push(serde_json::from_str(&json).context("invalid agenda event")?);
+    }
+    Ok(events)
+}
+
+pub fn get_agenda_event(conn: &Connection, network_cid_short: &str, event_id: &str) -> Result<Option<AgendaEvent>> {
+    let result = conn.query_row(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid agenda event")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_agenda_event(conn: &Connection, network_cid_short: &str, event_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM agenda_events WHERE network_cid = ?1 AND event_id = ?2",
+        params![network_cid_short, event_id],
+    )?;
+    Ok(())
+}
+
+// ── Sync ─────────────────────────────────────────────────────────────────────
 
 /// Merge members and messages received via P2P sync.
 /// Members already present (by cid_full) are skipped.

@@ -1,3 +1,4 @@
+pub mod agenda;
 pub mod cil;
 pub mod connection;
 pub mod crypto;
@@ -20,6 +21,7 @@ pub use error::CiviumError;
 pub use identity::{Cid, CiviumKeypair};
 pub use messaging::{Mailbox, Message, MessageKind};
 pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory, RrmEntry, TrustedRrm};
+pub use agenda::AgendaEvent;
 pub use minor::{GuardianLink, MinorRestrictions};
 pub use network::{Invitation, MemberRecord, MemberRole, NetworkAddress, NetworkKind, PendingRecord, TrustCircle};
 pub use libp2p::{Multiaddr, PeerId};

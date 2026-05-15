@@ -11,6 +11,7 @@ import type {
   ProposalInfo,
   VoteResultInfo,
   AdminActionInfo,
+  AgendaEventInfo,
   DelegationInfo,
   DirectoryEntryInfo,
   FederationInfo,
@@ -112,6 +113,16 @@ export default function Dashboard() {
   const [dmBody, setDmBody] = useState<Record<string, string>>({});
   const [sendingDm, setSendingDm] = useState<string | null>(null);
 
+  // Agenda state
+  const [agendaEvents, setAgendaEvents] = useState<AgendaEventInfo[]>([]);
+  const [showAgendaForm, setShowAgendaForm] = useState(false);
+  const [agendaTitle, setAgendaTitle] = useState("");
+  const [agendaDescription, setAgendaDescription] = useState("");
+  const [agendaStart, setAgendaStart] = useState("");
+  const [agendaEnd, setAgendaEnd] = useState("");
+  const [agendaLocation, setAgendaLocation] = useState("");
+  const [creatingEvent, setCreatingEvent] = useState(false);
+
   // Plugin panel
   const [showPlugins, setShowPlugins] = useState(false);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
@@ -176,6 +187,10 @@ export default function Dashboard() {
     tauriInvoke<TrustedRrmInfo[]>("network_trusted_rrms", { networkCid: cid }).then(setTrustedRrms);
   }, []);
 
+  const refreshAgendaEvents = useCallback((cid: string) => {
+    tauriInvoke<AgendaEventInfo[]>("agenda_list", { networkCidShort: cid }).then(setAgendaEvents).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
     refreshNetwork(selected.cid_short);
@@ -193,6 +208,7 @@ export default function Dashboard() {
     if (!selected.is_directory && !selected.is_rrm) {
       refreshTrustedRrms(selected.cid_short);
     }
+    refreshAgendaEvents(selected.cid_short);
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -214,6 +230,8 @@ export default function Dashboard() {
     setExpandedMember(null);
     setGuardians({});
     setNewGuardianCid("");
+    setAgendaEvents([]);
+    setShowAgendaForm(false);
   }, [selected?.cid_short]);
 
   // Poll node status + listen for sync-completed events.
@@ -679,6 +697,47 @@ export default function Dashboard() {
       alert(String(e));
     } finally {
       setTogglingPlugin(null);
+    }
+  }
+
+  async function handleCreateEvent() {
+    if (!selected || !agendaTitle.trim() || !agendaStart) return;
+    setCreatingEvent(true);
+    try {
+      const startTs = Math.floor(new Date(agendaStart).getTime() / 1000);
+      const endTs = agendaEnd ? Math.floor(new Date(agendaEnd).getTime() / 1000) : null;
+      await tauriInvoke("agenda_create", {
+        networkCidShort: selected.cid_short,
+        title: agendaTitle.trim(),
+        description: agendaDescription.trim(),
+        startAt: startTs,
+        endAt: endTs,
+        location: agendaLocation.trim() || null,
+      });
+      setAgendaTitle("");
+      setAgendaDescription("");
+      setAgendaStart("");
+      setAgendaEnd("");
+      setAgendaLocation("");
+      setShowAgendaForm(false);
+      refreshAgendaEvents(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setCreatingEvent(false);
+    }
+  }
+
+  async function handleDeleteEvent(eventId: string) {
+    if (!selected) return;
+    try {
+      await tauriInvoke("agenda_delete", {
+        networkCidShort: selected.cid_short,
+        eventId,
+      });
+      refreshAgendaEvents(selected.cid_short);
+    } catch (e) {
+      alert(String(e));
     }
   }
 
@@ -1457,6 +1516,108 @@ export default function Dashboard() {
                   {sending ? "…" : "Envoyer"}
                 </button>
               </div>
+            </section>
+
+            {/* ── Agenda section ── */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                  Agenda ({agendaEvents.length})
+                </h3>
+                <button
+                  onClick={() => setShowAgendaForm((v) => !v)}
+                  className="text-xs text-indigo-500 hover:text-indigo-700"
+                >
+                  {showAgendaForm ? "Annuler" : "+ Événement"}
+                </button>
+              </div>
+
+              {showAgendaForm && (
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-2">
+                  <input
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                    placeholder="Titre *"
+                    value={agendaTitle}
+                    onChange={(e) => setAgendaTitle(e.target.value)}
+                  />
+                  <textarea
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1 resize-none"
+                    placeholder="Description"
+                    rows={2}
+                    value={agendaDescription}
+                    onChange={(e) => setAgendaDescription(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500">Début *</label>
+                      <input
+                        type="datetime-local"
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                        value={agendaStart}
+                        onChange={(e) => setAgendaStart(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-xs text-gray-500">Fin</label>
+                      <input
+                        type="datetime-local"
+                        className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                        value={agendaEnd}
+                        onChange={(e) => setAgendaEnd(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <input
+                    className="w-full text-sm border border-gray-200 rounded px-2 py-1"
+                    placeholder="Lieu (optionnel)"
+                    value={agendaLocation}
+                    onChange={(e) => setAgendaLocation(e.target.value)}
+                  />
+                  <button
+                    onClick={handleCreateEvent}
+                    disabled={creatingEvent || !agendaTitle.trim() || !agendaStart}
+                    className="w-full text-sm bg-indigo-500 text-white rounded px-3 py-1.5 hover:bg-indigo-600 disabled:opacity-50"
+                  >
+                    {creatingEvent ? "Enregistrement…" : "Créer l'événement"}
+                  </button>
+                </div>
+              )}
+
+              {agendaEvents.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Aucun événement.</p>
+              ) : (
+                <div className="space-y-2">
+                  {agendaEvents.map((ev) => (
+                    <div
+                      key={ev.id}
+                      className="flex items-start justify-between gap-2 p-2 bg-gray-50 rounded border border-gray-100"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-800">{ev.title}</div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(ev.start_at * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}
+                          {ev.end_at && (
+                            <> → {new Date(ev.end_at * 1000).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" })}</>
+                          )}
+                        </div>
+                        {ev.location && (
+                          <div className="text-xs text-gray-400">{ev.location}</div>
+                        )}
+                        {ev.description && (
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{ev.description}</p>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleDeleteEvent(ev.id)}
+                        className="text-xs text-gray-300 hover:text-red-400 transition-colors flex-shrink-0"
+                        title="Supprimer"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* ── Annuaire section (directory networks only) ── */}

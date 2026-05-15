@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use civium_core::{
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus,
+    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
@@ -1581,5 +1581,113 @@ pub fn plugin_enable(app: AppHandle, plugin_id: String) -> Result<(), String> {
 pub fn plugin_disable(app: AppHandle, plugin_id: String) -> Result<(), String> {
     let conn = open(&app)?;
     store::set_plugin_state(&conn, &plugin_id, PluginState::Disabled)
+        .map_err(|e| e.to_string())
+}
+
+// ── Agenda ────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct AgendaEventInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub title: String,
+    pub description: String,
+    pub start_at: u64,
+    pub end_at: Option<u64>,
+    pub location: Option<String>,
+    pub created_by: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+fn event_to_info(e: AgendaEvent) -> AgendaEventInfo {
+    AgendaEventInfo {
+        id: e.id,
+        network_cid_short: e.network_cid_short,
+        title: e.title,
+        description: e.description,
+        start_at: e.start_at,
+        end_at: e.end_at,
+        location: e.location,
+        created_by: e.created_by,
+        created_at: e.created_at,
+        updated_at: e.updated_at,
+    }
+}
+
+/// Create a new agenda event.
+#[tauri::command]
+pub fn agenda_create(
+    app: AppHandle,
+    network_cid_short: String,
+    title: String,
+    description: String,
+    start_at: u64,
+    end_at: Option<u64>,
+    location: Option<String>,
+) -> Result<AgendaEventInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let created_by = keypair.cid().short().to_string();
+    let event = AgendaEvent::new(
+        network_cid_short,
+        title,
+        description,
+        start_at,
+        end_at,
+        location,
+        created_by,
+    );
+    store::save_agenda_event(&conn, &event).map_err(|e| e.to_string())?;
+    Ok(event_to_info(event))
+}
+
+/// List agenda events for a network.
+#[tauri::command]
+pub fn agenda_list(app: AppHandle, network_cid_short: String) -> Result<Vec<AgendaEventInfo>, String> {
+    let conn = open(&app)?;
+    let events = store::list_agenda_events(&conn, &network_cid_short)
+        .map_err(|e| e.to_string())?;
+    Ok(events.into_iter().map(event_to_info).collect())
+}
+
+/// Update an existing agenda event (title, description, start_at, end_at, location).
+#[tauri::command]
+pub fn agenda_update(
+    app: AppHandle,
+    network_cid_short: String,
+    event_id: String,
+    title: String,
+    description: String,
+    start_at: u64,
+    end_at: Option<u64>,
+    location: Option<String>,
+) -> Result<AgendaEventInfo, String> {
+    let conn = open(&app)?;
+    let mut event = store::get_agenda_event(&conn, &network_cid_short, &event_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("event '{}' not found", event_id))?;
+    event.title = title;
+    event.description = description;
+    event.start_at = start_at;
+    event.end_at = end_at;
+    event.location = location;
+    event.updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    store::save_agenda_event(&conn, &event).map_err(|e| e.to_string())?;
+    Ok(event_to_info(event))
+}
+
+/// Delete an agenda event.
+#[tauri::command]
+pub fn agenda_delete(
+    app: AppHandle,
+    network_cid_short: String,
+    event_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_agenda_event(&conn, &network_cid_short, &event_id)
         .map_err(|e| e.to_string())
 }

@@ -39,6 +39,8 @@ pub enum PluginPermission {
     ReadDirectory,
     WriteDirectory,
     ReadConnections,
+    ReadAgenda,
+    WriteAgenda,
 }
 
 impl std::fmt::Display for PluginPermission {
@@ -52,6 +54,8 @@ impl std::fmt::Display for PluginPermission {
             Self::ReadDirectory   => "read:directory",
             Self::WriteDirectory  => "write:directory",
             Self::ReadConnections => "read:connections",
+            Self::ReadAgenda     => "read:agenda",
+            Self::WriteAgenda    => "write:agenda",
         };
         f.write_str(s)
     }
@@ -143,6 +147,19 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
             permissions: vec![
                 PluginPermission::ReadDirectory,
                 PluginPermission::WriteDirectory,
+                PluginPermission::ReadMembers,
+            ],
+            is_system: false,
+        }, true),
+        (PluginManifest {
+            id: "civium.agenda".to_string(),
+            name: "Agenda".to_string(),
+            version: "1.0.0".to_string(),
+            description: "Calendrier partagé — événements, lieux, récurrences.".to_string(),
+            author: "Civium".to_string(),
+            permissions: vec![
+                PluginPermission::ReadAgenda,
+                PluginPermission::WriteAgenda,
                 PluginPermission::ReadMembers,
             ],
             is_system: false,

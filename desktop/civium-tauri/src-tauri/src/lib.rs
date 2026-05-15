@@ -95,6 +95,10 @@ pub fn run() {
             plugin_list,
             plugin_enable,
             plugin_disable,
+            agenda_create,
+            agenda_list,
+            agenda_update,
+            agenda_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");
