@@ -178,6 +178,24 @@ export interface AgendaEventInfo {
   updated_at: number;
 }
 
+export interface ActivityEventInfo {
+  id: string;
+  network_cid_short: string;
+  kind: string;
+  actor_cid_short: string;
+  summary: string;
+  occurred_at: number;
+}
+
+export interface NotificationInfo {
+  id: string;
+  network_cid_short: string;
+  source_event_id: string;
+  target_cid_short: string;
+  read: boolean;
+  created_at: number;
+}
+
 export interface AdminActionInfo {
   id: string;
   kind: string;

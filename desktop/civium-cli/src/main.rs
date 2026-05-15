@@ -87,6 +87,11 @@ enum Command {
         #[command(subcommand)]
         action: AgendaCmd,
     },
+    /// View the activity feed of a network
+    Activity {
+        #[command(subcommand)]
+        action: ActivityCmd,
+    },
 }
 
 // ── Identity sub-commands ─────────────────────────────────────────────────────
@@ -632,6 +637,20 @@ enum AgendaCmd {
     },
 }
 
+// ── Activity sub-commands ─────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum ActivityCmd {
+    /// List recent activity events for a network.
+    List {
+        #[arg(long)]
+        network: String,
+        /// Show only unread notifications.
+        #[arg(long)]
+        unread: bool,
+    },
+}
+
 // ── Node sub-commands ─────────────────────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -701,6 +720,7 @@ async fn main() -> Result<()> {
         Command::Rrm { action } => run_rrm(action, data),
         Command::Plugin { action } => run_plugin(action, data),
         Command::Agenda { action } => run_agenda(action, data),
+        Command::Activity { action } => run_activity(action, data),
     }
 }
 
@@ -2462,6 +2482,40 @@ fn run_agenda(cmd: AgendaCmd, data: &PathBuf) -> Result<()> {
             let full_id = event.id.clone();
             store::delete_agenda_event(data, net.cid_short(), &full_id)?;
             println!("Event '{full_id}' deleted.");
+        }
+    }
+    Ok(())
+}
+
+// ── Activity handler ──────────────────────────────────────────────────────────
+
+fn run_activity(cmd: ActivityCmd, data: &PathBuf) -> Result<()> {
+    match cmd {
+        ActivityCmd::List { network, unread } => {
+            let net = load_network_fuzzy(data, &network)?;
+            if unread {
+                let notifs = store::list_notifications(data, net.cid_short())?;
+                let unread: Vec<_> = notifs.into_iter().filter(|n| !n.read).collect();
+                if unread.is_empty() {
+                    println!("Aucune notification non lue dans '{}'.", net.name());
+                } else {
+                    println!("{} notification(s) non lue(s) :", unread.len());
+                    for n in &unread {
+                        println!("  [{}] event:{}", n.id, n.source_event_id);
+                    }
+                }
+            } else {
+                let events = store::list_activity(data, net.cid_short())?;
+                if events.is_empty() {
+                    println!("Aucun événement dans '{}'.", net.name());
+                } else {
+                    println!("{:<12} {:<22} {}", "KIND", "ACTOR", "RÉSUMÉ");
+                    println!("{}", "-".repeat(70));
+                    for e in &events {
+                        println!("{:<12} {:<22} {}", e.kind.to_string(), &e.actor_cid_short[..e.actor_cid_short.len().min(20)], e.summary);
+                    }
+                }
+            }
         }
     }
     Ok(())

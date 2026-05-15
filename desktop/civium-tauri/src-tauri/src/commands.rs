@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use civium_core::{
     network::{Invitation, Network},
     add_contest, compute_result_with_delegations,
-    AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
+    ActivityKind, AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PluginState, Proposal, ProposalStatus,
@@ -274,6 +274,9 @@ pub fn member_admit(
         0,
     );
     store::save_admin_action(&conn, &network_cid, &action).map_err(|e| e.to_string())?;
+    let _ = store::emit_activity(&conn, &network_cid, ActivityKind::MemberJoined,
+        &record.cid_short,
+        &format!("{} a rejoint le réseau", record.display_name));
 
     Ok(MemberInfo {
         cid_short: record.cid_short,
@@ -527,6 +530,10 @@ pub fn message_send(
         .map(|m| m.display_name.clone())
         .unwrap_or_else(|| author_cid.short().to_string());
 
+    let _ = store::emit_activity(&conn, &network_cid, ActivityKind::MessagePosted,
+        author_cid.short(),
+        &format!("{} a publié un message", author_name));
+
     Ok(MessageDisplay {
         id: msg.id,
         author_cid_short: msg.author_cid_short,
@@ -687,6 +694,9 @@ pub fn proposal_create(
     );
 
     store::save_proposal(&conn, &network_cid, &proposal).map_err(|e| e.to_string())?;
+    let _ = store::emit_activity(&conn, &network_cid, ActivityKind::ProposalCreated,
+        author_cid.short(),
+        &format!("Proposition créée : « {} »", proposal.title));
 
     Ok(ProposalInfo {
         id: proposal.id,
@@ -742,6 +752,10 @@ pub fn vote_cast(
         cast_at: now,
     };
     store::save_vote(&conn, &vote).map_err(|e| e.to_string())?;
+    let option_label = proposal.options.get(choice_index).map(|s| s.as_str()).unwrap_or("?");
+    let _ = store::emit_activity(&conn, &network_cid, ActivityKind::VoteCast,
+        voter_cid.short(),
+        &format!("Vote exprimé : « {} »", option_label));
     Ok(())
 }
 
@@ -1639,6 +1653,9 @@ pub fn agenda_create(
         created_by,
     );
     store::save_agenda_event(&conn, &event).map_err(|e| e.to_string())?;
+    let _ = store::emit_activity(&conn, &event.network_cid_short, ActivityKind::AgendaEventCreated,
+        &event.created_by,
+        &format!("Événement créé : « {} »", event.title));
     Ok(event_to_info(event))
 }
 
@@ -1690,4 +1707,70 @@ pub fn agenda_delete(
     let conn = open(&app)?;
     store::delete_agenda_event(&conn, &network_cid_short, &event_id)
         .map_err(|e| e.to_string())
+}
+
+// ── Activity & Notifications ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ActivityEventInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub kind: String,
+    pub actor_cid_short: String,
+    pub summary: String,
+    pub occurred_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct NotificationInfo {
+    pub id: String,
+    pub network_cid_short: String,
+    pub source_event_id: String,
+    pub target_cid_short: String,
+    pub read: bool,
+    pub created_at: u64,
+}
+
+/// List the last 100 activity events for a network.
+#[tauri::command]
+pub fn activity_list(app: AppHandle, network_cid_short: String) -> Result<Vec<ActivityEventInfo>, String> {
+    let conn = open(&app)?;
+    let events = store::list_activity(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    Ok(events.into_iter().map(|e| ActivityEventInfo {
+        id: e.id,
+        network_cid_short: e.network_cid_short,
+        kind: e.kind.to_string(),
+        actor_cid_short: e.actor_cid_short,
+        summary: e.summary,
+        occurred_at: e.occurred_at,
+    }).collect())
+}
+
+/// List notifications for the current identity in a network.
+#[tauri::command]
+pub fn notification_list(app: AppHandle, network_cid_short: String) -> Result<Vec<NotificationInfo>, String> {
+    let conn = open(&app)?;
+    let notifs = store::list_notifications(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    Ok(notifs.into_iter().map(|n| NotificationInfo {
+        id: n.id,
+        network_cid_short: n.network_cid_short,
+        source_event_id: n.source_event_id,
+        target_cid_short: n.target_cid_short,
+        read: n.read,
+        created_at: n.created_at,
+    }).collect())
+}
+
+/// Count unread notifications for a network (used for badge).
+#[tauri::command]
+pub fn notification_unread_count(app: AppHandle, network_cid_short: String) -> usize {
+    let Ok(conn) = open(&app) else { return 0 };
+    store::count_unread_notifications(&conn, &network_cid_short)
+}
+
+/// Mark a notification as read.
+#[tauri::command]
+pub fn notification_mark_read(app: AppHandle, notif_id: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::mark_notification_read(&conn, &notif_id).map_err(|e| e.to_string())
 }

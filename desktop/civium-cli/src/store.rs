@@ -7,7 +7,7 @@
 //!   The passphrase is provided by the user at login in the Tauri app (weeks 9-10 final).
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
+use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, ConnectionRecord, CiviumKeypair, DirectoryEntry, FederatedDirectory, GuardianLink, Mailbox, MemberRecord, Message, MinorRestrictions, Notification, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS agenda_events (
     event_id    TEXT NOT NULL,
     event_json  TEXT NOT NULL,
     PRIMARY KEY (network_cid, event_id)
+);
+CREATE TABLE IF NOT EXISTS activity_feed (
+    network_cid TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    PRIMARY KEY (network_cid, event_id)
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    notif_id    TEXT PRIMARY KEY,
+    notif_json  TEXT NOT NULL
 );
 ";
 
@@ -848,6 +858,111 @@ pub fn delete_agenda_event(data_dir: &Path, network_cid_short: &str, event_id: &
         params![network_cid_short, event_id],
     )?;
     Ok(())
+}
+
+// ── Activity feed ────────────────────────────────────────────────────────────
+
+/// Insert an activity event and create a notification for the local member.
+pub fn emit_activity(
+    data_dir: &Path,
+    network_cid_short: &str,
+    kind: ActivityKind,
+    actor_cid_short: &str,
+    summary: &str,
+) -> Result<()> {
+    let event = ActivityEvent::new(
+        network_cid_short.to_string(),
+        kind,
+        actor_cid_short.to_string(),
+        summary.to_string(),
+    );
+    let event_id = event.id.clone();
+    let conn = open_db(data_dir)?;
+    let json = serde_json::to_string(&event)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO activity_feed (network_cid, event_id, event_json) VALUES (?1, ?2, ?3)",
+        params![network_cid_short, &event_id, json],
+    )?;
+
+    // Create a notification for the local identity if available
+    if let Ok(keypair) = load_identity(data_dir) {
+        let notif = Notification::new(
+            network_cid_short.to_string(),
+            event_id,
+            keypair.cid().short().to_string(),
+        );
+        let nid = notif.id.clone();
+        let njson = serde_json::to_string(&notif)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO notifications (notif_id, notif_json) VALUES (?1, ?2)",
+            params![nid, njson],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn list_activity(data_dir: &Path, network_cid_short: &str) -> Result<Vec<ActivityEvent>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM activity_feed WHERE network_cid = ?1 ORDER BY rowid DESC LIMIT 100",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        if let Ok(e) = serde_json::from_str(&json) {
+            events.push(e);
+        }
+    }
+    Ok(events)
+}
+
+pub fn list_notifications(data_dir: &Path, network_cid_short: &str) -> Result<Vec<Notification>> {
+    let conn = open_db(data_dir)?;
+    let mut stmt = conn.prepare(
+        "SELECT notif_json FROM notifications WHERE json_extract(notif_json,'$.network_cid_short') = ?1 ORDER BY rowid DESC LIMIT 50",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut notifs = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        if let Ok(n) = serde_json::from_str(&json) {
+            notifs.push(n);
+        }
+    }
+    Ok(notifs)
+}
+
+pub fn mark_notification_read(data_dir: &Path, notif_id: &str) -> Result<()> {
+    let conn = open_db(data_dir)?;
+    let result = conn.query_row(
+        "SELECT notif_json FROM notifications WHERE notif_id = ?1",
+        params![notif_id],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => {
+            let mut notif: Notification = serde_json::from_str(&json)?;
+            notif.read = true;
+            let updated = serde_json::to_string(&notif)?;
+            conn.execute(
+                "UPDATE notifications SET notif_json = ?1 WHERE notif_id = ?2",
+                params![updated, notif_id],
+            )?;
+            Ok(())
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn count_unread_notifications(data_dir: &Path, network_cid_short: &str) -> usize {
+    let Ok(conn) = open_db(data_dir) else { return 0 };
+    conn.query_row(
+        "SELECT COUNT(*) FROM notifications WHERE json_extract(notif_json,'$.network_cid_short') = ?1 AND json_extract(notif_json,'$.read') = false",
+        params![network_cid_short],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) as usize
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
