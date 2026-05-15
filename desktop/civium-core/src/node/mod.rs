@@ -83,6 +83,9 @@ impl CiviumNode {
         let behaviour = CiviumBehaviour::new(peer_id, local_pub_key)
             .map_err(|e| CiviumError::Node(e.to_string()))?;
 
+        // libp2p 0.55: with_websocket() is only available on TcpPhase (before with_quic()).
+        // TCP + QUIC + WS as a three-transport combo is not supported by the builder API.
+        // QUIC is kept in NodeConfig for future use; for now we use TCP + WebSocket.
         let mut swarm = SwarmBuilder::with_existing_identity(libp2p_keypair)
             .with_tokio()
             .with_tcp(
@@ -91,7 +94,9 @@ impl CiviumNode {
                 yamux::Config::default,
             )
             .map_err(|e| CiviumError::Node(e.to_string()))?
-            .with_quic()
+            .with_websocket(noise::Config::new, yamux::Config::default)
+            .await
+            .map_err(|e| CiviumError::Node(e.to_string()))?
             .with_behaviour(|_| behaviour)
             .map_err(|e| CiviumError::Node(e.to_string()))?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -99,17 +104,20 @@ impl CiviumNode {
 
         let tcp_addr: Multiaddr = config.listen_tcp.parse()
             .map_err(|e: libp2p::multiaddr::Error| CiviumError::Node(e.to_string()))?;
-        let quic_addr: Multiaddr = config.listen_quic.parse()
-            .map_err(|e: libp2p::multiaddr::Error| CiviumError::Node(e.to_string()))?;
 
-        swarm.listen_on(tcp_addr).map_err(|e| CiviumError::Node(e.to_string()))?;
-        swarm.listen_on(quic_addr).map_err(|e| CiviumError::Node(e.to_string()))?;
+        swarm.listen_on(tcp_addr).map_err(|e: libp2p::TransportError<std::io::Error>| CiviumError::Node(e.to_string()))?;
+
+        if let Some(ws_str) = &config.listen_ws {
+            let ws_addr: Multiaddr = ws_str.parse()
+                .map_err(|e: libp2p::multiaddr::Error| CiviumError::Node(e.to_string()))?;
+            swarm.listen_on(ws_addr).map_err(|e: libp2p::TransportError<std::io::Error>| CiviumError::Node(e.to_string()))?;
+        }
 
         for addr_str in &config.bootstrap_peers {
             let addr: Multiaddr = addr_str.parse()
                 .map_err(|e: libp2p::multiaddr::Error| CiviumError::Node(e.to_string()))?;
             swarm.dial(DialOpts::unknown_peer_id().address(addr).build())
-                .map_err(|e| CiviumError::Node(e.to_string()))?;
+                .map_err(|e: libp2p::swarm::DialError| CiviumError::Node(e.to_string()))?;
         }
 
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
