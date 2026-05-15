@@ -118,6 +118,7 @@ pub fn run() {
             pair_complete,
             pair_list,
             pair_revoke,
+            outbox_count_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

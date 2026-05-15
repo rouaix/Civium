@@ -122,6 +122,12 @@ CREATE TABLE IF NOT EXISTS paired_devices (
     device_id   TEXT PRIMARY KEY,
     device_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS outbox_queue (
+    network_cid TEXT    NOT NULL,
+    message_id  TEXT    NOT NULL,
+    queued_at   INTEGER NOT NULL,
+    PRIMARY KEY (network_cid, message_id)
+);
 ";
 
 pub fn open_db(data_dir: &Path) -> Result<Connection> {
@@ -969,4 +975,56 @@ pub fn merge_sync_data(
         )?;
     }
     Ok(())
+}
+
+// ── Outbox queue ─────────────────────────────────────────────────────────────
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn unix_now_store() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
+/// Record a locally-sent message as pending delivery to peers.
+pub fn enqueue_outbox(conn: &Connection, network_cid_short: &str, message_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO outbox_queue (network_cid, message_id, queued_at) VALUES (?1, ?2, ?3)",
+        params![network_cid_short, message_id, unix_now_store() as i64],
+    )?;
+    Ok(())
+}
+
+/// Clear all pending outbox entries for a network (called after a successful peer sync).
+pub fn clear_outbox(conn: &Connection, network_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM outbox_queue WHERE network_cid = ?1",
+        params![network_cid_short],
+    )?;
+    Ok(())
+}
+
+/// Return the number of pending outbox messages for a network.
+pub fn count_outbox(conn: &Connection, network_cid_short: &str) -> u64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM outbox_queue WHERE network_cid = ?1",
+        params![network_cid_short],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) as u64
+}
+
+/// Return (network_cid_short, count) for every network with pending outbox messages.
+pub fn count_all_outbox(conn: &Connection) -> Vec<(String, u64)> {
+    let mut stmt = match conn.prepare(
+        "SELECT network_cid, COUNT(*) FROM outbox_queue GROUP BY network_cid",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    });
+    match rows {
+        Ok(iter) => iter.filter_map(|r| r.ok()).map(|(c, n)| (c, n as u64)).collect(),
+        Err(_) => Vec::new(),
+    }
 }

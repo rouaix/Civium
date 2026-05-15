@@ -24,6 +24,7 @@ import type {
   GuardianLinkInfo,
   RrmEntryInfo,
   TrustedRrmInfo,
+  OutboxCountInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -146,6 +147,9 @@ export default function Dashboard() {
   const [mcpPort, setMcpPort] = useState("7523");
   const [showMcpToken, setShowMcpToken] = useState(false);
 
+  // Outbox state
+  const [outboxCounts, setOutboxCounts] = useState<Record<string, number>>({});
+
   // Pairing state
   const [pairedDevices, setPairedDevices] = useState<PairedDeviceInfo[]>([]);
   const [pairingSession, setPairingSession] = useState<PairingInitInfo | null>(null);
@@ -172,11 +176,22 @@ export default function Dashboard() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const refreshOutboxCounts = useCallback(() => {
+    tauriInvoke<OutboxCountInfo[]>("outbox_count_all")
+      .then((items) => {
+        const map: Record<string, number> = {};
+        for (const item of items) map[item.network_cid_short] = item.count;
+        setOutboxCounts(map);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
     tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
-  }, []);
+    refreshOutboxCounts();
+  }, [refreshOutboxCounts]);
 
   const refreshNetwork = useCallback((cid: string) => {
     tauriInvoke<MemberInfo[]>("member_list", { networkCid: cid }).then(setMembers);
@@ -308,7 +323,9 @@ export default function Dashboard() {
     // Load MCP status once on mount
     tauriInvoke<McpStatus>("mcp_status").then(setMcpStatus).catch(() => {});
 
-    let unlisten: UnlistenFn | null = null;
+    let unlistenSync: UnlistenFn | null = null;
+    let unlistenOutbox: UnlistenFn | null = null;
+
     listen<string>("civium://sync-completed", (event) => {
       const cid = event.payload;
       tauriInvoke<NetworkInfo[]>("network_list").then((nets) => {
@@ -318,16 +335,24 @@ export default function Dashboard() {
         refreshNetwork(cid);
         refreshMessages(cid);
       }
+      refreshOutboxCounts();
     }).then((fn) => {
-      unlisten = fn;
+      unlistenSync = fn;
+    });
+
+    listen<string>("civium://outbox-cleared", () => {
+      refreshOutboxCounts();
+    }).then((fn) => {
+      unlistenOutbox = fn;
     });
 
     return () => {
       mounted = false;
       clearInterval(interval);
-      unlisten?.();
+      unlistenSync?.();
+      unlistenOutbox?.();
     };
-  }, [refreshNetwork, refreshMessages]);
+  }, [refreshNetwork, refreshMessages, refreshOutboxCounts]);
 
   async function generateInvite() {
     if (!selected) return;
@@ -916,6 +941,7 @@ export default function Dashboard() {
       setMessages((prev) => [...prev, msg]);
       setMsgBody("");
       refreshActivity(selected.cid_short);
+      refreshOutboxCounts();
     } catch (e) {
       alert(String(e));
     } finally {
@@ -963,11 +989,18 @@ export default function Dashboard() {
                 {net.is_rrm && (
                   <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM (Registre des Réseaux Malveillants)</span>
                 )}
-                {selected?.cid_short === net.cid_short && unreadCount > 0 && (
-                  <span className="ml-auto text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
-                    {unreadCount}
-                  </span>
-                )}
+                <span className="ml-auto flex items-center gap-1">
+                  {(outboxCounts[net.cid_short] ?? 0) > 0 && (
+                    <span className="text-xs bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center" title="Messages en attente de synchronisation">
+                      ↑{outboxCounts[net.cid_short]}
+                    </span>
+                  )}
+                  {selected?.cid_short === net.cid_short && unreadCount > 0 && (
+                    <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
+                      {unreadCount}
+                    </span>
+                  )}
+                </span>
               </div>
               <div className="text-xs opacity-70">
                 {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
@@ -1813,14 +1846,22 @@ export default function Dashboard() {
 
             {/* Thread messages */}
             <section>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Fil de discussion
-                {messages.length > 0 && (
-                  <span className="ml-1 font-normal text-gray-400 normal-case">
-                    ({messages.filter((m) => !m.is_direct).length})
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                  Fil de discussion
+                  {messages.length > 0 && (
+                    <span className="ml-1 font-normal text-gray-400 normal-case">
+                      ({messages.filter((m) => !m.is_direct).length})
+                    </span>
+                  )}
+                </h3>
+                {(outboxCounts[selected.cid_short] ?? 0) > 0 && (
+                  <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2.5 py-0.5 flex items-center gap-1">
+                    <span>↑</span>
+                    {outboxCounts[selected.cid_short]} message{outboxCounts[selected.cid_short] > 1 ? "s" : ""} en attente de synchronisation
                   </span>
                 )}
-              </h3>
+              </div>
 
               {/* Message list */}
               <div className="bg-white rounded-t-xl border border-b-0 border-gray-200

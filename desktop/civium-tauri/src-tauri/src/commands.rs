@@ -522,6 +522,7 @@ pub fn message_send(
         sent_at,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
 
     let author_name = network
         .data
@@ -586,6 +587,7 @@ pub fn message_send_direct(
         sent_at,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
 
     let author_name = network.data.members.iter()
         .find(|m| m.cid_short == author_cid_short)
@@ -601,6 +603,21 @@ pub fn message_send_direct(
         is_direct: true,
         to_cid_short: Some(to_cid_short),
     })
+}
+
+// ── Outbox ────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct OutboxCountInfo {
+    pub network_cid_short: String,
+    pub count: u64,
+}
+
+#[tauri::command]
+pub fn outbox_count_all(app: AppHandle) -> Result<Vec<OutboxCountInfo>, String> {
+    let conn = open(&app)?;
+    let counts = store::count_all_outbox(&conn);
+    Ok(counts.into_iter().map(|(cid, count)| OutboxCountInfo { network_cid_short: cid, count }).collect())
 }
 
 // ── Governance commands ───────────────────────────────────────────────────────
