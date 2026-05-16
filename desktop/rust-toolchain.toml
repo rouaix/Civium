@@ -1,0 +1,10 @@
+[toolchain]
+channel  = "stable"
+targets  = [
+    "wasm32-unknown-unknown",   # client web (wasm-pack)
+    "aarch64-linux-android",    # civium-ffi Android arm64
+    "aarch64-apple-ios",        # civium-ffi iOS device
+    "aarch64-apple-ios-sim",    # civium-ffi iOS simulator (arm64)
+    "x86_64-apple-ios",         # civium-ffi iOS simulator (x86_64)
+]
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,148 @@
+name: Mobile CI
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - 'desktop/civium-ffi/**'
+      - 'desktop/civium-core/**'
+      - 'mobile/**'
+      - '.github/workflows/mobile.yml'
+  pull_request:
+    paths:
+      - 'desktop/civium-ffi/**'
+      - 'desktop/civium-core/**'
+      - 'mobile/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Rust FFI crate — type-check on host ──────────────────────────────────────
+  civium-ffi-check:
+    name: civium-ffi (cargo check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - name: cargo check civium-ffi
+        run: cargo check -p civium-ffi
+        working-directory: desktop
+
+  # ── Android — build .so + run Jest on RN code ─────────────────────────────
+  android:
+    name: Android (arm64-v8a)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Build civium-ffi for Android arm64
+        run: |
+          cargo ndk -t arm64-v8a \
+            -o ../mobile/civium-mobile/android/app/src/main/jniLibs \
+            build -p civium-ffi --release
+        working-directory: desktop
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mobile/civium-mobile/package.json
+
+      - name: Install JS dependencies
+        run: npm ci
+        working-directory: mobile/civium-mobile
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+        working-directory: mobile/civium-mobile
+
+      - name: Run Jest
+        run: npm test -- --passWithNoTests
+        working-directory: mobile/civium-mobile
+
+      - name: Upload civium-ffi.so (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: civium-ffi-android-arm64
+          path: mobile/civium-mobile/android/app/src/main/jniLibs/arm64-v8a/libcivium_ffi.so
+
+  # ── iOS — build static lib (simulator) ────────────────────────────────────
+  ios:
+    name: iOS (simulator)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Build civium-ffi for iOS simulator (arm64 + x86_64)
+        run: |
+          cargo build -p civium-ffi --release --target aarch64-apple-ios-sim
+          cargo build -p civium-ffi --release --target x86_64-apple-ios
+        working-directory: desktop
+
+      - name: Create fat .a for simulator
+        run: |
+          lipo -create \
+            target/aarch64-apple-ios-sim/release/libcivium_ffi.a \
+            target/x86_64-apple-ios/release/libcivium_ffi.a \
+            -output libcivium_ffi_sim.a
+        working-directory: desktop
+
+      - name: Install uniffi-bindgen-cli
+        run: cargo install uniffi-bindgen-cli --version 0.28.0
+        working-directory: desktop
+
+      - name: Generate Swift bindings
+        run: |
+          mkdir -p ../mobile/civium-mobile/ios/generated/swift
+          cargo run --bin uniffi-bindgen generate \
+            --library target/aarch64-apple-ios-sim/release/libcivium_ffi.a \
+            --language swift \
+            --out-dir ../mobile/civium-mobile/ios/generated/swift/
+        working-directory: desktop
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: mobile/civium-mobile/package.json
+
+      - name: Install JS dependencies
+        run: npm ci
+        working-directory: mobile/civium-mobile
+
+      - name: Upload civium-ffi.a (simulator)
+        uses: actions/upload-artifact@v4
+        with:
+          name: civium-ffi-ios-sim
+          path: desktop/libcivium_ffi_sim.a
