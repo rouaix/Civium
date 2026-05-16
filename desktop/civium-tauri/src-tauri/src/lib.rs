@@ -53,6 +53,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             identity_exists,
             identity_init,
+            identity_show,
             network_create,
             network_list,
             network_invite,

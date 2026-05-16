@@ -110,6 +110,18 @@ pub fn identity_init(app: AppHandle) -> Result<IdentityInfo, String> {
 }
 
 #[tauri::command]
+pub fn identity_show(app: AppHandle) -> Result<IdentityInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    Ok(IdentityInfo {
+        cid_short:  cid.short().to_string(),
+        cid_full:   cid.full().to_string(),
+        secret_b58: keypair.secret_b58(),
+    })
+}
+
+#[tauri::command]
 pub fn network_create(
     app: AppHandle,
     name: String,

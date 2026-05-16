@@ -198,6 +198,8 @@ export default function Dashboard() {
 
   // Settings panel
   const [showSettings, setShowSettings] = useState(false);
+  const [identity, setIdentity] = useState<{ cid_short: string; cid_full: string; secret_b58: string } | null>(null);
+  const [secretVisible, setSecretVisible] = useState(false);
 
   // Active view within selected network
   type ActiveView = 'messages' | 'membres' | 'gouvernance' | 'agenda' | 'documents' | 'activite' | 'notifications' | 'annuaire' | 'rrm' | 'extensions';
@@ -1350,7 +1352,16 @@ export default function Dashboard() {
             <span className="text-xs text-civium-100">{nodeStatus.running ? "En ligne" : "Hors ligne"}</span>
           </div>
           <button
-            onClick={() => { setShowSettings((v) => !v); setActiveView('messages'); setShowCreateForm(false); }}
+            onClick={() => {
+              const next = !showSettings;
+              setShowSettings(next);
+              setActiveView('messages');
+              setShowCreateForm(false);
+              if (next && !identity) {
+                tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_show")
+                  .then(setIdentity).catch(() => {});
+              }
+            }}
             className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors ${
               showSettings ? "bg-civium-600 text-white" : "text-civium-200 hover:bg-civium-700"
             }`}
@@ -1408,6 +1419,50 @@ export default function Dashboard() {
                 ✕ Fermer
               </button>
             </div>
+
+            {/* ── Identité ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Identité</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Ces informations vous permettent de vous connecter depuis le client web ou un autre appareil. Ne partagez jamais votre clé secrète.
+              </p>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+                {identity ? (
+                  <>
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">CID complet</p>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1.5 break-all">{identity.cid_full}</code>
+                        <button
+                          className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0"
+                          onClick={() => navigator.clipboard.writeText(identity!.cid_full)}
+                        >Copier</button>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">Clé secrète <span className="text-red-400">(confidentielle)</span></p>
+                      <div className="flex items-center gap-2">
+                        <code className="flex-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1.5 break-all">
+                          {secretVisible ? identity.secret_b58 : "•".repeat(44)}
+                        </code>
+                        <button
+                          className="text-xs border border-gray-200 rounded px-2 py-1 shrink-0 hover:bg-gray-50"
+                          onClick={() => setSecretVisible((v) => !v)}
+                        >{secretVisible ? "Masquer" : "Afficher"}</button>
+                        {secretVisible && (
+                          <button
+                            className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0"
+                            onClick={() => navigator.clipboard.writeText(identity!.secret_b58)}
+                          >Copier</button>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-400">Chargement…</p>
+                )}
+              </div>
+            </section>
 
             {/* ── Connexion internet ── */}
             <section>
@@ -3045,25 +3100,41 @@ export default function Dashboard() {
                   <p className="text-xs text-gray-400 italic">Aucune notification.</p>
                 ) : (
                   <div className="space-y-1.5">
-                    {notifications.slice(0, 30).map((n) => (
-                      <div key={n.id} className={`flex items-start gap-3 px-3 py-2 rounded-xl border ${n.read ? "border-gray-100 bg-white" : "border-indigo-100 bg-indigo-50"}`}>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm text-gray-800">{n.source_event_id}</p>
-                          <p className="text-xs text-gray-400 mt-0.5">{new Date(n.created_at * 1000).toLocaleString("fr-FR")}</p>
+                    {notifications.slice(0, 30).map((n) => {
+                      const ev = activityEvents.find((a) => a.id === n.source_event_id);
+                      const kindIcon: Record<string, string> = {
+                        member_joined:    "👤",
+                        message_posted:   "💬",
+                        proposal_created: "🗳",
+                        vote_cast:        "✅",
+                        agenda_event_created: "📅",
+                        document_created: "📄",
+                        connection_requested: "🔗",
+                        connection_accepted:  "🤝",
+                      };
+                      const icon = ev ? (kindIcon[ev.kind] ?? "🔔") : "🔔";
+                      const label = ev ? ev.summary : "Événement inconnu";
+                      return (
+                        <div key={n.id} className={`flex items-start gap-3 px-3 py-2 rounded-xl border ${n.read ? "border-gray-100 bg-white" : "border-indigo-100 bg-indigo-50"}`}>
+                          <span className="text-lg mt-0.5 flex-shrink-0">{icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm text-gray-800">{label}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">{new Date(n.created_at * 1000).toLocaleString("fr-FR")}</p>
+                          </div>
+                          {!n.read && (
+                            <button
+                              onClick={() => tauriInvoke("notification_mark_read", { notifId: n.id }).then(() => {
+                                setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, read: true } : x));
+                                setUnreadCount((c) => Math.max(0, c - 1));
+                              })}
+                              className="text-xs text-indigo-400 hover:text-indigo-600 flex-shrink-0"
+                            >
+                              Lu
+                            </button>
+                          )}
                         </div>
-                        {!n.read && (
-                          <button
-                            onClick={() => tauriInvoke("notification_mark_read", { notificationId: n.id }).then(() => {
-                              setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, read: true } : x));
-                              setUnreadCount((c) => Math.max(0, c - 1));
-                            })}
-                            className="text-xs text-indigo-400 hover:text-indigo-600 flex-shrink-0"
-                          >
-                            Lu
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>
