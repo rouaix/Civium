@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Lifecycle state of an installed plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +64,33 @@ impl std::fmt::Display for PluginPermission {
     }
 }
 
+/// Certification level of a plugin in the Civium ecosystem.
+///
+/// Levels are cumulative: each builds on the requirements of the previous one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CertificationLevel {
+    /// No certification — use at your own risk.
+    #[default]
+    Uncertified,
+    /// Basic certification: open-source, documented, passes automated scans.
+    Minimal,
+    /// Listed in the Registre de Services Civium (RSC): verified publisher + peer review.
+    Rsc,
+    /// Full certification: external security audit, formal code review by the Civium team.
+    Certified,
+}
+
+impl std::fmt::Display for CertificationLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uncertified => f.write_str("uncertified"),
+            Self::Minimal     => f.write_str("minimal"),
+            Self::Rsc         => f.write_str("rsc"),
+            Self::Certified   => f.write_str("certified"),
+        }
+    }
+}
+
 /// Static metadata declared by a plugin author.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -77,6 +103,9 @@ pub struct PluginManifest {
     /// True for system plugins (Gouvernance, CIL) that cannot be disabled.
     #[serde(default)]
     pub is_system: bool,
+    /// Certification level in the Civium ecosystem.
+    #[serde(default)]
+    pub certification: CertificationLevel,
 }
 
 /// Runtime record persisted in the database.
@@ -99,9 +128,7 @@ impl PluginRecord {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-}
+fn unix_now() -> u64 { crate::time::unix_now() }
 
 /// Returns the manifests for all pre-installed Civium plugins.
 pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
@@ -119,6 +146,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
                 PluginPermission::ReadMembers,
             ],
             is_system: true,
+            certification: CertificationLevel::Certified,
         }, true),
         (PluginManifest {
             id: "civium.cil".to_string(),
@@ -128,6 +156,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
             author: "Civium".to_string(),
             permissions: vec![],
             is_system: true,
+            certification: CertificationLevel::Certified,
         }, true),
         (PluginManifest {
             id: "civium.messagerie".to_string(),
@@ -141,6 +170,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
                 PluginPermission::ReadMembers,
             ],
             is_system: false,
+            certification: CertificationLevel::Certified,
         }, true),
         (PluginManifest {
             id: "civium.annuaire".to_string(),
@@ -154,6 +184,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
                 PluginPermission::ReadMembers,
             ],
             is_system: false,
+            certification: CertificationLevel::Certified,
         }, true),
         (PluginManifest {
             id: "civium.agenda".to_string(),
@@ -167,6 +198,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
                 PluginPermission::ReadMembers,
             ],
             is_system: false,
+            certification: CertificationLevel::Certified,
         }, true),
         (PluginManifest {
             id: "civium.documents".to_string(),
@@ -180,6 +212,7 @@ pub fn preinstalled_plugins() -> Vec<(PluginManifest, bool)> {
                 PluginPermission::ReadMembers,
             ],
             is_system: false,
+            certification: CertificationLevel::Certified,
         }, true),
     ]
 }

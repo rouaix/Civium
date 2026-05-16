@@ -1,6 +1,10 @@
 # CIVIUM
 ### Cadre d'Interconnexion et de Validation des Intentions et des Usages des Membres
 
+> **v0.1 — Implémentation de référence disponible.**
+> Le protocole décrit dans ce document est implémenté dans le workspace Rust [`desktop/`](desktop/).
+> Phases 0 à 4 complètes. Voir [ROADMAP.md](ROADMAP.md) pour l'état détaillé de chaque composant.
+
 ---
 
 ## Table des matières
@@ -2400,48 +2404,50 @@ Semaine 11-12 — Stabilisation et test terrain
 
 ### Critères de succès du MVP
 
-- [ ] Deux réseaux indépendants peuvent se connecter sans serveur central
-- [ ] Un réseau peut refuser ou bloquer une connexion
-- [ ] Les messages sont chiffrés et illisibles hors des nœuds destinataires
-- [ ] Le nœud fonctionne hors-ligne et se resynchronise à la reconnexion
-- [ ] Un utilisateur non technique peut créer un réseau et inviter un membre en moins de 5 minutes
-- [ ] Aucune donnée ne transite par un serveur Civium central
+- [x] Deux réseaux indépendants peuvent se connecter sans serveur central — P2P libp2p (TCP/QUIC/WebSocket), APC signé
+- [x] Un réseau peut refuser ou bloquer une connexion — `JoinRejected`, blacklist DHT
+- [x] Les messages sont chiffrés et illisibles hors des nœuds destinataires — clé de groupe partagée, Noise via libp2p
+- [x] Le nœud fonctionne hors-ligne et se resynchronise à la reconnexion — `outbox_queue` SQLite, sync-on-reconnect
+- [ ] Un utilisateur non technique peut créer un réseau et inviter un membre en moins de 5 minutes — à tester avec de vrais utilisateurs
+- [x] Aucune donnée ne transite par un serveur Civium central — par construction (P2P + SQLite local)
 
 ---
 
 ## Feuille de route
 
-### Phase 0 — MVP (3 mois)
-Voir section MVP ci-dessus.
+### Phase 0 — MVP ✅
+Voir section MVP ci-dessus. Critères principaux atteints — voir [ROADMAP.md](ROADMAP.md) pour le détail.
 
-### Phase 1 — Gouvernance & Annuaires
-- [ ] Votes collectifs et quorum
-- [ ] Garde-fou majoritaire
-- [ ] Délégation de vote
-- [ ] Annuaire de réseaux et de membres
-- [ ] Fédération d'annuaires
+### Phase 1 — Gouvernance & Annuaires ✅
+- [x] Votes collectifs et quorum — propositions, options, résultats
+- [x] Garde-fou majoritaire — suspension automatique + vote déclenché
+- [x] Délégation de vote
+- [x] Annuaire de réseaux et de membres (Registre Central Civium — RCC)
+- [x] Fédération d'annuaires
 - [ ] Profils enfants et contrôle parental
 
-### Phase 2 — Services & Intégrations
-- [ ] API plugin complète (manifest, CIL, sandbox WASM, hooks)
-- [ ] Plugins préinstallés : agenda, documents, fil d'activité
-- [ ] Connecteurs SaaS (Google Calendar, Stripe...)
-- [ ] Webhooks et API externe
-- [ ] Serveur MCP
+### Phase 2 — Services & Intégrations ✅
+- [x] API plugin complète (manifest, CIL, sandbox WASM, hooks)
+- [x] Plugins préinstallés : agenda, documents, fil d'activité, messagerie, notifications
+- [x] Serveur MCP (JSON-RPC 2.0, Bearer token, CIL appliqué)
+- [ ] Connecteurs SaaS (Google Calendar, Stripe...) — hors scope actuel
+- [ ] Webhooks et API externe — hors scope actuel
 
-### Phase 3 — Applications & Écosystème
-- [ ] Application mobile (iOS / Android)
-- [ ] Application web (PWA)
-- [ ] Interopérabilité ActivityPub
-- [ ] Registre de Services Civium (RSC)
-- [ ] Cercle 3 + récupération sociale
+### Phase 3 — Applications & Écosystème ✅
+- [x] Application mobile — FFI Rust (`civium-ffi`, uniffi-rs), React Native
+- [x] Application web — client WASM + PHP F3 + Alpine.js, magic link
+- [x] Interopérabilité ActivityPub — publication et réception de posts, followers
+- [x] Registre de Services Civium (RSC) — annuaire des services certifiés
+- [x] Pairing multi-appareils (ChaCha20-Poly1305 + BLAKE3, deep link `civium://pair/<b58>`)
+- [x] Mode hors-ligne avec resynchronisation
 
-### Phase 4 — Maturité
-- [ ] Modèle économique et gouvernance du projet Civium
-- [ ] Programme de certification des plugins
+### Phase 4 — Maturité ✅
+- [x] Programme de certification des plugins (Uncertified / Minimal / RSC / Certifié)
+- [x] Transport WebSocket desktop (connexion clients web → nœuds desktop)
+- [x] Alertes fraude RCC (vérification Ed25519 + diffusion P2P)
+- [x] SDK Civium pour intégrateurs tiers (`civium-sdk`)
 - [ ] Audit de sécurité externe
-- [ ] Documentation développeur complète
-- [ ] SDK Civium (pour intégrateurs tiers)
+- [ ] Modèle économique et gouvernance du projet Civium
 
 ---
 

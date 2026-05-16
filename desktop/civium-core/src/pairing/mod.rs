@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use chacha20poly1305::{aead::{Aead, KeyInit}, ChaCha20Poly1305, Key, Nonce};
 use rand::RngCore;
 use rand::rngs::OsRng;
@@ -91,18 +89,8 @@ pub fn complete_pairing(link: &str) -> Result<String, String> {
         .map_err(|_| "secret déchiffré invalide".to_string())
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
-fn uuid() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    unix_now().hash(&mut h);
-    std::thread::current().id().hash(&mut h);
-    format!("{:016x}-{:016x}", h.finish(), h.finish().wrapping_add(0xbaadf00d))
-}
+fn unix_now() -> u64 { crate::time::unix_now() }
+fn uuid() -> String { uuid::Uuid::new_v4().to_string() }
 
 impl PairedDevice {
     pub fn new(label: String) -> Self {

@@ -11,6 +11,34 @@ export interface NetworkInfo {
   member_count: number;
   is_directory: boolean;
   is_rrm: boolean;
+  ap_enabled: boolean;
+  ap_actor_url: string | null;
+}
+
+export interface ApStatusInfo {
+  enabled: boolean;
+  actor_url: string | null;
+  followers_count: number;
+}
+
+export interface ApFollowerInfo {
+  actor_url: string;
+  inbox_url: string;
+  followed_at: number;
+}
+
+export interface ApPostInfo {
+  id: number;
+  note_id: string;
+  content: string;
+  ap_activity_id: string | null;
+  posted_at: number;
+}
+
+export interface ApPostResult {
+  note_id: string;
+  actor_url: string;
+  delivered_to: number;
 }
 
 export interface MemberInfo {
@@ -53,6 +81,13 @@ export interface ConnectionInfo {
 
 export interface NodeStatus {
   running: boolean;
+  listen_addrs: string[];
+}
+
+export interface NodeSettingsInfo {
+  tcp_port: number;
+  ws_port: number;
+  external_addr: string;
   listen_addrs: string[];
 }
 
@@ -162,6 +197,8 @@ export interface PluginInfo {
   author: string;
   permissions: string[];
   is_system: boolean;
+  /** "uncertified" | "minimal" | "rsc" | "certified" */
+  certification: string;
   state: "enabled" | "disabled";
   installed_at: number;
 }
@@ -256,4 +293,12 @@ export interface RccStatusInfo {
   last_attempt: number | null;
   registered_at: number;
   rcc_url: string;
+}
+
+export interface FraudAlertInfo {
+  alert_type: string;
+  description: string;
+  network_cids: string[];
+  emitted_at: number;
+  emitted_by: string;
 }

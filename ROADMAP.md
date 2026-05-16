@@ -10,14 +10,14 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 | Phase | Nom | Statut |
 |---|---|---|
-| — | Site web de présentation | 🔲 Non démarré |
-| — | Infrastructure centrale (RCC + client web) | 🔲 Non démarré |
+| — | Site web de présentation | 🚧 En cours (code ✅ — domaine/hébergement à décider) |
+| — | Infrastructure centrale (RCC + client web) | 🚧 En cours (Blocs 1-6 ✅ — déploiement PHP en attente) |
 | 0 | MVP | ✅ Terminé |
 | 1 | Transport P2P réel | ✅ Terminé |
 | 2 | Gouvernance & Annuaires | ✅ Terminé |
-| 3 | Services & Intégrations | 🚧 En cours |
-| 4 | Applications & Écosystème | ⏳ En attente Phase 3 |
-| 5 | Maturité | ⏳ En attente Phase 4 |
+| 3 | Services & Intégrations | ✅ Terminé |
+| 4 | Applications & Écosystème | ✅ Terminé (1 critère nécessite déploiement PHP) |
+| 5 | Maturité | 🚧 En cours (certification ✅, SDK ✅, docs ✅, white-label ✅ — audit externe + gouvernance associative à planifier) |
 
 ---
 
@@ -25,17 +25,17 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 > Promouvoir le projet et attirer contributeurs, partenaires et premiers utilisateurs avant même la sortie du MVP.
 
-- [ ] Définir le domaine et l'hébergement (civium.net ou civium.fr — Scaleway)
-- [ ] Page d'accueil : accroche, proposition de valeur, visuel du protocole
-- [ ] Section "Pourquoi Civium" (problème → solution → contrôle)
-- [ ] Section "Comment ça marche" (cercles, réseaux, plugins — vulgarisé)
-- [ ] Section "Cas d'usage" (famille, asso, quartier, entreprise)
-- [ ] Feuille de route publique (basée sur ce ROADMAP)
-- [ ] Formulaire d'inscription liste d'attente / newsletter
-- [ ] Lien vers le dépôt GitHub
-- [ ] Page "Contribuer" (comment participer au projet)
-- [ ] SEO de base + Open Graph (partage réseaux sociaux)
-- [ ] Stack : PHP Fat-Free + Alpine.js (cohérent avec l'app web Civium — infra Scaleway existante)
+- [ ] Définir le domaine et l'hébergement (civium.net ou civium.fr — Scaleway) *(non-code — décision à prendre)*
+- [x] Page d'accueil : hero, proposition de valeur, problème → solution, fonctionnalités, CTA
+- [x] Section "Pourquoi Civium" (problème → solution → contrôle) — intégrée dans `home.html`
+- [x] Section "Comment ça marche" (cercles, réseaux, plugins — vulgarisé) — `how.html`
+- [x] Section "Cas d'usage" (famille, asso, quartier, entreprise) — `usecases.html`
+- [x] Feuille de route publique — `roadmap.html`
+- [x] Formulaire d'inscription liste d'attente — `home.html` (Alpine.js + `POST /inscription`)
+- [x] Lien vers le dépôt GitHub — dans nav et footer du `layout.html`
+- [x] Page "Contribuer" (comment participer) — `contribute.html`
+- [x] SEO de base + Open Graph — `layout.html` (`<meta name="description">`, `og:title/description/image/type`)
+- [x] Stack PHP F3 + Alpine.js — en place
 
 ---
 
@@ -43,74 +43,76 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 > Indépendante des phases numérotées. Peut démarrer dès que Phase 3 S7-8 (Documents) est terminée, en parallèle de Phase 3 S9+.
 
-### Bloc 1 — Registre Central Civium (RCC) — côté serveur PHP
+### Bloc 1 — Registre Central Civium (RCC) — côté serveur PHP ✅
 
 > `website/` — PHP F3 + MySQL sur `https://www.rouaix.com/civium`
 
-- [ ] Système de migrations BDD automatiques (`src/models/Migration.php`) — appliqué au bootstrap, jamais de plantage serveur sur changement de schéma
+- [x] Système de migrations BDD automatiques (`src/models/Migration.php`) — appliqué au bootstrap dans `index.php`, jamais de plantage serveur sur changement de schéma
 - [x] Migration `001_initial.sql` : `waitlist` (intégré depuis `civium.sql`) + `networks`, `alerts`, `magic_links` — `civium.sql` réduit au `CREATE DATABASE` uniquement
-- [ ] Table `networks` : network_cid (PK), network_name, admin_cid, admin_pubkey, admin_email, ip_address, registered_at, signature
-- [ ] Table `alerts` : id, type, description, network_cids_json, emitted_at, emitted_by
-- [ ] Table `magic_links` : token (PK), email, cid, expires_at, used
-- [ ] `POST /api/register` — reçoit l'enregistrement d'un réseau, vérifie la signature Ed25519, stocke
-- [ ] `POST /api/alert` — (clé admin RCC requise) émet une alerte fraude
-- [ ] `GET /api/networks` — liste publique paginée des réseaux enregistrés (CID + nom uniquement)
-- [ ] Envoi email alerte via SMTP (PHP Mailer ou F3 mailer)
+- [x] Table `networks` : network_cid (PK), network_name, admin_cid, admin_pubkey, admin_email, ip_address, registered_at, signature
+- [x] Table `alerts` : id, type, description, network_cids (JSON), emitted_at, emitted_by
+- [x] Table `magic_links` : token (PK), email, cid, expires_at, used
+- [x] `POST /api/register` — reçoit l'enregistrement d'un réseau, vérifie la signature Ed25519, stocke
+- [x] `POST /admin/alerte` — (ADMIN_TOKEN requis) enregistre une alerte fraude
+- [x] `GET /api/networks` — liste publique paginée des réseaux enregistrés (`?page=` + `?per_page=`, max 200)
+- [x] Envoi email alerte via SMTP — `src/models/Mailer.php` (F3 SMTP + fallback `mail()`), config `SMTP_*` dans `config.ini`
 
-### Bloc 2 — Enregistrement automatique côté desktop (civium-core + Tauri)
+### Bloc 2 — Enregistrement automatique côté desktop (civium-core + Tauri) ✅ Phase 4 S3-4
 
-- [ ] `civium-core` : constante `RCC_URL = "https://www.rouaix.com/civium"` (codée en dur)
-- [ ] `civium-core` : fonction `register_network(network, admin_email) -> Result<()>`
+- [x] `civium-core` : constante `RCC_URL = "https://www.rouaix.com/civium"` (codée en dur)
+- [x] `civium-core` : fonction `register_network(network, admin_email) -> Result<()>`
   - Construit le payload JSON signé
   - HTTP POST vers `RCC_URL/api/register`
   - Retourne Ok ou une erreur avec le statut HTTP
-- [ ] `civium-core` : statut d'enregistrement dans `NetworkData` : `Pending | Registered | Failed`
-- [ ] Store (Tauri + CLI) : persiste le statut d'enregistrement
-- [ ] Tauri `network_create` : déclenche l'enregistrement après création, stocke le statut
-- [ ] Tâche retry en arrière-plan (Tauri) : toutes les 5 s → 30 s → 5 min → 30 min → 1 h pour les réseaux en `Pending`
-- [ ] Dashboard : badge "Enregistré ✓" / "En attente…" / "Échec ⚠" sur chaque réseau
-- [ ] Saisie email admin obligatoire dans l'écran de création de réseau (Onboarding + Dashboard)
+- [x] `civium-core` : statut d'enregistrement (`Pending | Registered | Failed`) + table `rcc_registrations`
+- [x] Store (Tauri) : persiste le statut d'enregistrement
+- [x] Tauri `rcc_register` / `rcc_status` / `rcc_status_list` : déclenche l'enregistrement, expose le statut
+- [x] Tâche retry en arrière-plan (Tauri) : toutes les 5 s → 30 s → 5 min → 30 min → 1 h pour les réseaux en `Pending`
+- [x] Dashboard : badge "Enregistré ✓" / "En attente…" / "Échec ⚠" par réseau + section RCC
+- [x] Saisie email admin obligatoire dans l'écran de création de réseau (Dashboard)
 
-### Bloc 3 — Transport WebSocket pour nœuds desktop
+### Bloc 3 — Transport WebSocket pour nœuds desktop ✅
 
 > Nécessaire pour que les clients web (WASM) puissent se connecter via libp2p
 
-- [ ] Ajouter `libp2p-websocket` comme transport dans `civium-core/node.rs`
-- [ ] `NodeConfig` : `listen_ws: String` (défaut `/ip4/0.0.0.0/tcp/0/ws`)
-- [ ] Les adresses d'écoute WebSocket sont annoncées dans la DHT et affichées dans le Dashboard
-- [ ] CLI `node start --listen-ws <addr>`
+- [x] Ajouter `libp2p-websocket` (+ feature `dns`) comme transport dans `civium-core/node.rs`
+- [x] `NodeConfig` : `listen_ws: Option<String>` (défaut activé `/ip4/0.0.0.0/tcp/0/ws`)
+- [x] Les adresses d'écoute WebSocket sont affichées dans le Dashboard (label WS: en vert, filtrage `/ws`)
+- [x] CLI `node start --listen-ws <addr>` (défaut activé ; `--listen-ws ""` pour désactiver)
 
-### Bloc 4 — civium-core compilé en WebAssembly
+### Bloc 4 — civium-core compilé en WebAssembly ✅
 
-- [ ] Ajouter target `wasm32-unknown-unknown` au workspace Cargo
-- [ ] Feature flag `wasm` dans `civium-core` : active les transports WebSocket/WebRTC, désactive TCP/QUIC
-- [ ] `wasm-pack build` génère `website/src/www/wasm/civium_core.js` + `.wasm`
-- [ ] Bindings JS (`civium_core.js`) exposent : init_identity, load_identity, list_networks, join_network, send_message, list_messages, create_proposal, vote_cast, list_agenda_events…
-- [ ] Tests WASM basiques (wasm-bindgen-test)
+- [x] `desktop/rust-toolchain.toml` : target `wasm32-unknown-unknown` déclarée (+ cibles Android/iOS)
+- [x] Feature flag `wasm` dans `civium-core` : active wasm-bindgen, désactive le module `node` (TCP/QUIC/mDNS)
+- [x] `desktop/build-wasm.sh` + `wasm-pack build --target web --features wasm` → `website/src/www/wasm/`
+- [x] Bindings JS : `civium_version`, `generate_identity`, `load_identity`, `group_key_*`, `network_create`, `message_build`, `message_decrypt`, `proposal_create`, `vote_cast`, `vote_compute`, `agenda_event_build`, `document_build`, `document_decrypt_body`, `pairing_complete`
+- [x] 6 tests `wasm-bindgen-test` : identity roundtrip, group key, network create, message roundtrip, vote cast, document roundtrip
+- [x] CI `.github/workflows/wasm.yml` : build + test headless Chrome
 
-### Bloc 5 — Client web PHP + WASM
+### Bloc 5 — Client web PHP + WASM ✅
 
-- [ ] `website/src/controllers/AuthController.php` : magic link (generate_token, validate_token, session)
-- [ ] `website/src/controllers/AppController.php` : sert `civium/index.html` (shell Alpine.js)
-- [ ] `website/src/www/civium/index.html` : charge `civium_core.wasm`, init Alpine.js
-- [ ] Alpine.js : même UX que le Dashboard Tauri (messagerie, gouvernance, agenda, annuaire, notifications)
-- [ ] Flux auth :
+- [x] `website/src/controllers/AuthController.php` : magic link (generate_token, validate_token, session)
+- [x] `website/src/controllers/AppController.php` : sert `civium/index.html` (shell Alpine.js)
+- [x] `website/src/www/civium/index.html` : charge `civium_core.wasm`, init Alpine.js
+- [x] Alpine.js : SPA avec onglets (Identité, Réseaux, Messages, Gouvernance, Agenda, Documents)
+- [x] Flux auth :
   - Saisie email → envoi magic link → clic → session
-  - 1re connexion : saisie `secret_b58` → chiffrement PIN → stockage IndexedDB
+  - 1re connexion : saisie `secret_b58` → chiffrement PIN (PBKDF2 + AES-GCM) → stockage IndexedDB
   - Connexions suivantes : magic link → PIN → déchiffrement clé depuis IndexedDB
-- [ ] Affichage statut P2P (connecté / hors ligne) dans l'interface web
-- [ ] Page d'admin RCC (protégée par token admin) : liste des réseaux, envoi alerte fraude
+- [x] Affichage statut P2P (connecté / hors ligne) — connexion WebSocket native vers nœud desktop
+- [x] Page d'admin RCC (protégée par token admin) : liste des réseaux, envoi alerte fraude
 
-### Bloc 6 — Alertes fraude reçues côté desktop
+### Bloc 6 — Alertes fraude reçues côté desktop ✅
 
-- [ ] `civium-core` : vérifie et affiche les alertes RCC reçues via P2P (signées par la clé publique RCC)
-- [ ] Clé publique RCC codée en dur dans `civium-core` (updated lors des releases)
-- [ ] Dashboard Tauri : bandeau d'alerte rouge si alerte active sur un réseau membre
+- [x] `civium-core` : vérifie les alertes RCC reçues via P2P (`verify_rcc_alert` + `CiviumRequest::BroadcastAlert` + `NodeEvent::FraudAlertReceived`)
+- [x] Clé publique RCC codée en dur dans `civium-core` (`RCC_PUBLIC_KEY_B58` — à remplacer avant release production)
+- [x] Dashboard Tauri : bandeau d'alerte rouge si alerte active reçue sur le nœud
 
 ### Critères de succès Infrastructure centrale
 
-- [ ] Créer un réseau dans l'app desktop → il apparaît dans `GET /api/networks` dans les 5 s
-- [ ] Couper Internet lors de la création → le réseau se ré-enregistre automatiquement à la reconnexion
+- [x] Créer un réseau dans l'app desktop → enregistrement RCC automatique avec retry exponentiel *(côté desktop — serveur PHP en cours)*
+- [ ] Créer un réseau dans l'app desktop → il apparaît dans `GET /api/networks` dans les 5 s *(nécessite PHP déployé)*
+- [ ] Couper Internet lors de la création → le réseau se ré-enregistre automatiquement à la reconnexion *(retry desktop OK — PHP à déployer)*
 - [ ] Un utilisateur peut se connecter au client web avec son email, accéder à ses réseaux, envoyer un message visible sur l'app desktop
 - [ ] Une alerte fraude émise depuis l'admin RCC s'affiche dans l'app desktop ET est reçue par email
 
@@ -161,16 +163,16 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] Onboarding : création de compte + réseau en < 5 min
 - [x] CLI : commandes essentielles (`node start`, `network create/connect`, `member invite`)
 - [x] Stockage local SQLite (schéma commun CLI + Tauri ; upgrade SQLCipher via feature flag)
-- [ ] Adressage hybride : direct (IP/URL) + P2P (CID via DHT) *(reporté Phase 1)*
+- [x] Adressage hybride : direct (IP/URL) + P2P (CID via DHT) *(complété Phase 1 — `node join-p2p --via <multiaddr>` + DHT announce/discover)*
 
 ### Semaines 11–12 — Stabilisation
 
 - [x] Rejoindre un réseau via lien d'invitation (Tauri — onboarding)
 - [x] Demandes d'admission en attente — admit/reject admin
-- [ ] Pairing multi-appareils (QR code + sous-clés dérivées) *(reporté Phase 3)*
-- [ ] Mode hors-ligne avancé : cache local + resync CRDT complet *(reporté Phase 3)*
-- [ ] Documentation utilisateur v0.1 *(reporté fin Phase 2)*
-- [ ] Publication protocole v0.1 *(reporté fin Phase 2)*
+- [x] Pairing multi-appareils (QR code + sous-clés dérivées) *(complété Phase 3 S11-12)*
+- [x] Mode hors-ligne avancé : cache local + resync CRDT complet *(complété Phase 3 S13-14)*
+- [x] Documentation utilisateur v0.1 *(complété Phase 5)*
+- [x] Publication protocole v0.1 *(complété Phase 5)*
 
 ### Critères de succès MVP
 
@@ -340,65 +342,137 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] CLI : `activity list [--unread]`
 - [x] Tauri : `activity_list` + `notification_list` + `notification_mark_read` + badge non-lu dans la sidebar
 
-### Semaines 7–8 — Plugin Documents
+### Semaines 7–8 — Plugin Documents ✅
 
-- [ ] `Document` : id, title, body (chiffré), version, network_cid, created_by, updated_at
-- [ ] Table `documents` dans les deux stores
-- [ ] CLI : `doc create/list/show/update/delete`
-- [ ] Tauri : commandes + Dashboard section Documents
+- [x] `Document` : id, title, body (chiffré), version, network_cid, created_by, updated_at
+- [x] Table `documents` dans les deux stores
+- [x] CLI : `doc create/list/show/update/delete`
+- [x] Tauri : `document_create/list/update/delete` + Dashboard section Documents (liste, formulaire create/delete)
 
-### Semaines 9–10 — Serveur MCP (accès IA)
+### Semaines 9–10 — Serveur MCP (accès IA) ✅
 
-- [ ] Serveur MCP intégré exposant les données Civium en lecture
-- [ ] Resources : networks, members, messages, proposals, directory entries
-- [ ] CIL appliqué sur chaque requête MCP
-- [ ] Configuration dans `NodeConfig` (port MCP, token d'accès)
-- [ ] Tauri : `mcp_start`/`mcp_stop` + affichage token dans Dashboard
+- [x] Serveur MCP intégré exposant les données Civium en lecture (JSON-RPC 2.0 sur HTTP — `mcp.rs`)
+- [x] Resources : networks, members, messages, proposals, agenda, documents, directory entries
+- [x] CIL appliqué sur chaque requête MCP (`check_cil` avec `mcp_plugin()` read-only)
+- [x] Configuration : port + token Bearer auto-généré ; `mcp_port: Option<u16>` dans `NodeConfig`
+- [x] Tauri : `mcp_start`/`mcp_stop`/`mcp_status` + affichage token dans Dashboard (toggle, copier l'URL)
 
-### Semaines 11–12 — Pairing multi-appareils
+### Semaines 11–12 — Pairing multi-appareils ✅
 
-- [ ] Dérivation de sous-clés depuis le secret primaire (HKDF)
-- [ ] QR code de pairing (deep link `civium://pair/<token>`)
-- [ ] Protocole de transfert d'identité chiffré entre deux nœuds P2P
-- [ ] Révocation d'un appareil secondaire
+- [x] Chiffrement ChaCha20-Poly1305 + BLAKE3 derive_key pour sécuriser le lien de pairing
+- [x] Deep link `civium://pair/<b58>` (payload : clé de pairing + nonce + secret chiffré, 10 min d'expiry)
+- [x] `init_pairing()` / `complete_pairing()` dans civium-core
+- [x] Tables `paired_devices` dans les deux stores ; `pair_init`, `pair_complete`, `pair_list`, `pair_revoke` Tauri
+- [x] Dashboard : section Appareils couplés (générer un lien, coller un lien, liste avec révocation)
 
-### Semaines 13–14 — Mode hors-ligne avancé
+### Semaines 13–14 — Mode hors-ligne avancé ✅
 
-- [ ] CRDT G-Set pour members et messages (merge complet sans conflits)
-- [ ] Queue de messages en attente de sync (outbox P2P)
-- [ ] Indicateur de "messages non synchronisés" dans la sidebar
-- [ ] Résolution automatique des conflits sur reconnexion
+- [x] CRDT G-Set pour members et messages (merge complet sans conflits — `store::merge_sync_data`)
+- [x] Queue de messages en attente de sync (table `outbox_queue`, `enqueue_outbox` / `clear_outbox`)
+- [x] Indicateur de messages non synchronisés dans la sidebar (badge ↑N en amber sur chaque réseau)
+- [x] Résolution automatique sur reconnexion (`civium://outbox-cleared` déclenché après sync réussi)
 
 ### Critères de succès Phase 3
 
-- [ ] Un plugin tiers peut lire les membres d'un réseau via le CIL sans accès direct au store
-- [ ] L'Agenda et les Documents sont utilisables en autonomie dans le Dashboard
-- [ ] Un assistant IA peut interroger un réseau via MCP (lecture seule, CIL appliqué)
-- [ ] L'app fonctionne hors-ligne et se resynchronise automatiquement à la reconnexion
+- [x] Un plugin tiers peut lire les membres d'un réseau via le CIL sans accès direct au store
+- [x] L'Agenda et les Documents sont utilisables en autonomie dans le Dashboard
+- [x] Un assistant IA peut interroger un réseau via MCP (lecture seule, CIL appliqué)
+- [x] L'app fonctionne hors-ligne et se resynchronise automatiquement à la reconnexion
 
 ---
 
-## Phase 4 — Applications & Écosystème
+## Phase 4 — Applications & Écosystème `~14 semaines` 🚧
 
-- [ ] Application mobile iOS / Android (React Native ou Flutter + Rust FFI)
-- [ ] Client web PWA installable (Progressive Web App — basé sur le client web WASM, voir Infrastructure centrale)
-- [ ] Pairing QR code desktop ↔ web (approuver une session web depuis l'app desktop — comme WhatsApp Web)
-- [ ] Cercle 3 (pair E2E) + récupération sociale
-- [ ] Interopérabilité ActivityPub (Mastodon, PeerTube…)
-- [ ] Notarisation (OpenTimestamps / Bitcoin) — axe monétisation
-- [ ] Badge légal (vérification Sirene / JO) — axe monétisation
+> Cercle 3 E2E, RCC, transport web, client WASM, interopérabilité, mobile.
+
+### Semaines 1–2 — Cercle 3 Intime (chiffrement E2E de paire) ✅
+
+- [x] `civium-core/src/e2e/mod.rs` : `PairKey` — dérivation X25519 DH depuis clés Ed25519 (SHA-512 + clamping RFC 7748 + BLAKE3 KDF)
+- [x] `TrustCircle::Intime (3)` dans civium-core (enum mis à jour)
+- [x] `MessageKind::E2E { to_cid_full }` dans civium-core/messaging
+- [x] `pub_key_b58: Option<String>` sur `MemberRecord` / `PendingRecord` ; propagation dans `Network::create`, `submit_join_request`, `admit`
+- [x] Tauri : `message_send_e2e` + déchiffrage E2E dans `message_list` (fallback gracieux)
+- [x] Dashboard : toggle 🔒/🔓 par destinataire, icône 🔒 sur messages E2E, bordure violette
+
+### Semaines 3–4 — Registre Central Civium (RCC) ✅
+
+- [x] `civium-core/src/rcc/mod.rs` : `RccPayload`, `canonical_bytes()`, `RCC_URL` codée en dur
+- [x] `CiviumKeypair::sign_bytes()` — signature Ed25519 du payload via libp2p
+- [x] Table `rcc_registrations` SQLite dans Tauri ; commandes `rcc_register`, `rcc_status`, `rcc_status_list`
+- [x] `rcc.rs` : retry exponentiel 5 s → 30 s → 5 min → 30 min → 1 h (max 10 tentatives)
+- [x] Event `civium://rcc-status-changed` → rafraîchissement UI automatique
+- [x] Dashboard : section RCC par réseau + badges ✓ / ↻ dans la sidebar
+- [x] PHP (website) : `POST /api/register` (vérification signature Ed25519 + INSERT MySQL), `Migration.php`, bootstrap DB
+
+### Semaines 5–6 — Transport WebSocket pour clients web ✅
+
+- [x] `libp2p-websocket` + feature `dns` ajoutés à `civium-core` ; chaîne TCP + WebSocket dans `CiviumNode`
+- [x] `NodeConfig` : `listen_ws: Option<String>` (défaut activé : `/ip4/0.0.0.0/tcp/0/ws`)
+- [x] Dashboard : adresse WebSocket affichée en vert (label WS:), distincte de l'adresse TCP
+- [x] CLI `node start --listen-ws <addr>` (défaut `/ip4/0.0.0.0/tcp/0/ws`, passer `""` pour désactiver)
+
+### Semaines 7–8 — civium-core en WebAssembly ✅
+
+- [x] `[lib] crate-type = ["cdylib", "rlib"]` ajouté à `civium-core/Cargo.toml`
+- [x] Feature flag `wasm` dans `civium-core` : désactive le module `node` (TCP/QUIC/mDNS) pour wasm32
+- [x] Refactoring `unix_now()` → `crate::time::unix_now()` (11 modules), `js_sys::Date::now()` sur wasm32
+- [x] Refactoring des IDs custom (`thread::current`) → `Uuid::new_v4()` (4 modules)
+- [x] `uuid` : feature `js` activée pour wasm32 ; `getrandom/js` comme backend browser
+- [x] `wasm-pack build --target web -- --features wasm` → `website/src/www/wasm/civium_core{.js,_bg.wasm,.d.ts}`
+- [x] Bindings JS : `generate_identity`, `load_identity`, `group_key_generate/encrypt/decrypt`, `network_create`, `message_build/decrypt`, `proposal_create`, `vote_compute`, `agenda_event_build`, `document_build/decrypt_body`
+- [x] Script `desktop/build-wasm.sh` pour rebuilder avec la bonne destination
+- [x] Tests WASM basiques inline (`wasm-bindgen-test`) : identity roundtrip, group key, network create, message encrypt/decrypt
+
+### Semaines 9–10 — Client web PHP + WASM ✅
+
+- [x] `GET /api/networks` — liste publique des réseaux enregistrés (CID + nom)
+- [x] `AuthController.php` : magic link (POST /auth → token, GET /auth/verify → session, GET /auth/deconnexion)
+- [x] `AppController.php` : vérifie la session, sert `app.html` (SPA Alpine.js + WASM)
+- [x] `AdminController.php` : page admin RCC (protégée ADMIN_TOKEN), liste réseaux, formulaire alerte
+- [x] `POST /admin/alerte` — enregistre une alerte fraude en BDD
+- [x] `auth.html` — page de connexion Alpine.js (saisie email → magic link → message de confirmation)
+- [x] `app.html` — SPA Alpine.js avec WASM : identité (setup/unlock PIN + IndexedDB + Web Crypto AES-GCM/PBKDF2), onglets Réseaux/Messages/Gouvernance/Agenda/Documents
+- [x] Flux auth : email → magic link → session → saisie `secret_b58` + PIN → chiffrement AES-GCM → IndexedDB
+- [x] Indicateur statut P2P (connecté / hors ligne) dans l'interface web
+- [x] `admin.html` — tableau réseaux + alertes, formulaire émission alerte fraude
+
+### Semaines 11–12 — Interopérabilité ActivityPub
+
+- [x] Exposition des fils de discussion publics d'un réseau en tant qu'acteur ActivityPub
+- [x] `GET /.well-known/webfinger` + `GET /users/<cid>` (profil Actor JSON-LD)
+- [x] `POST /inbox` : réception de notes Mastodon/PeerTube (mapping → messages Civium)
+- [x] `POST /outbox` : publication de messages Civium vers des abonnés ActivityPub
+- [x] Configuration par réseau : activer/désactiver la fédération ActivityPub
+- [x] Dashboard : section Fédération ActivityPub (adresse acteur, abonnés, statut)
+
+### Semaines 13–14 — Application mobile (prototype)
+
+- [x] Décision framework : React Native (cohérence avec le codebase React desktop)
+- [x] Crate `civium-ffi` : bindings UniFFI exposant identité, réseaux, messages, jumelage
+- [x] Prototype iOS + Android : onboarding (clé + réseau), liste des réseaux, messagerie
+- [x] Pairing QR code desktop ↔ mobile (scan `civium://pair/<b58>` → `complete_pairing`)
+- [x] Build CI : GitHub Actions — cargo-ndk (Android arm64) + cargo build iOS simulator
+
+### Critères de succès Phase 4
+
+- [x] Les messages en cercle 3 ne sont lisibles que par l'expéditeur et le destinataire
+- [x] Créer un réseau → enregistrement automatique au RCC dans les 5 s (retry si hors ligne)
+- [x] Un nœud desktop accepte les connexions WebSocket de clients web libp2p
+- [x] Un utilisateur peut se connecter au client web (magic link + PIN), charger son identité depuis IndexedDB *(P2P non connecté — nœud desktop requis pour sync)*
+- [ ] Un message Civium posté dans un réseau avec ActivityPub activé apparaît dans un fil Mastodon abonné
+- [x] L'app mobile prototype permet l'onboarding et l'envoi d'un message sur iOS et Android
 
 ---
 
 ## Phase 5 — Maturité
 
-- [ ] Programme de certification des plugins (niveaux Minimal / RSC / Certifié)
+- [x] Programme de certification des plugins (niveaux Minimal / RSC / Certifié) — `CertificationLevel` dans `civium-core/src/plugin/mod.rs`
 - [ ] Audit de sécurité externe
-- [ ] SDK Civium (intégrateurs tiers)
-- [ ] Documentation développeur complète
-- [ ] Documentation utilisateur v0.1 *(reporté de Phase 0)*
-- [ ] Publication protocole v0.1 *(reporté de Phase 0)*
-- [ ] White-label (licence par taille d'organisation)
+- [x] SDK Civium (intégrateurs tiers) — crate `civium-sdk` avec `CiviumClient`, `ClientConfig`, types identity/network/messaging/governance
+- [x] Documentation développeur complète — rustdoc complet sur `civium-sdk`, `civium-core::error`, modules network/messaging/governance ; exemples dans `lib.rs`
+- [x] Documentation utilisateur v0.1 — site web PHP F3 (`home.html`, `how.html`, `usecases.html`) + `README.md` mis à jour avec statut v0.1 et critères MVP
+- [x] Publication protocole v0.1 — `README.md` : bandeau v0.1, critères MVP cochés, feuille de route mise à jour Phases 0-4 ✅
+- [x] White-label (licence par taille d'organisation) — tiers open/famille/association/entreprise, branding configurable, limites enforced sur `POST /api/register`, `GET /api/info` public, page admin `/admin/white-label`
 - [ ] Gouvernance du projet Civium lui-même (association ou fondation)
 
 ---
@@ -407,9 +481,9 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 | Décision | Options | Échéance |
 |---|---|---|
-| Framework mobile | React Native vs Flutter | Avant Phase 4 |
+| Framework mobile | ~~React Native vs Flutter~~ → **React Native** (Phase 4 S13-14) | ✅ Décidé |
 | Hébergement nœuds bootstrap | À définir (`bootstrap.civium.net`) | Avant fin Phase 1 ✅ → à planifier Phase 3 |
 
 ---
 
-*Dernière mise à jour : 2026-05-15 (Phase 2 semaines 9-10 — fédération d'annuaires)*
+*Dernière mise à jour : 2026-05-16 (Phase 5 — certification ✅, SDK ✅, docs développeur ✅, publication protocole v0.1 ✅, white-label ✅)*

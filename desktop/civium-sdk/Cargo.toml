@@ -1,0 +1,16 @@
+[package]
+name    = "civium-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level SDK for building applications on the Civium protocol"
+keywords    = ["civium", "p2p", "decentralized", "sovereign", "network"]
+categories  = ["network-programming", "cryptography"]
+
+[dependencies]
+civium-core = { path = "../civium-core" }
+tokio       = { workspace = true }
+anyhow      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tracing     = { workspace = true }

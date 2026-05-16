@@ -29,6 +29,8 @@ pub struct AppState {
     pub mcp_token: Mutex<Option<String>>,
     /// Port the MCP server is listening on.
     pub mcp_port: Mutex<Option<u16>>,
+    /// RCC fraud alerts received via P2P and verified with the RCC public key.
+    pub active_alerts: Mutex<Vec<civium_core::FraudAlert>>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -36,7 +38,9 @@ pub struct AppState {
 /// Start the P2P node in the background.  Never returns while the node is alive;
 /// call from inside `tauri::async_runtime::spawn`.
 pub async fn start_node(app_handle: AppHandle, keypair: CiviumKeypair, data_dir: PathBuf) {
-    let config = NodeConfig::default();
+    let config = store::open_db(&data_dir)
+        .map(|c| store::load_node_config(&c))
+        .unwrap_or_default();
     let (node, handle) = match CiviumNode::new(keypair, config).await {
         Ok(pair) => pair,
         Err(e) => {
@@ -170,6 +174,48 @@ async fn run_event_loop(
                     }
                 }
             }
+
+            NodeEvent::FraudAlertReceived { alert } => {
+                eprintln!("[civium] RCC fraud alert received: {} — {}", alert.alert_type, alert.description);
+                app_handle
+                    .state::<AppState>()
+                    .active_alerts
+                    .lock()
+                    .unwrap()
+                    .push(alert.clone());
+                let _ = app_handle.emit("civium://fraud-alert", &alert);
+            }
+
+            NodeEvent::InboundConnectRequest { from, request_id, signed_request } => {
+                // Forward to the application: store as Validating and emit an event.
+                eprintln!("[civium] Incoming APC from {} ({})", signed_request.payload.from_name, from);
+                if let Ok(conn) = store::open_db(&data_dir) {
+                    if let Ok(net) = store::find_network_by_full_cid(&conn, &signed_request.payload.to_cid_full) {
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                        let record = civium_core::ConnectionRecord {
+                            peer_cid_full:    signed_request.payload.from_cid_full.clone(),
+                            peer_cid_short:   signed_request.payload.from_cid_full.chars().take(8).collect(),
+                            peer_name:        signed_request.payload.from_name.clone(),
+                            peer_pubkey_b58:  signed_request.payload.from_pubkey_b58.clone(),
+                            state:            civium_core::ConnectionState::Validating,
+                            initiated_at:     ts,
+                            updated_at:       ts,
+                            our_terms:        civium_core::ShareTerms::default(),
+                            their_terms:      Some(signed_request.payload.from_terms.clone()),
+                            incoming_request: Some(signed_request.clone()),
+                            apc:              None,
+                        };
+                        let _ = store::save_connection(&conn, net.cid_full(), &record);
+                        let _ = app_handle.emit("civium://connect-request", serde_json::json!({
+                            "network_cid_full": net.cid_full(),
+                            "from_name": signed_request.payload.from_name,
+                            "from_cid_full": signed_request.payload.from_cid_full,
+                            "request_id": request_id.to_string(),
+                        }));
+                    }
+                }
+            }
         }
     }
 }
@@ -237,6 +283,16 @@ fn handle_inbound(data_dir: &PathBuf, request: &CiviumRequest) -> CiviumResponse
 
         CiviumRequest::Join { .. } => CiviumResponse::JoinRejected {
             reason: "Use the Civium app to accept join requests".into(),
+        },
+
+        // BroadcastAlert is intercepted before this function is called (see run_event_loop).
+        CiviumRequest::BroadcastAlert { .. } => CiviumResponse::Error {
+            message: "unexpected BroadcastAlert in handle_inbound".into(),
+        },
+
+        // ConnectRequest is intercepted before this function (auto-accept or InboundConnectRequest event).
+        CiviumRequest::ConnectRequest { .. } => CiviumResponse::Error {
+            message: "unexpected ConnectRequest in handle_inbound".into(),
         },
     }
 }

@@ -42,6 +42,7 @@ fn mcp_plugin() -> PluginRecord {
                 PluginPermission::ReadDocuments,
                 PluginPermission::ReadConnections,
             ],
+            certification: civium_core::CertificationLevel::Uncertified,
         },
     }
 }

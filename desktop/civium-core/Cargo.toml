@@ -4,7 +4,42 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+# rlib for native use by civium-cli and civium-tauri.
+# cdylib for wasm-pack (compiles to a .wasm dynamic library for the browser).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Expose wasm-bindgen JS bindings (for wasm-pack builds targeting the browser).
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+
 [dependencies]
+# Pure Rust — compatible with both native and wasm32 targets
+thiserror.workspace    = true
+tracing.workspace      = true
+serde.workspace        = true
+serde_json.workspace   = true
+bs58.workspace         = true
+rand.workspace         = true
+# uuid: v4 on native; v4+js on wasm32 (browser crypto.getRandomValues backend)
+blake3                 = "1"
+zeroize                = { version = "1", features = ["derive"] }
+chacha20poly1305       = "0.10"
+curve25519-dalek       = { version = "4", features = ["digest"] }
+sha2                   = "0.10"
+futures.workspace      = true
+
+# libp2p base — provides identity types (Ed25519, PeerId, Multiaddr), WASM-compatible.
+# Native builds extend this with transport features in the section below.
+libp2p = { version = "0.55" }
+
+# JS bindings — opt-in via `wasm` feature (wasm-pack builds only)
+wasm-bindgen          = { version = "0.2", optional = true }
+wasm-bindgen-futures  = { version = "0.4", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid  = { workspace = true }
+# Native: full libp2p transport stack + Tokio async runtime
 libp2p = { version = "0.55", features = [
     "tokio",
     "tcp",
@@ -20,17 +55,14 @@ libp2p = { version = "0.55", features = [
     "request-response",
     "cbor",
 ] }
-tokio.workspace     = true
-thiserror.workspace = true
-tracing.workspace   = true
-serde.workspace     = true
-bs58.workspace       = true
-futures.workspace    = true
-rand.workspace       = true
-serde_json.workspace = true
-blake3            = "1"
-zeroize           = { version = "1", features = ["derive"] }
-chacha20poly1305  = "0.10"
-uuid.workspace    = true
-curve25519-dalek  = { version = "4", features = ["digest"] }
-sha2              = "0.10"
+tokio = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid      = { version = "1", features = ["v4", "js"] }
+# Enable browser's crypto.getRandomValues() backend for rand
+getrandom = { version = "0.2", features = ["js"] }
+# Browser time + JS interop (used by time.rs and wasm.rs)
+js-sys    = "0.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

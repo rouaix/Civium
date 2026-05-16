@@ -22,6 +22,12 @@ pub enum CiviumRequest {
         since_ts: u64,
     },
     Ping,
+    /// Broadcast a signed RCC fraud alert to this node.
+    BroadcastAlert { payload_json: String, signature_b58: String },
+    /// Propose an inter-network APC (Accord de Partage Civium) to a peer node.
+    ///
+    /// `signed_request_json` is a serialised [`crate::connection::SignedRequest`].
+    ConnectRequest { signed_request_json: String },
 }
 
 /// Responses returned by a Civium node.
@@ -39,5 +45,10 @@ pub enum CiviumResponse {
         messages: Vec<Message>,
     },
     Pong,
+    /// APC accepted — `apc_json` is a serialised [`crate::connection::ShareAgreement`]
+    /// containing both the original request and the acceptance, both signed.
+    ConnectAccepted { apc_json: String },
+    /// APC rejected by the receiving network.
+    ConnectRejected { reason: String },
     Error { message: String },
 }

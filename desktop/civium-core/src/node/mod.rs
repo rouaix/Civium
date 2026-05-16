@@ -50,18 +50,29 @@ pub enum NodeEvent {
     InboundRequest { from: PeerId, request_id: InboundRequestId, request: CiviumRequest },
     /// Response to a previously sent request arrived.
     OutboundResponse { request_id: OutboundRequestId, response: CiviumResponse },
+    /// A RCC fraud alert was received over P2P and its signature was verified.
+    FraudAlertReceived { alert: crate::rcc::FraudAlert },
+    /// An incoming inter-network connection request was received and needs admin review.
+    /// Only emitted when `auto_accept_connections` is `false`.
+    InboundConnectRequest {
+        from: PeerId,
+        request_id: InboundRequestId,
+        signed_request: crate::connection::SignedRequest,
+    },
 }
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
 pub struct CiviumNode {
-    swarm:            libp2p::Swarm<CiviumBehaviour>,
-    cid:              Cid,
-    listen_addrs:     Vec<Multiaddr>,
-    command_rx:       mpsc::Receiver<NodeCommand>,
-    event_tx:         mpsc::Sender<NodeEvent>,
+    swarm:                   libp2p::Swarm<CiviumBehaviour>,
+    cid:                     Cid,
+    keypair:                 CiviumKeypair,
+    listen_addrs:            Vec<Multiaddr>,
+    command_rx:              mpsc::Receiver<NodeCommand>,
+    event_tx:                mpsc::Sender<NodeEvent>,
     /// Pending response channels, keyed by inbound request ID.
-    pending_responses: HashMap<InboundRequestId, ResponseChannel<CiviumResponse>>,
+    pending_responses:       HashMap<InboundRequestId, ResponseChannel<CiviumResponse>>,
+    auto_accept_connections: bool,
 }
 
 /// Handle held by the application — send commands, receive events.
@@ -113,6 +124,12 @@ impl CiviumNode {
             swarm.listen_on(ws_addr).map_err(|e: libp2p::TransportError<std::io::Error>| CiviumError::Node(e.to_string()))?;
         }
 
+        if let Some(ext_str) = &config.external_addr {
+            if let Ok(ext_addr) = ext_str.parse::<Multiaddr>() {
+                swarm.add_external_address(ext_addr);
+            }
+        }
+
         for addr_str in &config.bootstrap_peers {
             let addr: Multiaddr = addr_str.parse()
                 .map_err(|e: libp2p::multiaddr::Error| CiviumError::Node(e.to_string()))?;
@@ -132,16 +149,49 @@ impl CiviumNode {
         let node = Self {
             swarm,
             cid,
-            listen_addrs:     Vec::new(),
-            command_rx:       cmd_rx,
-            event_tx:         evt_tx,
-            pending_responses: HashMap::new(),
+            keypair,
+            listen_addrs:            Vec::new(),
+            command_rx:              cmd_rx,
+            event_tx:                evt_tx,
+            pending_responses:       HashMap::new(),
+            auto_accept_connections: config.auto_accept_connections,
         };
 
         Ok((node, handle))
     }
 
     pub fn cid(&self) -> &Cid { &self.cid }
+
+    /// Build an auto-accept response for an incoming `ConnectRequest`.
+    ///
+    /// Signs the acceptance with this node's keypair. The `to_cid_full` in the
+    /// signed request must match a network administered by this node — here we
+    /// trust the caller (root node) to only run this when appropriate.
+    fn build_auto_accept(&self, signed_request_json: &str) -> CiviumResponse {
+        let signed_req = match serde_json::from_str::<crate::connection::SignedRequest>(signed_request_json) {
+            Ok(r) => r,
+            Err(e) => return CiviumResponse::ConnectRejected {
+                reason: format!("invalid request payload: {e}"),
+            },
+        };
+
+        let accept = match crate::connection::ShareAgreement::build_from_acceptance(
+            &signed_req,
+            &self.keypair,
+            crate::bootstrap::CIVIUM_ROOT_NETWORK_NAME,
+            crate::connection::ShareTerms::default(),
+        ) {
+            Ok(apc) => apc,
+            Err(e) => return CiviumResponse::ConnectRejected {
+                reason: format!("APC build error: {e}"),
+            },
+        };
+
+        match serde_json::to_string(&accept) {
+            Ok(json) => CiviumResponse::ConnectAccepted { apc_json: json },
+            Err(e)   => CiviumResponse::ConnectRejected { reason: format!("serialisation error: {e}") },
+        }
+    }
 }
 
 /// Extract a PeerId from a multiaddr containing a `/p2p/<peer_id>` component.
@@ -263,12 +313,55 @@ impl CiviumNode {
                 }
             ) => {
                 debug!(%peer, "inbound Civium request");
-                self.pending_responses.insert(request_id, channel);
-                let _ = self.event_tx.send(NodeEvent::InboundRequest {
-                    from: peer,
-                    request_id,
-                    request,
-                }).await;
+
+                // BroadcastAlert — verified inline, no app roundtrip.
+                if let CiviumRequest::BroadcastAlert { ref payload_json, ref signature_b58 } = request {
+                    let response = match crate::rcc::verify_rcc_alert(payload_json, signature_b58) {
+                        Ok(alert) => {
+                            let _ = self.event_tx.send(NodeEvent::FraudAlertReceived { alert }).await;
+                            CiviumResponse::Pong
+                        }
+                        Err(e) => {
+                            warn!(%peer, "invalid RCC alert: {e}");
+                            CiviumResponse::Error { message: e.to_string() }
+                        }
+                    };
+                    let _ = self.swarm.behaviour_mut().request_response
+                        .send_response(channel, response);
+
+                // ConnectRequest — auto-accept if flag is set, otherwise forward to app.
+                } else if let CiviumRequest::ConnectRequest { ref signed_request_json } = request {
+                    if self.auto_accept_connections {
+                        let response = self.build_auto_accept(signed_request_json);
+                        let _ = self.swarm.behaviour_mut().request_response
+                            .send_response(channel, response);
+                    } else {
+                        match serde_json::from_str::<crate::connection::SignedRequest>(signed_request_json) {
+                            Ok(signed_request) => {
+                                self.pending_responses.insert(request_id, channel);
+                                let _ = self.event_tx.send(NodeEvent::InboundConnectRequest {
+                                    from: peer,
+                                    request_id,
+                                    signed_request,
+                                }).await;
+                            }
+                            Err(e) => {
+                                warn!(%peer, "invalid ConnectRequest payload: {e}");
+                                let _ = self.swarm.behaviour_mut().request_response
+                                    .send_response(channel, CiviumResponse::ConnectRejected {
+                                        reason: format!("invalid request payload: {e}"),
+                                    });
+                            }
+                        }
+                    }
+                } else {
+                    self.pending_responses.insert(request_id, channel);
+                    let _ = self.event_tx.send(NodeEvent::InboundRequest {
+                        from: peer,
+                        request_id,
+                        request,
+                    }).await;
+                }
             }
 
             // ── Request-response: outbound response ───────────────────────────

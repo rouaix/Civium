@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 /// A shared document belonging to a Civium network.
 /// The body is stored encrypted with the network group key.
@@ -41,15 +41,5 @@ impl Document {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
-fn uuid() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    unix_now().hash(&mut h);
-    std::thread::current().id().hash(&mut h);
-    format!("{:016x}-{:016x}", h.finish(), h.finish().wrapping_add(0xcafef00d))
-}
+fn unix_now() -> u64 { crate::time::unix_now() }
+fn uuid() -> String { Uuid::new_v4().to_string() }

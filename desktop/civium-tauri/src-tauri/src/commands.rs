@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use civium_core::{
     network::{Invitation, Network},
@@ -34,6 +34,8 @@ pub struct NetworkInfo {
     pub member_count: usize,
     pub is_directory: bool,
     pub is_rrm: bool,
+    pub ap_enabled: bool,
+    pub ap_actor_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -112,6 +114,7 @@ pub fn network_create(
     app: AppHandle,
     name: String,
     display_name: String,
+    privacy: bool,
 ) -> Result<NetworkInfo, String> {
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
@@ -127,9 +130,23 @@ pub fn network_create(
         member_count: network.data.members.len(),
         is_directory: false,
         is_rrm: false,
+        ap_enabled: false,
+        ap_actor_url: None,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+
+    // Connexion automatique au réseau racine "civium" (permanente, non révocable).
+    let app_bg = app.clone();
+    let cid_full  = network.cid_full().to_string();
+    let cid_short = network.cid_short().to_string();
+    let net_name  = network.name().to_string();
+    tauri::async_runtime::spawn(async move {
+        crate::root_connect::connect_to_root_with_retry(
+            app_bg, cid_full, cid_short, net_name, privacy,
+        ).await;
+    });
+
     Ok(info)
 }
 
@@ -146,6 +163,8 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
             is_rrm: n.data.kind == NetworkKind::Rrm,
+            ap_enabled: n.data.ap_enabled,
+            ap_actor_url: n.data.ap_actor_url.clone(),
         })
         .collect())
 }
@@ -224,6 +243,8 @@ pub fn network_join(
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
         is_rrm: network.data.kind == NetworkKind::Rrm,
+        ap_enabled: network.data.ap_enabled,
+        ap_actor_url: network.data.ap_actor_url.clone(),
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -363,11 +384,13 @@ pub async fn network_join_p2p(
 
     // Start a short-lived P2P node for this join.
     let config = NodeConfig {
-        listen_tcp:      "/ip4/0.0.0.0/tcp/0".into(),
-        listen_quic:     "/ip4/0.0.0.0/udp/0/quic-v1".into(),
-        listen_ws:       None,
-        bootstrap_peers: vec![peer_addr.clone()],
-        mcp_port:        None,
+        listen_tcp:               "/ip4/0.0.0.0/tcp/0".into(),
+        listen_quic:              "/ip4/0.0.0.0/udp/0/quic-v1".into(),
+        listen_ws:                None,
+        external_addr:            None,
+        bootstrap_peers:          vec![peer_addr.clone()],
+        mcp_port:                 None,
+        auto_accept_connections:  false,
     };
     let (node, mut handle) =
         CiviumNode::new(keypair, config).await.map_err(|e| e.to_string())?;
@@ -432,6 +455,8 @@ pub async fn network_join_p2p(
         member_count: network.data.members.len(),
         is_directory: network.data.kind == NetworkKind::Directory,
         is_rrm: network.data.kind == NetworkKind::Rrm,
+        ap_enabled: network.data.ap_enabled,
+        ap_actor_url: network.data.ap_actor_url.clone(),
     })
 }
 
@@ -1181,6 +1206,8 @@ pub fn directory_create(
         member_count: network.data.members.len(),
         is_directory: true,
         is_rrm: false,
+        ap_enabled: false,
+        ap_actor_url: None,
     })
 }
 
@@ -1199,6 +1226,8 @@ pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, Strin
             member_count: n.data.members.len(),
             is_directory: n.data.kind == NetworkKind::Directory,
             is_rrm: n.data.kind == NetworkKind::Rrm,
+            ap_enabled: n.data.ap_enabled,
+            ap_actor_url: n.data.ap_actor_url.clone(),
         })
         .collect())
 }
@@ -1426,6 +1455,8 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
         member_count: network.data.members.len(),
         is_directory: false,
         is_rrm: true,
+        ap_enabled: false,
+        ap_actor_url: None,
     })
 }
 
@@ -1690,6 +1721,7 @@ pub struct PluginInfo {
     pub author: String,
     pub permissions: Vec<String>,
     pub is_system: bool,
+    pub certification: String,
     pub state: String,
     pub installed_at: u64,
 }
@@ -1707,6 +1739,7 @@ pub fn plugin_list(app: AppHandle) -> Result<Vec<PluginInfo>, String> {
         author: r.manifest.author,
         permissions: r.manifest.permissions.iter().map(|p| p.to_string()).collect(),
         is_system: r.manifest.is_system,
+        certification: r.manifest.certification.to_string(),
         state: r.state.to_string(),
         installed_at: r.installed_at,
     }).collect())
@@ -2193,6 +2226,379 @@ pub fn rcc_status_list(app: AppHandle) -> Result<Vec<RccStatusInfo>, String> {
     }).collect())
 }
 
+/// Force un ré-enregistrement RCC, même si le statut est déjà "registered".
+/// Utile quand la base de données du RCC a été vidée ou corrompue.
+#[tauri::command]
+pub fn rcc_force_retry(
+    app: AppHandle,
+    network_cid: String,
+) -> Result<RccStatusInfo, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let cid_short = network.cid_short().to_string();
+
+    let existing = store::get_rcc_registration(&conn, &cid_short)
+        .ok_or("Aucun enregistrement RCC trouvé pour ce réseau. Utilisez rcc_register d'abord.")?;
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let reg = store::RccRegistration {
+        network_cid_short: cid_short.clone(),
+        network_cid_full: network.cid_full().to_string(),
+        network_name: existing.network_name.clone(),
+        admin_email: existing.admin_email.clone(),
+        status: "pending".to_string(),
+        attempts: 0,
+        last_attempt: None,
+        registered_at: now,
+    };
+    store::save_rcc_registration(&conn, &reg).map_err(|e| e.to_string())?;
+    drop(conn);
+
+    let data_dir_bg = data_dir(&app);
+    let app_bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::rcc::register_with_retry(app_bg, data_dir_bg, cid_short).await;
+    });
+
+    Ok(RccStatusInfo {
+        network_cid_short: reg.network_cid_short,
+        network_name: reg.network_name,
+        admin_email: reg.admin_email,
+        status: reg.status,
+        attempts: reg.attempts,
+        last_attempt: reg.last_attempt,
+        registered_at: reg.registered_at,
+        rcc_url: RCC_URL.to_string(),
+    })
+}
+
+/// Marque directement un réseau comme enregistré au RCC dans la base locale.
+/// À utiliser quand le serveur RCC confirme l'enregistrement mais le statut local est bloqué.
+#[tauri::command]
+pub fn rcc_mark_registered(app: AppHandle, network_cid: String) -> Result<RccStatusInfo, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let cid_short = network.cid_short().to_string();
+
+    let existing = store::get_rcc_registration(&conn, &cid_short)
+        .ok_or("Aucun enregistrement RCC trouvé. Lancez d'abord rcc_register.")?;
+
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    store::update_rcc_status(&conn, &cid_short, "registered", existing.attempts, now)
+        .map_err(|e| e.to_string())?;
+
+    let updated = store::get_rcc_registration(&conn, &cid_short)
+        .ok_or("Erreur lecture après mise à jour")?;
+
+    let _ = app.emit("civium://rcc-status-changed", serde_json::json!({
+        "network_cid_short": cid_short,
+        "status": "registered",
+    }));
+
+    Ok(RccStatusInfo {
+        network_cid_short: updated.network_cid_short,
+        network_name:      updated.network_name,
+        admin_email:       updated.admin_email,
+        status:            updated.status,
+        attempts:          updated.attempts,
+        last_attempt:      updated.last_attempt,
+        registered_at:     updated.registered_at,
+        rcc_url:           RCC_URL.to_string(),
+    })
+}
+
+// ── Hub sync ──────────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct HubConfigInfo {
+    pub hub_url:      String,
+    pub enabled:      bool,
+    pub last_sync_ts: u64,
+}
+
+/// Configure l'URL du hub pour un réseau.
+#[tauri::command]
+pub fn hub_config_set(
+    app: AppHandle,
+    network_cid: String,
+    hub_url: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let existing = store::get_hub_config(&conn, network.cid_short());
+    let cfg = store::HubConfig {
+        network_cid_short: network.cid_short().to_string(),
+        hub_url:           hub_url.trim_end_matches('/').to_string(),
+        enabled,
+        last_sync_ts:      existing.map(|c| c.last_sync_ts).unwrap_or(0),
+    };
+    store::set_hub_config(&conn, &cfg).map_err(|e| e.to_string())
+}
+
+/// Retourne la config hub d'un réseau.
+#[tauri::command]
+pub fn hub_config_get(app: AppHandle, network_cid: String) -> Result<Option<HubConfigInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(store::get_hub_config(&conn, network.cid_short()).map(|c| HubConfigInfo {
+        hub_url:      c.hub_url,
+        enabled:      c.enabled,
+        last_sync_ts: c.last_sync_ts,
+    }))
+}
+
+/// Enregistre le réseau sur le hub distant (signe avec la clé de l'identité locale).
+#[tauri::command]
+pub async fn hub_network_register(
+    app: AppHandle,
+    network_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let cfg = store::get_hub_config(&conn, network.cid_short())
+        .ok_or("hub non configuré pour ce réseau")?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    let canonical = format!(
+        "register|{}|{}|{}|{}",
+        network.cid_full(), network.name(), keypair.cid().full(), timestamp
+    );
+    let sig_bytes = keypair.sign_bytes(canonical.as_bytes()).map_err(|e| e.to_string())?;
+    let sig_b58   = bs58::encode(&sig_bytes).into_string();
+
+    let body = serde_json::json!({
+        "network_cid":  network.cid_full(),
+        "network_name": network.name(),
+        "admin_cid":    keypair.cid().full(),
+        "admin_pubkey": keypair.pub_key_b58(),
+        "timestamp":    timestamp,
+        "signature":    sig_b58,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| e.to_string())?;
+
+    let url = format!("{}/hub/network/register", cfg.hub_url);
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("réseau : {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("hub {}: {text}", status.as_u16()));
+    }
+    Ok(())
+}
+
+/// Rejoint le réseau sur le hub (pour les membres qui ne sont pas l'admin).
+#[tauri::command]
+pub async fn hub_member_join(
+    app: AppHandle,
+    network_cid: String,
+    display_name: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let cfg = store::get_hub_config(&conn, network.cid_short())
+        .ok_or("hub non configuré pour ce réseau")?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    let canonical = format!(
+        "join|{}|{}|{}|{}",
+        network.cid_full(), keypair.cid().full(), display_name, timestamp
+    );
+    let sig_bytes = keypair.sign_bytes(canonical.as_bytes()).map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({
+        "network_cid":  network.cid_full(),
+        "member_cid":   keypair.cid().full(),
+        "display_name": display_name,
+        "pubkey_b58":   keypair.pub_key_b58(),
+        "timestamp":    timestamp,
+        "signature":    bs58::encode(&sig_bytes).into_string(),
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build().map_err(|e| e.to_string())?;
+
+    let url = format!("{}/hub/member/join", cfg.hub_url);
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("réseau : {e}"))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("hub {}: {text}", status.as_u16()));
+    }
+    Ok(())
+}
+
+/// Pousse les messages en attente vers le hub, puis tire les nouveaux.
+/// Retourne le nombre de messages reçus.
+#[tauri::command]
+pub async fn hub_sync(app: AppHandle, network_cid: String) -> Result<u32, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let cfg = store::get_hub_config(&conn, network.cid_short())
+        .ok_or("hub non configuré pour ce réseau")?;
+    if !cfg.enabled {
+        return Ok(0);
+    }
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let cid_short = network.cid_short().to_string();
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build().map_err(|e| e.to_string())?;
+
+    // ── Auto-join : s'enregistrer comme membre si ce n'est pas déjà fait ─
+    {
+        let ts_join = timestamp;
+        let display_name = keypair.cid().short().to_string();
+        let canonical_join = format!(
+            "join|{}|{}|{}|{}",
+            network.cid_full(), keypair.cid().full(), display_name, ts_join
+        );
+        if let Ok(sig_join) = keypair.sign_bytes(canonical_join.as_bytes()) {
+            let join_body = serde_json::json!({
+                "network_cid":  network.cid_full(),
+                "member_cid":   keypair.cid().full(),
+                "display_name": display_name,
+                "pubkey_b58":   keypair.pub_key_b58(),
+                "timestamp":    ts_join,
+                "signature":    bs58::encode(&sig_join).into_string(),
+            });
+            let join_url = format!("{}/hub/member/join", cfg.hub_url);
+            let _ = client.post(&join_url).json(&join_body).send().await;
+        }
+    }
+
+    // ── Push : envoyer les messages de l'outbox ────────────────────────────
+    let messages = store::load_messages(&conn, &cid_short)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|m| m.sent_at >= cfg.last_sync_ts.saturating_sub(300))
+        .collect::<Vec<_>>();
+
+    if !messages.is_empty() {
+        let canonical = format!("push|{}|{}|{}", network.cid_full(), keypair.cid().full(), timestamp);
+        let sig = bs58::encode(
+            keypair.sign_bytes(canonical.as_bytes()).map_err(|e| e.to_string())?
+        ).into_string();
+
+        let body = serde_json::json!({
+            "network_cid": network.cid_full(),
+            "member_cid":  keypair.cid().full(),
+            "timestamp":   timestamp,
+            "signature":   sig,
+            "messages":    messages.iter().map(|m| serde_json::to_value(m).unwrap_or_default()).collect::<Vec<_>>(),
+        });
+
+        let url = format!("{}/hub/sync/push", cfg.hub_url);
+        let _ = client.post(&url).json(&body).send().await;
+    }
+
+    // ── Pull : tirer les messages depuis last_sync_ts ──────────────────────
+    let since = cfg.last_sync_ts;
+    let canonical_pull = format!("pull|{}|{}|{}|{}", network.cid_full(), keypair.cid().full(), since, timestamp);
+    let sig_pull = bs58::encode(
+        keypair.sign_bytes(canonical_pull.as_bytes()).map_err(|e| e.to_string())?
+    ).into_string();
+
+    let url = format!(
+        "{}/hub/sync/pull?network_cid={}&member_cid={}&since={}&timestamp={}&signature={}",
+        cfg.hub_url,
+        urlencoding::encode(network.cid_full()),
+        urlencoding::encode(keypair.cid().full()),
+        since,
+        timestamp,
+        urlencoding::encode(&sig_pull),
+    );
+
+    let resp = client.get(&url).send().await.map_err(|e| format!("réseau : {e}"))?;
+    let pull_status = resp.status();
+    if !pull_status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("hub pull {}: {text}", pull_status.as_u16()));
+    }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let remote_msgs = json["messages"].as_array().cloned().unwrap_or_default();
+    let count = remote_msgs.len() as u32;
+
+    // Stocker les messages reçus
+    for msg_val in &remote_msgs {
+        if let Ok(msg) = serde_json::from_value::<civium_core::Message>(msg_val.clone()) {
+            let _ = store::save_message(&conn, &cid_short, &msg);
+        }
+    }
+
+    // Mettre à jour le timestamp de dernière sync
+    store::update_hub_last_sync(&conn, &cid_short, timestamp)
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit("civium://hub-sync-completed", &cid_short);
+
+    Ok(count)
+}
+
+// ── Node settings ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct NodeSettingsInfo {
+    pub tcp_port:      u16,
+    pub ws_port:       u16,
+    pub external_addr: String,
+    pub listen_addrs:  Vec<String>,
+}
+
+/// Retourne les paramètres réseau du nœud local + ses adresses d'écoute actuelles.
+#[tauri::command]
+pub fn node_settings_get(app: AppHandle) -> Result<NodeSettingsInfo, String> {
+    let conn = open(&app)?;
+    let tcp_port = store::get_node_setting(&conn, "tcp_port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    let ws_port = store::get_node_setting(&conn, "ws_port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    let external_addr = store::get_node_setting(&conn, "external_addr")
+        .unwrap_or_default();
+    let listen_addrs = app.state::<crate::node::AppState>()
+        .listen_addrs
+        .lock()
+        .unwrap()
+        .clone();
+    Ok(NodeSettingsInfo { tcp_port, ws_port, external_addr, listen_addrs })
+}
+
+/// Enregistre les paramètres réseau. Nécessite un redémarrage de l'app pour être pris en compte.
+#[tauri::command]
+pub fn node_settings_set(
+    app: AppHandle,
+    tcp_port: u16,
+    ws_port: u16,
+    external_addr: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_node_setting(&conn, "tcp_port", &tcp_port.to_string()).map_err(|e| e.to_string())?;
+    store::set_node_setting(&conn, "ws_port",  &ws_port.to_string()).map_err(|e| e.to_string())?;
+    store::set_node_setting(&conn, "external_addr", &external_addr).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── Pairing ───────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -2275,4 +2681,207 @@ pub fn pair_revoke(app: AppHandle, device_id: String) -> Result<(), String> {
     }
     device.revoke();
     store::save_paired_device(&conn, &device).map_err(|e| e.to_string())
+}
+
+// ── ActivityPub commands ──────────────────────────────────────────────────────
+
+use civium_core::{ApFollower, ApPost};
+
+#[derive(Serialize)]
+pub struct ApStatusInfo {
+    pub enabled: bool,
+    pub actor_url: Option<String>,
+    pub followers_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct ApFollowerInfo {
+    pub actor_url: String,
+    pub inbox_url: String,
+    pub followed_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct ApPostInfo {
+    pub id: i64,
+    pub note_id: String,
+    pub content: String,
+    pub ap_activity_id: Option<String>,
+    pub posted_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct ApPostResult {
+    pub note_id: String,
+    pub actor_url: String,
+    pub delivered_to: u32,
+}
+
+/// Active la fédération ActivityPub pour un réseau via le RCC.
+#[tauri::command]
+pub async fn ap_enable(app: AppHandle, network_cid: String) -> Result<ApStatusInfo, String> {
+    let conn     = open(&app)?;
+    let keypair  = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    if network.data.ap_enabled {
+        let followers = store::ap_list_followers(&conn, &network_cid).map_err(|e| e.to_string())?;
+        return Ok(ApStatusInfo {
+            enabled: true,
+            actor_url: network.data.ap_actor_url.clone(),
+            followers_count: followers.len(),
+        });
+    }
+
+    let actor_url = crate::ap::enable_ap(
+        network.cid_full(),
+        network.cid_short(),
+        &keypair,
+    ).await?;
+
+    network.data.ap_enabled   = true;
+    network.data.ap_actor_url = Some(actor_url.clone());
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+
+    Ok(ApStatusInfo {
+        enabled: true,
+        actor_url: Some(actor_url),
+        followers_count: 0,
+    })
+}
+
+/// Désactive la fédération ActivityPub (localement seulement — n'efface pas les abonnés côté RCC).
+#[tauri::command]
+pub fn ap_disable(app: AppHandle, network_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    network.data.ap_enabled   = false;
+    network.data.ap_actor_url = None;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())
+}
+
+/// Retourne l'état de la fédération ActivityPub pour un réseau.
+#[tauri::command]
+pub fn ap_status(app: AppHandle, network_cid: String) -> Result<ApStatusInfo, String> {
+    let conn    = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let followers = store::ap_list_followers(&conn, &network_cid).unwrap_or_default();
+    Ok(ApStatusInfo {
+        enabled: network.data.ap_enabled,
+        actor_url: network.data.ap_actor_url.clone(),
+        followers_count: followers.len(),
+    })
+}
+
+/// Liste les abonnés ActivityPub d'un réseau (synchronisés depuis le RCC).
+#[tauri::command]
+pub fn ap_list_followers(app: AppHandle, network_cid: String) -> Result<Vec<ApFollowerInfo>, String> {
+    let conn      = open(&app)?;
+    let followers = store::ap_list_followers(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(followers.into_iter().map(|f| ApFollowerInfo {
+        actor_url:   f.actor_url,
+        inbox_url:   f.inbox_url,
+        followed_at: f.followed_at,
+    }).collect())
+}
+
+/// Liste les derniers posts ActivityPub d'un réseau.
+#[tauri::command]
+pub fn ap_list_posts(app: AppHandle, network_cid: String) -> Result<Vec<ApPostInfo>, String> {
+    let conn  = open(&app)?;
+    let posts = store::ap_list_posts(&conn, &network_cid, 20).map_err(|e| e.to_string())?;
+    Ok(posts.into_iter().map(|p| ApPostInfo {
+        id:             p.id,
+        note_id:        p.note_id,
+        content:        p.content,
+        ap_activity_id: p.ap_activity_id,
+        posted_at:      p.posted_at,
+    }).collect())
+}
+
+/// Publie une note publique sur ActivityPub via le RCC.
+#[tauri::command]
+pub async fn ap_post(
+    app: AppHandle,
+    network_cid: String,
+    content: String,
+) -> Result<ApPostResult, String> {
+    if content.trim().is_empty() {
+        return Err("Le contenu ne peut pas être vide".to_string());
+    }
+
+    let conn    = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    if !network.data.ap_enabled {
+        return Err("La fédération ActivityPub n'est pas activée pour ce réseau".to_string());
+    }
+    let actor_url = network.data.ap_actor_url.clone()
+        .unwrap_or_else(|| format!("unknown/{}", network.cid_short()));
+
+    let note_id = uuid::Uuid::new_v4().to_string();
+
+    let (ap_activity_id, delivered_to) = crate::ap::post_note(
+        network.cid_full(),
+        &note_id,
+        &content,
+        &keypair,
+    ).await?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let post = ApPost {
+        id: 0,
+        network_cid: network_cid.clone(),
+        note_id: note_id.clone(),
+        content: content.clone(),
+        ap_activity_id: Some(ap_activity_id),
+        posted_at: now,
+    };
+    let _ = store::ap_save_post(&conn, &post);
+
+    Ok(ApPostResult {
+        note_id,
+        actor_url,
+        delivered_to,
+    })
+}
+
+// ── Fraud alerts ──────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct FraudAlertInfo {
+    pub alert_type: String,
+    pub description: String,
+    pub network_cids: Vec<String>,
+    pub emitted_at: u64,
+    pub emitted_by: String,
+}
+
+impl From<civium_core::FraudAlert> for FraudAlertInfo {
+    fn from(a: civium_core::FraudAlert) -> Self {
+        Self {
+            alert_type: a.alert_type,
+            description: a.description,
+            network_cids: a.network_cids,
+            emitted_at: a.emitted_at,
+            emitted_by: a.emitted_by,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_active_alerts(app: AppHandle) -> Vec<FraudAlertInfo> {
+    app.state::<AppState>()
+        .active_alerts
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .map(FraudAlertInfo::from)
+        .collect()
 }

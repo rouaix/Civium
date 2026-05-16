@@ -38,11 +38,15 @@ impl std::fmt::Display for ConnectionState {
 pub struct ShareTerms {
     /// Whether to expose the member directory to the connected network.
     pub expose_member_directory: bool,
+    /// When `true`, this network is registered in the civium root directory but
+    /// hidden from public listings (visible only to the root admin).
+    #[serde(default)]
+    pub privacy: bool,
 }
 
 impl Default for ShareTerms {
     fn default() -> Self {
-        Self { expose_member_directory: true }
+        Self { expose_member_directory: true, privacy: false }
     }
 }
 

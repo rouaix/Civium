@@ -129,6 +129,9 @@ enum NetworkCmd {
         /// Display name for the founding admin in this network.
         #[arg(long, default_value = "admin")]
         display_name: String,
+        /// Register in the civium root directory but hide from public listings.
+        #[arg(long)]
+        private: bool,
     },
     /// List networks stored locally.
     List,
@@ -745,11 +748,23 @@ enum NodeCmd {
         listen_tcp: String,
         #[arg(long, default_value = "/ip4/0.0.0.0/udp/0/quic-v1")]
         listen_quic: String,
+        /// WebSocket listen address — allows web clients (WASM) to connect via libp2p-websocket.
+        /// Pass an empty string to disable WebSocket.
+        #[arg(long, default_value = "/ip4/0.0.0.0/tcp/0/ws")]
+        listen_ws: String,
         #[arg(long = "peer")]
         peers: Vec<String>,
         /// Network CID(s) to announce to the DHT after connecting.
         #[arg(long = "announce")]
         announce: Vec<String>,
+        /// Automatically accept all incoming inter-network connection requests (APC).
+        /// Enable this on the root "civium" network server node.
+        #[arg(long)]
+        auto_accept_connections: bool,
+        /// Adresse externe annoncée au DHT (ex: /ip4/1.2.3.4/tcp/4001 ou /dns4/host/tcp/443/wss).
+        /// Laissez vide pour ne pas annoncer d'adresse externe.
+        #[arg(long, default_value = "")]
+        external_addr: String,
     },
     /// Sync state with a remote peer for a specific network (one-shot).
     Sync {
@@ -847,7 +862,7 @@ fn run_identity(cmd: IdentityCmd, data: &PathBuf) -> Result<()> {
 
 fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
     match cmd {
-        NetworkCmd::Create { name, display_name } => {
+        NetworkCmd::Create { name, display_name, private } => {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
@@ -859,6 +874,14 @@ fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
             println!("  Network CID (full)  : {}", network.cid_full());
             let addr = network.address_for(&admin_cid);
             println!("  Your address        : {addr}");
+            if private {
+                println!("  Visibilité          : privée (inscrit dans l'annuaire civium, non visible)");
+            }
+            if civium_core::root_configured() {
+                println!("  Connexion réseau racine 'civium' en cours en arrière-plan…");
+                // La connexion P2P au nœud racine est asynchrone ; on imprime juste l'intention.
+                // L'auto-connexion réelle est gérée par le nœud démarré séparément via `node start`.
+            }
         }
 
         NetworkCmd::List => {
@@ -1198,7 +1221,7 @@ fn run_connect(cmd: ConnectCmd, data: &PathBuf) -> Result<()> {
                 bail!("a network cannot connect to itself");
             }
 
-            let our_terms = ShareTerms { expose_member_directory: !no_directory };
+            let our_terms = ShareTerms { expose_member_directory: !no_directory, privacy: false };
             let peer_pubkey_b58 = peer_net.pubkey_b58();
 
             // Build and sign the connection request
@@ -1276,7 +1299,7 @@ fn run_connect(cmd: ConnectCmd, data: &PathBuf) -> Result<()> {
                 anyhow::anyhow!("network '{peer}' not found — both must share the same data dir")
             })?;
 
-            let our_terms = ShareTerms { expose_member_directory: !no_directory };
+            let our_terms = ShareTerms { expose_member_directory: !no_directory, privacy: false };
 
             // Load our (B's) connection record
             let mut our_conns = store::load_connections(data, our_net.cid_short())?;
@@ -1515,12 +1538,22 @@ fn find_conn_mut<'a>(
 async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
     match cmd {
         // ── Start ─────────────────────────────────────────────────────────────
-        NodeCmd::Start { listen_tcp, listen_quic, peers, announce } => {
+        NodeCmd::Start { listen_tcp, listen_quic, listen_ws, peers, announce, auto_accept_connections, external_addr } => {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let cid = keypair.cid();
 
-            let config = NodeConfig { listen_tcp, listen_quic, listen_ws: None, bootstrap_peers: peers, mcp_port: None };
+            let ws = if listen_ws.is_empty() { None } else { Some(listen_ws) };
+            let ext = if external_addr.is_empty() { None } else { Some(external_addr) };
+            let config = NodeConfig {
+                listen_tcp,
+                listen_quic,
+                listen_ws: ws.clone(),
+                external_addr: ext.clone(),
+                bootstrap_peers: peers,
+                mcp_port: None,
+                auto_accept_connections,
+            };
 
             println!("Starting Civium node");
             println!("  CID        : {}", cid.short());
@@ -1528,6 +1561,14 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
                 let kp = keypair.libp2p_keypair();
                 kp.public().to_peer_id()
             });
+            if ws.is_some() {
+                println!("  WebSocket  : enabled (web clients can connect)");
+            } else {
+                println!("  WebSocket  : disabled (pass --listen-ws to enable)");
+            }
+            if let Some(ref ext) = ext {
+                println!("  Ext addr   : {ext}");
+            }
 
             for cid_short in store::list_network_cids(data) {
                 if let Ok(n) = store::load_network(data, &cid_short) {
@@ -1577,6 +1618,21 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
                         Some(NodeEvent::OutboundResponse { response, .. }) => {
                             println!("Response: {response:?}");
                         }
+                        Some(NodeEvent::FraudAlertReceived { alert }) => {
+                            eprintln!("[RCC] Fraud alert: {} — {}", alert.alert_type, alert.description);
+                        }
+                        Some(NodeEvent::InboundConnectRequest { from, request_id, signed_request }) => {
+                            // Non-root nodes don't auto-accept: reject with explanation.
+                            eprintln!("[connect] Incoming APC from {} ({})", signed_request.payload.from_name, from);
+                            let _ = handle.commands.send(
+                                NodeCommand::Respond {
+                                    request_id,
+                                    response: CiviumResponse::ConnectRejected {
+                                        reason: "manual review required — use `connect accept`".into(),
+                                    },
+                                }
+                            ).await;
+                        }
                         None => break,
                     }
                 }
@@ -1600,7 +1656,7 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
 
             let network_cid_full = net.cid_full().to_string();
             let network_cid_short = net.cid_short().to_string();
-            let config = NodeConfig { listen_tcp, listen_quic, listen_ws: None, bootstrap_peers: vec![via.clone()], mcp_port: None };
+            let config = NodeConfig { listen_tcp, listen_quic, listen_ws: None, external_addr: None, bootstrap_peers: vec![via.clone()], mcp_port: None, auto_accept_connections: false };
 
             let (node, mut handle) = CiviumNode::new(keypair, config).await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1651,8 +1707,10 @@ async fn run_node(cmd: NodeCmd, data: &PathBuf) -> Result<()> {
                 listen_tcp,
                 listen_quic,
                 listen_ws: None,
+                external_addr: None,
                 bootstrap_peers: vec![via.clone()],
                 mcp_port: None,
+                auto_accept_connections: false,
             };
 
             let (node, mut handle) = CiviumNode::new(keypair, config).await
@@ -1789,6 +1847,17 @@ fn handle_inbound_request(
             })();
 
             result.unwrap_or_else(|e| CiviumResponse::Error { message: e.to_string() })
+        }
+
+        // BroadcastAlert is handled inline in the node before reaching here.
+        CiviumRequest::BroadcastAlert { .. } => {
+            CiviumResponse::Error { message: "BroadcastAlert not handled at CLI layer".into() }
+        }
+
+        // ConnectRequest is handled inline in the node when auto_accept_connections=true.
+        // Otherwise it arrives here as InboundConnectRequest (not InboundRequest).
+        CiviumRequest::ConnectRequest { .. } => {
+            CiviumResponse::Error { message: "ConnectRequest not handled at CLI layer".into() }
         }
     }
 }

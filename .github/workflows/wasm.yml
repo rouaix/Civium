@@ -1,0 +1,86 @@
+name: WASM CI
+
+on:
+  push:
+    branches: [master, dev]
+    paths:
+      - 'desktop/civium-core/**'
+      - 'desktop/rust-toolchain.toml'
+      - '.github/workflows/wasm.yml'
+  pull_request:
+    paths:
+      - 'desktop/civium-core/**'
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_PACK_VERSION: "0.13.0"
+
+jobs:
+  wasm-build:
+    name: wasm-pack build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build civium-core WASM
+        run: |
+          wasm-pack build \
+            --target web \
+            --out-dir ../../website/src/www/wasm \
+            civium-core \
+            -- --features wasm
+        working-directory: desktop
+
+      - name: Check output files
+        run: |
+          ls -lh website/src/www/wasm/
+          test -f website/src/www/wasm/civium_core.js
+          test -f website/src/www/wasm/civium_core_bg.wasm
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: civium-core-wasm
+          path: |
+            website/src/www/wasm/civium_core.js
+            website/src/www/wasm/civium_core_bg.wasm
+            website/src/www/wasm/civium_core.d.ts
+
+  wasm-test:
+    name: wasm-bindgen-test (Chrome headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Run WASM tests
+        run: |
+          wasm-pack test \
+            --headless --chrome \
+            civium-core \
+            -- --features wasm
+        working-directory: desktop

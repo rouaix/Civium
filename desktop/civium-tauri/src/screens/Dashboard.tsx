@@ -26,6 +26,11 @@ import type {
   TrustedRrmInfo,
   OutboxCountInfo,
   RccStatusInfo,
+  ApFollowerInfo,
+  ApPostInfo,
+  ApPostResult,
+  FraudAlertInfo,
+  NodeSettingsInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -157,6 +162,28 @@ export default function Dashboard() {
   const [rccEmail, setRccEmail] = useState("");
   const [rccRegistering, setRccRegistering] = useState(false);
 
+  // ActivityPub state
+  const [apFollowers, setApFollowers] = useState<ApFollowerInfo[]>([]);
+  const [apPosts, setApPosts] = useState<ApPostInfo[]>([]);
+  const [apContent, setApContent] = useState("");
+  const [apPosting, setApPosting] = useState(false);
+  const [apEnabling, setApEnabling] = useState(false);
+  const [apError, setApError] = useState<string | null>(null);
+
+  // Hub sync state
+  const [hubConfig, setHubConfig] = useState<{ hub_url: string; enabled: boolean; last_sync_ts: number } | null>(null);
+  const [hubUrl, setHubUrl] = useState("");
+  const [hubSyncing, setHubSyncing] = useState(false);
+  const [hubSaving, setHubSaving] = useState(false);
+  const [hubMsg, setHubMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Node settings state
+  const [nodeSettings, setNodeSettings] = useState<NodeSettingsInfo | null>(null);
+  const [nodeTcpPort, setNodeTcpPort] = useState("");
+  const [nodeWsPort, setNodeWsPort] = useState("");
+  const [nodeExternalAddr, setNodeExternalAddr] = useState("");
+  const [nodeSaving, setNodeSaving] = useState(false);
+
   // Pairing state
   const [pairedDevices, setPairedDevices] = useState<PairedDeviceInfo[]>([]);
   const [pairingSession, setPairingSession] = useState<PairingInitInfo | null>(null);
@@ -166,10 +193,25 @@ export default function Dashboard() {
   const [showPairCompleteForm, setShowPairCompleteForm] = useState(false);
   const [creatingEvent, setCreatingEvent] = useState(false);
 
-  // Plugin panel
-  const [showPlugins, setShowPlugins] = useState(false);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [togglingPlugin, setTogglingPlugin] = useState<string | null>(null);
+
+  // Settings panel
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Active view within selected network
+  type ActiveView = 'messages' | 'membres' | 'gouvernance' | 'agenda' | 'documents' | 'activite' | 'notifications' | 'annuaire' | 'rrm' | 'extensions';
+  const [activeView, setActiveView] = useState<ActiveView>('messages');
+
+  // Create network form
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createType, setCreateType] = useState<"standard" | "directory" | "rrm">("standard");
+  const [creating, setCreating] = useState(false);
+
+  // Fraud alerts
+  const [activeAlerts, setActiveAlerts] = useState<FraudAlertInfo[]>([]);
+  const [rootConnected, setRootConnected] = useState<string | null>(null);
 
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
@@ -265,6 +307,56 @@ export default function Dashboard() {
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
   }, []);
 
+  const refreshAp = useCallback((cid: string) => {
+    tauriInvoke<ApFollowerInfo[]>("ap_list_followers", { networkCid: cid }).then(setApFollowers).catch(() => {});
+    tauriInvoke<ApPostInfo[]>("ap_list_posts", { networkCid: cid }).then(setApPosts).catch(() => {});
+  }, []);
+
+  const handleApEnable = useCallback(async () => {
+    if (!selected) return;
+    setApEnabling(true);
+    setApError(null);
+    try {
+      await tauriInvoke("ap_enable", { networkCid: selected.cid_short });
+      refreshNetwork(selected.cid_short);
+      refreshAp(selected.cid_short);
+    } catch (e) {
+      setApError(String(e));
+    } finally {
+      setApEnabling(false);
+    }
+  }, [selected, refreshNetwork, refreshAp]);
+
+  const handleApDisable = useCallback(async () => {
+    if (!selected) return;
+    setApEnabling(true);
+    setApError(null);
+    try {
+      await tauriInvoke("ap_disable", { networkCid: selected.cid_short });
+      refreshNetwork(selected.cid_short);
+      refreshAp(selected.cid_short);
+    } catch (e) {
+      setApError(String(e));
+    } finally {
+      setApEnabling(false);
+    }
+  }, [selected, refreshNetwork, refreshAp]);
+
+  const handleApPost = useCallback(async () => {
+    if (!selected || !apContent.trim()) return;
+    setApPosting(true);
+    setApError(null);
+    try {
+      await tauriInvoke<ApPostResult>("ap_post", { networkCid: selected.cid_short, content: apContent.trim() });
+      setApContent("");
+      refreshAp(selected.cid_short);
+    } catch (e) {
+      setApError(String(e));
+    } finally {
+      setApPosting(false);
+    }
+  }, [selected, apContent, refreshAp]);
+
   const refreshActivity = useCallback((cid: string) => {
     tauriInvoke<ActivityEventInfo[]>("activity_list", { networkCidShort: cid }).then(setActivityEvents).catch(() => {});
     tauriInvoke<NotificationInfo[]>("notification_list", { networkCidShort: cid }).then((notifs) => {
@@ -293,6 +385,15 @@ export default function Dashboard() {
     refreshAgendaEvents(selected.cid_short);
     refreshDocuments(selected.cid_short);
     refreshActivity(selected.cid_short);
+    refreshAp(selected.cid_short);
+    // Charger la config hub pour ce réseau
+    tauriInvoke<{ hub_url: string; enabled: boolean; last_sync_ts: number } | null>("hub_config_get", {
+      networkCid: selected.cid_short,
+    }).then((cfg) => {
+      setHubConfig(cfg);
+      setHubUrl(cfg?.hub_url ?? "");
+      setHubMsg(null);
+    }).catch(() => {});
     setInviteLink(null);
     setMessages([]);
     setProposals([]);
@@ -324,6 +425,18 @@ export default function Dashboard() {
     setUnreadCount(0);
   }, [selected?.cid_short]);
 
+  // Charger les paramètres du nœud une seule fois.
+  useEffect(() => {
+    tauriInvoke<NodeSettingsInfo>("node_settings_get")
+      .then((s) => {
+        setNodeSettings(s);
+        setNodeTcpPort(s.tcp_port === 0 ? "" : String(s.tcp_port));
+        setNodeWsPort(s.ws_port === 0 ? "" : String(s.ws_port));
+        setNodeExternalAddr(s.external_addr);
+      })
+      .catch(() => {});
+  }, []);
+
   // Poll node status + listen for sync-completed events.
   useEffect(() => {
     let mounted = true;
@@ -341,9 +454,14 @@ export default function Dashboard() {
     // Load MCP status once on mount
     tauriInvoke<McpStatus>("mcp_status").then(setMcpStatus).catch(() => {});
 
+    tauriInvoke<FraudAlertInfo[]>("get_active_alerts").then((a) => {
+      if (mounted) setActiveAlerts(a);
+    }).catch(() => {});
+
     let unlistenSync: UnlistenFn | null = null;
     let unlistenOutbox: UnlistenFn | null = null;
     let unlistenRcc: UnlistenFn | null = null;
+    let unlistenAlert: UnlistenFn | null = null;
 
     listen<string>("civium://sync-completed", (event) => {
       const cid = event.payload;
@@ -371,12 +489,27 @@ export default function Dashboard() {
       unlistenRcc = fn;
     });
 
+    listen<FraudAlertInfo>("civium://fraud-alert", (event) => {
+      if (mounted) setActiveAlerts((prev) => [...prev, event.payload]);
+    }).then((fn) => {
+      unlistenAlert = fn;
+    });
+
+    let unlistenRoot: UnlistenFn | null = null;
+    listen<string>("civium://root-connected", (event) => {
+      if (mounted) setRootConnected(event.payload);
+    }).then((fn) => {
+      unlistenRoot = fn;
+    });
+
     return () => {
       mounted = false;
       clearInterval(interval);
       unlistenSync?.();
       unlistenOutbox?.();
       unlistenRcc?.();
+      unlistenAlert?.();
+      unlistenRoot?.();
     };
   }, [refreshNetwork, refreshMessages, refreshOutboxCounts, refreshRccStatuses]);
 
@@ -950,6 +1083,61 @@ export default function Dashboard() {
     }
   }
 
+  async function handleHubSave() {
+    if (!selected) return;
+    setHubSaving(true);
+    setHubMsg(null);
+    try {
+      await tauriInvoke("hub_config_set", {
+        networkCid: selected.cid_short,
+        hubUrl: hubUrl.trim(),
+        enabled: true,
+      });
+      await tauriInvoke("hub_network_register", { networkCid: selected.cid_short });
+      const cfg = await tauriInvoke<{ hub_url: string; enabled: boolean; last_sync_ts: number } | null>(
+        "hub_config_get", { networkCid: selected.cid_short }
+      );
+      setHubConfig(cfg);
+      setHubMsg({ ok: true, text: "Réseau enregistré sur le hub." });
+    } catch (e) {
+      setHubMsg({ ok: false, text: String(e) });
+    } finally {
+      setHubSaving(false);
+    }
+  }
+
+  async function handleHubSync() {
+    if (!selected) return;
+    setHubSyncing(true);
+    setHubMsg(null);
+    try {
+      const count = await tauriInvoke<number>("hub_sync", { networkCid: selected.cid_short });
+      setHubMsg({ ok: true, text: `Synchronisation terminée — ${count} message(s) reçu(s).` });
+    } catch (e) {
+      setHubMsg({ ok: false, text: String(e) });
+    } finally {
+      setHubSyncing(false);
+    }
+  }
+
+  async function handleNodeSettingsSave() {
+    setNodeSaving(true);
+    try {
+      await tauriInvoke("node_settings_set", {
+        tcpPort:      parseInt(nodeTcpPort) || 0,
+        wsPort:       parseInt(nodeWsPort)  || 0,
+        externalAddr: nodeExternalAddr.trim(),
+      });
+      const s = await tauriInvoke<NodeSettingsInfo>("node_settings_get");
+      setNodeSettings(s);
+      alert("Paramètres enregistrés. Redémarrez l'application pour les appliquer.");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setNodeSaving(false);
+    }
+  }
+
   async function handleRccRegister() {
     if (!selected || !rccEmail.trim()) return;
     setRccRegistering(true);
@@ -960,6 +1148,22 @@ export default function Dashboard() {
       });
       setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
       setRccEmail("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setRccRegistering(false);
+    }
+  }
+
+  async function handleRccForceRetry() {
+    if (!selected) return;
+    if (!confirm("Forcer le ré-enregistrement au RCC ? L'ancien enregistrement sera écrasé.")) return;
+    setRccRegistering(true);
+    try {
+      const info = await tauriInvoke<RccStatusInfo>("rcc_force_retry", {
+        networkCid: selected.cid_short,
+      });
+      setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
     } catch (e) {
       alert(String(e));
     } finally {
@@ -1002,6 +1206,32 @@ export default function Dashboard() {
     }
   }
 
+  async function handleCreateNetwork() {
+    if (!createName.trim()) return;
+    setCreating(true);
+    try {
+      await tauriInvoke("network_create", {
+        name: createName.trim(),
+        isDirectory: createType === "directory",
+        isRrm: createType === "rrm",
+      });
+      const nets = await tauriInvoke<NetworkInfo[]>("network_list");
+      setNetworks(nets);
+      const created = nets.find((n) => n.name === createName.trim());
+      if (created) {
+        setSelected(created);
+        setActiveView('messages');
+      }
+      setShowCreateForm(false);
+      setCreateName("");
+      setCreateType("standard");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setCreating(false);
+    }
+  }
+
   const circleLabel = (c: number) =>
     ["Annuaire", "Connaissance", "Confiance", "Intime"][c] ?? `Cercle ${c}`;
 
@@ -1009,371 +1239,515 @@ export default function Dashboard() {
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside className="w-64 bg-civium-900 text-white flex flex-col">
-        <div className="px-5 py-4 border-b border-civium-700">
-          <h1 className="text-lg font-bold tracking-wide">Civium</h1>
-          <p className="text-xs text-civium-100 mt-0.5">Phase 3</p>
-        </div>
-        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
-          {networks.length === 0 && (
-            <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau.</p>
-          )}
-          {networks.map((net) => (
-            <button
-              key={net.cid_short}
-              onClick={() => setSelected(net)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                selected?.cid_short === net.cid_short
-                  ? "bg-civium-600 text-white"
-                  : "text-civium-100 hover:bg-civium-700"
-              }`}
-            >
-              <div className="font-medium truncate flex items-center gap-1.5">
-                {net.name}
-                {net.is_directory && (
-                  <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
-                )}
-                {net.is_rrm && (
-                  <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM (Registre des Réseaux Malveillants)</span>
-                )}
-                <span className="ml-auto flex items-center gap-1">
-                  {(outboxCounts[net.cid_short] ?? 0) > 0 && (
-                    <span className="text-xs bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center" title="Messages en attente de synchronisation">
-                      ↑{outboxCounts[net.cid_short]}
-                    </span>
-                  )}
-                  {rccStatuses[net.cid_short]?.status === "registered" && (
-                    <span className="text-xs text-green-400" title="Enregistré au RCC">✓</span>
-                  )}
-                  {rccStatuses[net.cid_short]?.status === "pending" && (
-                    <span className="text-xs text-amber-400" title="Enregistrement RCC en cours…">↻</span>
-                  )}
-                  {selected?.cid_short === net.cid_short && unreadCount > 0 && (
-                    <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">
-                      {unreadCount}
-                    </span>
-                  )}
-                </span>
-              </div>
-              <div className="text-xs opacity-70">
-                {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
-              </div>
-            </button>
-          ))}
-        </nav>
-
-        {/* Plugins nav */}
-        <div className="px-3 pb-2 border-t border-civium-700 pt-2">
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-civium-700 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-bold tracking-wide">Civium</h1>
+          </div>
           <button
-            onClick={() => { setShowPlugins(true); setSelected(null); }}
-            className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-              showPlugins
-                ? "bg-civium-600 text-white"
-                : "text-civium-100 hover:bg-civium-700"
-            }`}
+            onClick={() => { setShowCreateForm((v) => !v); setShowSettings(false); setActiveView('messages'); }}
+            className="text-civium-200 hover:text-white hover:bg-civium-700 rounded-lg w-7 h-7 flex items-center justify-center text-xl transition-colors"
+            title="Créer un nouveau réseau"
           >
-            <div className="font-medium flex items-center gap-1.5">
-              Plugins
-              <span className="text-xs bg-civium-700 px-1.5 py-0.5 rounded-full">
-                {plugins.filter((p) => p.state === "enabled").length}/{plugins.length}
-              </span>
-            </div>
-            <div className="text-xs opacity-70">Gérer les plugins installés</div>
+            +
           </button>
         </div>
 
-        {/* P2P node status */}
-        <div className="px-4 py-3 border-t border-civium-700 space-y-0.5">
-          <div className="flex items-center gap-2">
-            <span
-              className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                nodeStatus.running ? "bg-green-400" : "bg-gray-500"
-              }`}
-            />
-            <span className="text-xs text-civium-100">
-              {nodeStatus.running ? "En ligne" : "Hors ligne"}
-            </span>
-          </div>
-          {nodeStatus.running && nodeStatus.listen_addrs.length > 0 && (
-            <div className="pl-4 space-y-1">
-              {nodeStatus.listen_addrs.filter(a => !a.includes('/ws')).slice(0, 1).map(a => (
-                <p key={a} className="text-xs text-civium-300 font-mono truncate">{a}</p>
-              ))}
-              {nodeStatus.listen_addrs.filter(a => a.includes('/ws')).slice(0, 1).map(a => (
-                <p key={a} className="text-xs text-green-400 font-mono truncate" title="Adresse WebSocket — accessible aux clients web">
-                  WS: {a}
-                </p>
-              ))}
-            </div>
+        {/* Network list + plugin sub-nav */}
+        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+          {networks.length === 0 && !showCreateForm && (
+            <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau. Cliquez sur + pour en créer un.</p>
           )}
-        </div>
+          {networks.map((net) => {
+            const isSelected = selected?.cid_short === net.cid_short;
+            const navItem = (view: ActiveView, icon: string, label: string, badge?: number) => (
+              <button
+                key={view}
+                onClick={() => { setActiveView(view); setShowSettings(false); setShowCreateForm(false); }}
+                className={`w-full text-left pl-8 pr-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${
+                  isSelected && activeView === view && !showSettings && !showCreateForm
+                    ? "bg-civium-500 text-white"
+                    : "text-civium-200 hover:bg-civium-700"
+                }`}
+              >
+                <span>{icon}</span>
+                <span className="flex-1">{label}</span>
+                {badge !== undefined && badge > 0 && (
+                  <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">{badge}</span>
+                )}
+              </button>
+            );
+            const enabledPluginIds = plugins.filter((p) => p.state === "enabled").map((p) => p.id);
+            const hasAgenda = enabledPluginIds.some((id) => id.includes("agenda"));
+            const hasDocuments = enabledPluginIds.some((id) => id.includes("document"));
+            return (
+              <div key={net.cid_short}>
+                <button
+                  onClick={() => {
+                    setSelected(net);
+                    setActiveView('messages');
+                    setShowSettings(false);
+                    setActiveView('messages');
+                    setShowCreateForm(false);
+                  }}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                    isSelected && !showSettings && !showCreateForm
+                      ? "bg-civium-700 text-white"
+                      : "text-civium-100 hover:bg-civium-700"
+                  }`}
+                >
+                  <div className="font-medium truncate flex items-center gap-1.5">
+                    {net.name}
+                    {net.is_directory && (
+                      <span className="text-xs bg-civium-500 text-white px-1 py-0.5 rounded">Annuaire</span>
+                    )}
+                    {net.is_rrm && (
+                      <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                    )}
+                    <span className="ml-auto flex items-center gap-1">
+                      {(outboxCounts[net.cid_short] ?? 0) > 0 && (
+                        <span className="text-xs bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center" title="Messages en attente">
+                          ↑{outboxCounts[net.cid_short]}
+                        </span>
+                      )}
+                      {rccStatuses[net.cid_short]?.status === "registered" && (
+                        <span className="text-xs text-green-400" title="Enregistré au RCC">✓</span>
+                      )}
+                      {rccStatuses[net.cid_short]?.status === "pending" && (
+                        <span className="text-xs text-amber-400" title="Enregistrement en cours…">↻</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="text-xs opacity-60">
+                    {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
+                  </div>
+                </button>
+                {/* Plugin sub-navigation when this network is selected */}
+                {isSelected && !showSettings && !showCreateForm && (
+                  <div className="mt-0.5 space-y-0.5">
+                    {navItem('messages', '💬', 'Messages', unreadCount > 0 ? unreadCount : undefined)}
+                    {navItem('membres', '👥', 'Membres')}
+                    {navItem('gouvernance', '🗳', 'Gouvernance')}
+                    {navItem('activite', '📊', 'Activité')}
+                    {navItem('notifications', '🔔', 'Notifications', unreadCount > 0 ? unreadCount : undefined)}
+                    {hasAgenda && navItem('agenda', '📅', 'Agenda')}
+                    {hasDocuments && navItem('documents', '📄', 'Documents')}
+                    {net.is_directory && navItem('annuaire', '🔍', 'Annuaire')}
+                    {net.is_rrm && navItem('rrm', '🚫', 'Réseaux signalés')}
+                    {!net.is_directory && !net.is_rrm && navItem('annuaire', '🔍', 'Fédérations')}
+                    {navItem('extensions', '🧩', 'Extensions')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </nav>
 
-        <div className="px-4 py-3 border-t border-civium-700">
-          <p className="text-xs text-civium-100">
-            CLI : <code className="font-mono">civium --help</code>
-          </p>
+        {/* Statut nœud + bouton Paramètres */}
+        <div className="px-4 py-3 border-t border-civium-700 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`} />
+            <span className="text-xs text-civium-100">{nodeStatus.running ? "En ligne" : "Hors ligne"}</span>
+          </div>
+          <button
+            onClick={() => { setShowSettings((v) => !v); setActiveView('messages'); setShowCreateForm(false); }}
+            className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors ${
+              showSettings ? "bg-civium-600 text-white" : "text-civium-200 hover:bg-civium-700"
+            }`}
+            title="Paramètres et configuration"
+          >
+            ⚙ Paramètres
+          </button>
         </div>
       </aside>
 
       {/* Main */}
       <main className="flex-1 overflow-y-auto">
-        {showPlugins ? (
-          <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
+        {/* Bannière connexion réseau racine */}
+        {rootConnected && (
+          <div className="bg-civium-600 text-white px-6 py-2 flex items-center gap-2 text-sm">
+            <span className="font-semibold">Connecté au réseau Civium</span>
+            <span className="text-civium-200">— votre réseau ({rootConnected}) est maintenant dans l'annuaire public.</span>
+            <button
+              onClick={() => setRootConnected(null)}
+              className="ml-auto text-civium-200 hover:text-white transition-colors text-xs"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Fraud alert banners */}
+        {activeAlerts.length > 0 && (
+          <div className="bg-red-600 text-white px-6 py-3 space-y-1">
+            {activeAlerts.map((al, i) => (
+              <div key={i} className="flex items-start gap-2 text-sm">
+                <span className="font-bold uppercase shrink-0">[{al.alert_type}]</span>
+                <span>{al.description}</span>
+                {al.network_cids.length > 0 && (
+                  <span className="ml-2 text-red-200 text-xs">
+                    Réseaux : {al.network_cids.join(", ")}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {showSettings ? (
+          /* ══════════════════════════════════════════════════════
+             PANNEAU PARAMÈTRES
+             ══════════════════════════════════════════════════════ */
+          <div className="max-w-2xl mx-auto py-8 px-6 space-y-8">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-gray-900">Plugins</h2>
+              <h2 className="text-2xl font-bold text-gray-900">Paramètres</h2>
               <button
                 className="text-xs text-gray-400 hover:text-gray-600"
-                onClick={() => setShowPlugins(false)}
+                onClick={() => setShowSettings(false)}
               >
                 ✕ Fermer
               </button>
             </div>
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
-              {plugins.length === 0 && (
-                <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucun plugin installé.</p>
-              )}
-              {plugins.map((p) => (
-                <div key={p.id} className="px-4 py-4 flex items-start gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-semibold text-gray-800">{p.name}</span>
-                      <span className="text-xs text-gray-400">v{p.version}</span>
-                      {p.is_system && (
-                        <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>
-                      )}
-                      <span className={`text-xs px-1.5 py-0.5 rounded ${
-                        p.state === "enabled"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-gray-100 text-gray-500"
-                      }`}>
-                        {p.state === "enabled" ? "actif" : "inactif"}
-                      </span>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
-                    <p className="text-xs text-gray-400 mt-1 font-mono">{p.id}</p>
-                    {p.permissions.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {p.permissions.map((perm) => (
-                          <span key={perm} className="text-xs px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded font-mono">
-                            {perm}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {!p.is_system && (
-                    <button
-                      className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
-                        p.state === "enabled"
-                          ? "border-gray-200 text-gray-600 hover:bg-gray-50"
-                          : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"
-                      }`}
-                      disabled={togglingPlugin === p.id}
-                      onClick={() => handleTogglePlugin(p.id, p.state)}
-                    >
-                      {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-            <p className="text-xs text-gray-400">
-              Pour installer un plugin tiers : <code className="font-mono bg-gray-100 px-1 py-0.5 rounded">civium plugin install manifest.json</code>
-            </p>
 
-            {/* ── MCP section ── */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-gray-800">
-                  Serveur MCP (Model Context Protocol)
-                </h3>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${
-                  mcpStatus.running
-                    ? "bg-green-100 text-green-700"
-                    : "bg-gray-100 text-gray-500"
-                }`}>
-                  {mcpStatus.running ? "En cours" : "Arrêté"}
-                </span>
-              </div>
-              <p className="text-xs text-gray-500">
-                Expose les données de vos réseaux en lecture seule à un assistant IA (Claude, etc.)
-                via le protocole MCP. Le CIL (Civium Integration Layer) contrôle chaque accès.
+            {/* ── Connexion internet ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Connexion internet</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Votre application communique directement avec les autres membres (pair-à-pair). Ces ports permettent d'être joignable depuis l'extérieur.
               </p>
-
-              {!mcpStatus.running ? (
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-500">Port :</label>
-                    <input
-                      type="number"
-                      min={1024}
-                      max={65535}
-                      value={mcpPort}
-                      onChange={(e) => setMcpPort(e.target.value)}
-                      className="w-24 text-sm border border-gray-200 rounded px-2 py-1 font-mono"
-                    />
-                  </div>
-                  <button
-                    onClick={handleMcpStart}
-                    className="text-sm bg-indigo-500 text-white rounded-lg px-4 py-1.5 hover:bg-indigo-600 transition-colors"
-                  >
-                    Démarrer
-                  </button>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-400"}`} />
+                  <span className="text-sm font-medium text-gray-700">{nodeStatus.running ? "Nœud en ligne" : "Nœud hors ligne"}</span>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-gray-500">URL :</span>
-                      <code className="text-xs font-mono text-indigo-700">{mcpStatus.url}</code>
-                    </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-gray-500">Jeton d'accès :</span>
-                      <div className="flex items-center gap-2">
-                        {showMcpToken ? (
-                          <code className="text-xs font-mono text-gray-700 break-all">{mcpStatus.token}</code>
-                        ) : (
-                          <span className="text-xs text-gray-400 font-mono">{"•".repeat(16)}</span>
-                        )}
-                        <button
-                          onClick={() => setShowMcpToken((v) => !v)}
-                          className="text-xs text-indigo-400 hover:text-indigo-600"
-                        >
-                          {showMcpToken ? "Masquer" : "Afficher"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-xs text-gray-400">
-                    Dans Claude Desktop, configurez un serveur MCP avec l'URL et le jeton ci-dessus
-                    (transport HTTP, en-tête <code className="font-mono">Authorization: Bearer …</code>).
-                  </p>
-                  <button
-                    onClick={handleMcpStop}
-                    className="text-sm border border-red-200 text-red-600 rounded-lg px-4 py-1.5 hover:bg-red-50 transition-colors"
-                  >
-                    Arrêter le serveur
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* ── Pairing section ── */}
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-4">
-              <h3 className="text-base font-semibold text-gray-800">
-                Appareils jumelés (Pairing multi-appareils)
-              </h3>
-              <p className="text-xs text-gray-500">
-                Jumelez un second appareil pour partager votre identité Civium. Le lien est chiffré
-                et expire en 10 minutes.
-              </p>
-
-              {/* Devices list */}
-              {pairedDevices.length > 0 && (
-                <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl">
-                  {pairedDevices.map((d) => (
-                    <div key={d.id} className="flex items-center px-4 py-3 gap-3">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-gray-800">{d.label}</div>
-                        <div className="text-xs text-gray-400 font-mono">{d.id.slice(0, 12)}…</div>
-                        <div className="text-xs text-gray-400">
-                          Jumelé le {new Date(d.paired_at * 1000).toLocaleDateString("fr-FR")}
-                          {d.revoked && (
-                            <span className="ml-2 text-red-500">— révoqué</span>
-                          )}
-                        </div>
-                      </div>
-                      {!d.revoked && (
-                        <button
-                          onClick={() => handlePairRevoke(d.id)}
-                          className="text-xs border border-red-200 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                        >
-                          Révoquer
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Generate pairing link */}
-              {pairingSession ? (
-                <div className="bg-indigo-50 rounded-xl p-4 space-y-2">
-                  <p className="text-xs font-medium text-indigo-800">Lien de jumelage généré :</p>
-                  <code className="block text-xs font-mono text-indigo-700 break-all bg-white p-2 rounded border border-indigo-100">
-                    {pairingSession.link}
-                  </code>
-                  <p className="text-xs text-indigo-600">
-                    Expire à {new Date(pairingSession.expires_at * 1000).toLocaleTimeString("fr-FR")}.
-                    Copiez ce lien sur le second appareil et utilisez la commande{" "}
-                    <code className="font-mono">civium pair complete</code>.
-                  </p>
-                  <button
-                    onClick={() => setPairingSession(null)}
-                    className="text-xs text-indigo-400 hover:text-indigo-600"
-                  >
-                    Fermer
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-3">
-                  <input
-                    type="text"
-                    placeholder="Nom du nouvel appareil"
-                    value={pairLabel}
-                    onChange={(e) => setPairLabel(e.target.value)}
-                    className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5"
-                  />
-                  <button
-                    onClick={handlePairInit}
-                    disabled={!pairLabel.trim()}
-                    className="text-sm bg-civium-600 text-white rounded-lg px-4 py-1.5 hover:bg-civium-700 disabled:opacity-50 transition-colors"
-                  >
-                    Générer un lien
-                  </button>
-                </div>
-              )}
-
-              {/* Complete pairing (receive a link from another device) */}
-              <div className="border-t border-gray-100 pt-4">
-                <button
-                  onClick={() => setShowPairCompleteForm((v) => !v)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                >
-                  {showPairCompleteForm ? "▲ Masquer" : "▼ Compléter un jumelage reçu"}
-                </button>
-                {showPairCompleteForm && (
-                  <div className="mt-3 space-y-2">
-                    <input
-                      type="text"
-                      placeholder="Lien civium://pair/…"
-                      value={pairLink}
-                      onChange={(e) => setPairLink(e.target.value)}
-                      className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono"
-                    />
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="text"
-                        placeholder="Nom de cet appareil"
-                        value={pairCompleteLabel}
-                        onChange={(e) => setPairCompleteLabel(e.target.value)}
-                        className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5"
-                      />
-                      <button
-                        onClick={handlePairComplete}
-                        disabled={!pairLink.trim() || !pairCompleteLabel.trim()}
-                        className="text-sm bg-green-600 text-white rounded-lg px-4 py-1.5 hover:bg-green-700 disabled:opacity-50 transition-colors"
-                      >
-                        Jumeler
-                      </button>
+                {nodeStatus.running && nodeStatus.listen_addrs.length > 0 && (
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Adresses d'accès (cliquer pour copier) :</p>
+                    <div className="space-y-1">
+                      {nodeStatus.listen_addrs.map((a) => (
+                        <div key={a} className="text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1 cursor-pointer hover:bg-gray-100 truncate" onClick={() => navigator.clipboard.writeText(a)} title="Cliquer pour copier">{a}</div>
+                      ))}
                     </div>
                   </div>
                 )}
+                <div className="grid grid-cols-2 gap-3 pt-1 border-t border-gray-100">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Port principal (ex: 4001)</label>
+                    <input type="number" min="1024" max="65535" className="w-full text-sm border border-gray-200 rounded px-2 py-1.5" placeholder="0 = automatique" value={nodeTcpPort} onChange={(e) => setNodeTcpPort(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Port web (ex: 4002)</label>
+                    <input type="number" min="1024" max="65535" className="w-full text-sm border border-gray-200 rounded px-2 py-1.5" placeholder="0 = automatique" value={nodeWsPort} onChange={(e) => setNodeWsPort(e.target.value)} />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Adresse publique (si vous avez une IP fixe)</label>
+                  <input type="text" className="w-full text-sm font-mono border border-gray-200 rounded px-2 py-1.5" placeholder="Laisser vide si vous n'avez pas d'IP publique fixe" value={nodeExternalAddr} onChange={(e) => setNodeExternalAddr(e.target.value)} />
+                </div>
+                <button className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50" disabled={nodeSaving} onClick={handleNodeSettingsSave}>
+                  {nodeSaving ? "Enregistrement…" : "Enregistrer (redémarrage requis)"}
+                </button>
+              </div>
+            </section>
+
+            {/* ── Synchronisation serveur (Hub) ── */}
+            {selected && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Synchronisation via serveur</h3>
+                <p className="text-xs text-gray-400 mb-3">
+                  Si vous avez un serveur web, vous pouvez l'utiliser comme relais pour que votre réseau reste accessible même quand votre ordinateur est éteint.
+                </p>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-3">
+                  {hubMsg && (
+                    <p className={`text-xs px-3 py-2 rounded border ${hubMsg.ok ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"}`}>{hubMsg.text}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <input type="url" className="flex-1 text-sm font-mono border border-gray-200 rounded px-2 py-1.5" placeholder="https://votre-serveur.com/civium" value={hubUrl} onChange={(e) => setHubUrl(e.target.value)} />
+                    <button className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50" disabled={hubSaving || !hubUrl.trim()} onClick={handleHubSave}>
+                      {hubSaving ? "…" : hubConfig ? "Mettre à jour" : "Connecter"}
+                    </button>
+                  </div>
+                  {hubConfig && (
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span>Dernière sync : {hubConfig.last_sync_ts ? new Date(hubConfig.last_sync_ts * 1000).toLocaleString("fr-FR") : "jamais"}</span>
+                      <button className="ml-auto text-sm border border-civium-300 text-civium-700 px-3 py-1.5 rounded hover:bg-civium-50 disabled:opacity-50" disabled={hubSyncing} onClick={handleHubSync}>
+                        {hubSyncing ? "Synchronisation…" : "Synchroniser maintenant"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* ── Enregistrement légal (RCC) ── */}
+            {selected && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Enregistrement légal</h3>
+                <p className="text-xs text-gray-400 mb-3">
+                  Tout réseau Civium doit être déclaré auprès du registre central. C'est obligatoire et gratuit — votre email reste confidentiel.
+                </p>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+                  {(() => {
+                    const rcc = rccStatuses[selected.cid_short];
+                    if (rcc?.status === "registered") return (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+                          <span className="text-base">✓</span>
+                          <span className="flex-1">Réseau déclaré — {rcc.admin_email}</span>
+                          <button className="text-xs text-gray-400 hover:text-gray-600 underline" disabled={rccRegistering} onClick={handleRccForceRetry}>Ré-enregistrer</button>
+                        </div>
+                      </div>
+                    );
+                    if (rcc?.status === "pending") return (
+                      <div className="flex flex-col gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base animate-spin inline-block">↻</span>
+                          <span className="flex-1">Déclaration en cours… ({rcc.attempts} tentative{rcc.attempts > 1 ? "s" : ""})</span>
+                          <button className="text-xs text-amber-600 hover:text-amber-800 underline shrink-0" disabled={rccRegistering} onClick={handleRccForceRetry}>Ré-essayer</button>
+                        </div>
+                        <button className="text-xs text-left text-amber-500 hover:text-amber-700 underline"
+                          onClick={async () => {
+                            if (!selected) return;
+                            if (!confirm("Le serveur a déjà confirmé la déclaration ? Cela va juste mettre à jour l'état local.")) return;
+                            try {
+                              const info = await tauriInvoke<RccStatusInfo>("rcc_mark_registered", { networkCid: selected.cid_short });
+                              setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
+                            } catch (e) { alert(String(e)); }
+                          }}>
+                          Le serveur a déjà confirmé → marquer comme déclaré
+                        </button>
+                      </div>
+                    );
+                    if (rcc?.status === "failed") return (
+                      <div className="space-y-3">
+                        <p className="text-xs text-red-600">Déclaration échouée après {rcc.attempts} tentatives.</p>
+                        <button className="text-xs text-red-500 hover:text-red-700 underline" disabled={rccRegistering} onClick={handleRccForceRetry}>Ré-essayer</button>
+                      </div>
+                    );
+                    return (
+                      <div className="space-y-3">
+                        <p className="text-xs text-gray-500">Entrez votre adresse email pour déclarer ce réseau. Elle servira uniquement à vous contacter en cas d'alerte de sécurité.</p>
+                        <div className="flex gap-2">
+                          <input type="email" className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5" placeholder="votre@email.com" value={rccEmail} onChange={(e) => setRccEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleRccRegister(); }} />
+                          <button className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50" disabled={rccRegistering || !rccEmail.trim()} onClick={handleRccRegister}>
+                            {rccRegistering ? "…" : "Déclarer"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </section>
+            )}
+
+            {/* ── Fédération (ActivityPub) ── */}
+            {selected && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Fédération avec d'autres réseaux</h3>
+                <p className="text-xs text-gray-400 mb-3">
+                  Activez cette option pour que votre réseau soit visible et suivi depuis Mastodon, PeerTube et d'autres plateformes compatibles.
+                </p>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-3">
+                  {apError && <p className="text-xs text-red-600">{apError}</p>}
+                  {selected.ap_enabled ? (
+                    <div className="space-y-3">
+                      {selected.ap_actor_url && (
+                        <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => navigator.clipboard.writeText(selected.ap_actor_url!)} title="Cliquer pour copier">
+                          {selected.ap_actor_url} <span className="text-gray-400 font-sans">(copier)</span>
+                        </div>
+                      )}
+                      <p className="text-xs text-gray-500">{apFollowers.length} abonné{apFollowers.length !== 1 ? "s" : ""}</p>
+                      <button onClick={handleApDisable} disabled={apEnabling} className="text-xs text-red-600 hover:text-red-700 disabled:opacity-50">
+                        {apEnabling ? "…" : "Désactiver la fédération"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={handleApEnable} disabled={apEnabling} className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 disabled:opacity-50">
+                      {apEnabling ? "Activation…" : "Activer la fédération"}
+                    </button>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* ── Assistant IA (MCP) ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Assistant IA (Claude, etc.)</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Permet à un assistant IA d'accéder en lecture seule à vos réseaux pour vous aider. Les données restent chiffrées et sous votre contrôle.
+              </p>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-700">État</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${mcpStatus.running ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                    {mcpStatus.running ? "Actif" : "Inactif"}
+                  </span>
+                </div>
+                {!mcpStatus.running ? (
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-500">Port :</label>
+                      <input type="number" min={1024} max={65535} value={mcpPort} onChange={(e) => setMcpPort(e.target.value)} className="w-24 text-sm border border-gray-200 rounded px-2 py-1 font-mono" />
+                    </div>
+                    <button onClick={handleMcpStart} className="text-sm bg-indigo-500 text-white rounded-lg px-4 py-1.5 hover:bg-indigo-600">Démarrer</button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-500">Adresse :</span>
+                        <code className="text-xs font-mono text-indigo-700">{mcpStatus.url}</code>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-gray-500">Clé d'accès :</span>
+                        <div className="flex items-center gap-2">
+                          {showMcpToken ? <code className="text-xs font-mono text-gray-700 break-all">{mcpStatus.token}</code> : <span className="text-xs text-gray-400 font-mono">{"•".repeat(16)}</span>}
+                          <button onClick={() => setShowMcpToken((v) => !v)} className="text-xs text-indigo-400 hover:text-indigo-600">{showMcpToken ? "Masquer" : "Afficher"}</button>
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={handleMcpStop} className="text-sm border border-red-200 text-red-600 rounded-lg px-4 py-1.5 hover:bg-red-50">Arrêter</button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* ── Appareils jumelés ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Mes appareils</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Utilisez votre compte Civium sur plusieurs appareils (téléphone, second ordinateur…).
+              </p>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+                {pairedDevices.length > 0 && (
+                  <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl">
+                    {pairedDevices.map((d) => (
+                      <div key={d.id} className="flex items-center px-4 py-3 gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-800">{d.label}</div>
+                          <div className="text-xs text-gray-400">Ajouté le {new Date(d.paired_at * 1000).toLocaleDateString("fr-FR")}{d.revoked && <span className="ml-2 text-red-500">— révoqué</span>}</div>
+                        </div>
+                        {!d.revoked && <button onClick={() => handlePairRevoke(d.id)} className="text-xs border border-red-200 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-50">Retirer</button>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {pairingSession ? (
+                  <div className="bg-indigo-50 rounded-xl p-4 space-y-2">
+                    <p className="text-xs font-medium text-indigo-800">Lien de connexion (valable 10 min) :</p>
+                    <code className="block text-xs font-mono text-indigo-700 break-all bg-white p-2 rounded border border-indigo-100">{pairingSession.link}</code>
+                    <p className="text-xs text-indigo-600">Copiez ce lien sur le second appareil.</p>
+                    <button onClick={() => setPairingSession(null)} className="text-xs text-indigo-400 hover:text-indigo-600">Fermer</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <input type="text" placeholder="Nom du nouvel appareil" value={pairLabel} onChange={(e) => setPairLabel(e.target.value)} className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5" />
+                    <button onClick={handlePairInit} disabled={!pairLabel.trim()} className="text-sm bg-civium-600 text-white rounded-lg px-4 py-1.5 hover:bg-civium-700 disabled:opacity-50">Ajouter un appareil</button>
+                  </div>
+                )}
+                <div className="border-t border-gray-100 pt-3">
+                  <button onClick={() => setShowPairCompleteForm((v) => !v)} className="text-xs text-gray-500 hover:text-gray-700">{showPairCompleteForm ? "▲ Masquer" : "▼ J'ai reçu un lien de jumelage"}</button>
+                  {showPairCompleteForm && (
+                    <div className="mt-3 space-y-2">
+                      <input type="text" placeholder="Lien civium://pair/…" value={pairLink} onChange={(e) => setPairLink(e.target.value)} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-1.5 font-mono" />
+                      <div className="flex items-center gap-3">
+                        <input type="text" placeholder="Nom de cet appareil" value={pairCompleteLabel} onChange={(e) => setPairCompleteLabel(e.target.value)} className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5" />
+                        <button onClick={handlePairComplete} disabled={!pairLink.trim() || !pairCompleteLabel.trim()} className="text-sm bg-green-600 text-white rounded-lg px-4 py-1.5 hover:bg-green-700 disabled:opacity-50">Valider</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {/* ── Plugins ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Extensions (Plugins)</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Les extensions ajoutent des fonctionnalités à vos réseaux. Celles marquées "système" sont indispensables au fonctionnement.
+              </p>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
+                {plugins.length === 0 && <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucune extension installée.</p>}
+                {plugins.map((p) => (
+                  <div key={p.id} className="px-4 py-4 flex items-start gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold text-gray-800">{p.name}</span>
+                        {p.is_system && <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>}
+                        {p.certification === "certified" && <span className="text-xs px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">Certifié</span>}
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${p.state === "enabled" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>{p.state === "enabled" ? "actif" : "inactif"}</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
+                    </div>
+                    {!p.is_system && (
+                      <button className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${p.state === "enabled" ? "border-gray-200 text-gray-600 hover:bg-gray-50" : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"}`} disabled={togglingPlugin === p.id} onClick={() => handleTogglePlugin(p.id, p.state)}>
+                        {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+        ) : showCreateForm ? (
+          /* ══ PANNEAU CRÉATION DE RÉSEAU ══ */
+          <div className="max-w-lg mx-auto py-12 px-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-gray-900">Créer un réseau</h2>
+                <button className="text-gray-400 hover:text-gray-600 text-sm" onClick={() => setShowCreateForm(false)}>✕</button>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Nom du réseau</label>
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
+                    placeholder="Ex : Famille Martin, Équipe projet…"
+                    value={createName}
+                    onChange={(e) => setCreateName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleCreateNetwork(); }}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Type de réseau</label>
+                  <div className="space-y-2">
+                    {([
+                      ["standard", "Réseau privé", "Pour une famille, une équipe ou un groupe. Les membres rejoignent sur invitation."],
+                      ["directory", "Annuaire", "Pour référencer et rendre découvrables d'autres réseaux ou membres."],
+                      ["rrm", "Registre de réseaux malveillants (RRM)", "Pour signaler des réseaux ayant un comportement abusif."],
+                    ] as const).map(([val, label, desc]) => (
+                      <label key={val} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${createType === val ? "border-civium-400 bg-civium-50" : "border-gray-200 hover:bg-gray-50"}`}>
+                        <input type="radio" name="netType" value={val} checked={createType === val} onChange={() => setCreateType(val)} className="mt-0.5 accent-civium-600" />
+                        <div>
+                          <div className="text-sm font-medium text-gray-800">{label}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">{desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                  disabled={creating || !createName.trim()}
+                  onClick={handleCreateNetwork}
+                >
+                  {creating ? "Création…" : "Créer le réseau"}
+                </button>
               </div>
             </div>
           </div>
         ) : !selected ? (
-          <div className="flex items-center justify-center h-full text-gray-400">
-            Sélectionnez un réseau
+          <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
+            <p>Sélectionnez un réseau ou créez-en un nouveau.</p>
+            <button
+              className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+              onClick={() => setShowCreateForm(true)}
+            >
+              + Créer un réseau
+            </button>
           </div>
         ) : (
           <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
@@ -1397,8 +1771,8 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Pending members */}
-            {pending.length > 0 && (
+            {/* Pending members — always visible as notification */}
+            {activeView === 'membres' && pending.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
                   Demandes en attente ({pending.length})
@@ -1439,7 +1813,7 @@ export default function Dashboard() {
             )}
 
             {/* Members */}
-            <section>
+            {activeView === 'membres' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Membres ({members.length})
@@ -1591,81 +1965,35 @@ export default function Dashboard() {
                   </div>
                 ))}
               </div>
-            </section>
+            </section>}
 
-            {/* Invite link */}
-            {inviteLink && (
+            {/* Invite link — amélioré */}
+            {activeView === 'membres' && inviteLink && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
-                  Lien d'invitation
+                  Inviter quelqu'un
                 </h3>
-                <div
-                  className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs font-mono
-                             break-all text-gray-700 cursor-pointer hover:bg-gray-100 transition-colors"
-                  onClick={() => navigator.clipboard.writeText(inviteLink)}
-                  title="Cliquer pour copier"
-                >
-                  {inviteLink}
+                <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+                  <p className="text-xs text-gray-500">
+                    Partagez ce lien avec la personne que vous souhaitez inviter. Elle pourra rejoindre votre réseau en cliquant dessus ou en le collant dans Civium.
+                  </p>
+                  <div className="flex gap-2">
+                    <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-600 select-all">
+                      {inviteLink}
+                    </div>
+                    <button
+                      className="flex-shrink-0 text-sm px-3 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+                      onClick={() => navigator.clipboard.writeText(inviteLink)}
+                    >
+                      Copier
+                    </button>
+                  </div>
                 </div>
-                <p className="text-xs text-gray-400 mt-1">Cliquer pour copier</p>
               </section>
             )}
 
-            {/* RCC — Registre Central Civium */}
-            <section>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Enregistrement RCC (Registre Central Civium)
-              </h3>
-              {(() => {
-                const rcc = rccStatuses[selected.cid_short];
-                if (rcc?.status === "registered") {
-                  return (
-                    <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
-                      <span className="text-base">✓</span>
-                      <span>Réseau enregistré au RCC — {rcc.admin_email}</span>
-                    </div>
-                  );
-                }
-                if (rcc?.status === "pending") {
-                  return (
-                    <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                      <span className="text-base animate-spin inline-block">↻</span>
-                      <span>Enregistrement en cours… ({rcc.attempts} tentative{rcc.attempts > 1 ? "s" : ""})</span>
-                    </div>
-                  );
-                }
-                return (
-                  <div className="space-y-2">
-                    {rcc?.status === "failed" && (
-                      <p className="text-xs text-red-600">Enregistrement échoué après {rcc.attempts} tentatives.</p>
-                    )}
-                    <p className="text-xs text-gray-500">
-                      L'enregistrement est obligatoire (conformité légale). Votre email ne sera jamais affiché publiquement.
-                    </p>
-                    <div className="flex gap-2">
-                      <input
-                        type="email"
-                        className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 bg-white"
-                        placeholder="votre@email.com"
-                        value={rccEmail}
-                        onChange={(e) => setRccEmail(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleRccRegister(); }}
-                      />
-                      <button
-                        className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50"
-                        disabled={rccRegistering || !rccEmail.trim()}
-                        onClick={handleRccRegister}
-                      >
-                        {rccRegistering ? "…" : "Enregistrer"}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-            </section>
-
             {/* Garde-fou majoritaire */}
-            {adminActions.length > 0 && (
+            {activeView === 'gouvernance' && adminActions.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
                   Actions admin — Garde-fou
@@ -1726,7 +2054,7 @@ export default function Dashboard() {
             )}
 
             {/* Governance */}
-            <section>
+            {activeView === 'gouvernance' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Propositions ({proposals.length})
@@ -1968,10 +2296,10 @@ export default function Dashboard() {
                   );
                 })}
               </div>
-            </section>
+            </section>}
 
             {/* Thread messages */}
-            <section>
+            {activeView === 'messages' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Fil de discussion
@@ -2044,10 +2372,10 @@ export default function Dashboard() {
                   {sending ? "…" : "Envoyer"}
                 </button>
               </div>
-            </section>
+            </section>}
 
             {/* ── Activité section ── */}
-            <section>
+            {activeView === 'activite' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide flex items-center gap-2">
                   Fil d'activité
@@ -2087,10 +2415,10 @@ export default function Dashboard() {
                   })}
                 </div>
               )}
-            </section>
+            </section>}
 
             {/* ── Agenda section ── */}
-            <section>
+            {activeView === 'agenda' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Agenda ({agendaEvents.length})
@@ -2189,10 +2517,10 @@ export default function Dashboard() {
                   ))}
                 </div>
               )}
-            </section>
+            </section>}
 
             {/* ── Documents section ── */}
-            <section>
+            {activeView === 'documents' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Documents ({documents.length})
@@ -2271,11 +2599,10 @@ export default function Dashboard() {
                   ))}
                 </div>
               )}
-            </section>
+            </section>}
 
-            {/* ── Annuaire section (directory networks only) ── */}
-            {/* ── RRM (Registre des Réseaux Malveillants) section (RRM networks only) ── */}
-            {selected.is_rrm && (
+            {/* ── RRM section (RRM networks only) ── */}
+            {activeView === 'rrm' && selected.is_rrm && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -2375,7 +2702,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Trusted RRMs section (standard networks only) ── */}
-            {!selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
+            {activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -2440,7 +2767,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Add trusted RRM button when none yet ── */}
-            {!selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
+            {activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
               <button
                 onClick={() => setShowTrustForm(true)}
                 className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
@@ -2450,7 +2777,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Annuaire section (directory networks only) ── */}
-            {selected.is_directory && (
+            {activeView === 'annuaire' && selected.is_directory && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -2695,6 +3022,88 @@ export default function Dashboard() {
                     </div>
                   );
                 })()}
+              </section>
+            )}
+
+            {/* ── Notifications section ── */}
+            {activeView === 'notifications' && (
+              <section>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide flex items-center gap-2">
+                    Notifications
+                    {unreadCount > 0 && (
+                      <span className="bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5">{unreadCount} non lue{unreadCount > 1 ? "s" : ""}</span>
+                    )}
+                  </h3>
+                  {unreadCount > 0 && (
+                    <button onClick={handleMarkAllRead} className="text-xs text-indigo-500 hover:text-indigo-700">
+                      Tout marquer lu
+                    </button>
+                  )}
+                </div>
+                {notifications.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">Aucune notification.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {notifications.slice(0, 30).map((n) => (
+                      <div key={n.id} className={`flex items-start gap-3 px-3 py-2 rounded-xl border ${n.read ? "border-gray-100 bg-white" : "border-indigo-100 bg-indigo-50"}`}>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-800">{n.source_event_id}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{new Date(n.created_at * 1000).toLocaleString("fr-FR")}</p>
+                        </div>
+                        {!n.read && (
+                          <button
+                            onClick={() => tauriInvoke("notification_mark_read", { notificationId: n.id }).then(() => {
+                              setNotifications((prev) => prev.map((x) => x.id === n.id ? { ...x, read: true } : x));
+                              setUnreadCount((c) => Math.max(0, c - 1));
+                            })}
+                            className="text-xs text-indigo-400 hover:text-indigo-600 flex-shrink-0"
+                          >
+                            Lu
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {/* ── Extensions section ── */}
+            {activeView === 'extensions' && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Extensions (Plugins)</h3>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
+                  {plugins.length === 0 && (
+                    <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucun plugin installé.</p>
+                  )}
+                  {plugins.map((p) => (
+                    <div key={p.id} className="px-4 py-4 flex items-start gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-gray-800">{p.name}</span>
+                          <span className="text-xs text-gray-400">v{p.version}</span>
+                          {p.is_system && <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>}
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${p.state === "enabled" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                            {p.state === "enabled" ? "actif" : "inactif"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
+                      </div>
+                      {!p.is_system && (
+                        <button
+                          className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${
+                            p.state === "enabled" ? "border-gray-200 text-gray-600 hover:bg-gray-50" : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"
+                          }`}
+                          disabled={togglingPlugin === p.id}
+                          onClick={() => handleTogglePlugin(p.id, p.state)}
+                        >
+                          {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </section>
             )}
           </div>
