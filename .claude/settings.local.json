@@ -102,7 +102,13 @@
       "PowerShell(php -r \"phpinfo\\(\\);\" 2>&1 | Select-String \"sodium\" | Select-Object -First 10 | ForEach-Object { $_.ToString\\(\\) })",
       "Bash(composer require *)",
       "Bash(grep -n \"</body>\\\\|</div>\\\\s*$\" /p/Projets/rouaix.com/civium/website/src/app/modules/civium/views/admin.html)",
-      "Bash(powershell *)"
+      "Bash(powershell *)",
+      "Bash(xargs ls -la)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.0.31\\\\bin\\\\mysql.exe\" --version 2>&1; & \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.0.31\\\\bin\\\\mysqladmin.exe\" --version 2>&1)",
+      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -e \"SHOW VARIABLES LIKE 'innodb_large_prefix'; SHOW VARIABLES LIKE 'innodb_file_format'; SHOW VARIABLES LIKE 'character_set_database'; SHOW VARIABLES LIKE 'row_format';\" 2>&1)",
+      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -e \"SELECT VERSION\\(\\); SHOW VARIABLES LIKE 'innodb_page_size'; SHOW VARIABLES LIKE 'innodb_file_per_table';\" 2>&1)",
+      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 -e \"SELECT VERSION\\(\\), @@default_storage_engine, @@innodb_page_size;\" 2>&1)"
     ]
   }
 }

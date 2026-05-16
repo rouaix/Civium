@@ -323,8 +323,7 @@ export default function Onboarding({ onComplete }: Props) {
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
                 <p className="text-xs text-gray-400 mt-1">
-                  Obtenez-la via <code className="font-mono">civium node start --announce</code>
-                  {" "}sur la machine de l'admin.
+                  L'administrateur vous l'a communiquée avec le lien d'invitation (visible dans son appli, onglet Membres).
                 </p>
               </div>
             </div>

@@ -208,8 +208,17 @@ export default function Dashboard() {
   // Create network form
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createName, setCreateName] = useState("");
+  const [createAdminEmail, setCreateAdminEmail] = useState("");
   const [createType, setCreateType] = useState<"standard" | "directory" | "rrm">("standard");
+  const [showAdvancedNetTypes, setShowAdvancedNetTypes] = useState(false);
   const [creating, setCreating] = useState(false);
+
+  // Join network form
+  const [showJoinForm, setShowJoinForm] = useState(false);
+  const [joinInviteLink, setJoinInviteLink] = useState("");
+  const [joinPeerAddr, setJoinPeerAddr] = useState("");
+  const [joinDisplayName, setJoinDisplayName] = useState("");
+  const [joining, setJoining] = useState(false);
 
   // Fraud alerts
   const [activeAlerts, setActiveAlerts] = useState<FraudAlertInfo[]>([]);
@@ -251,17 +260,23 @@ export default function Dashboard() {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
     tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
+    tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_show")
+      .then(setIdentity).catch(() => {});
     refreshOutboxCounts();
     refreshRccStatuses();
   }, [refreshOutboxCounts, refreshRccStatuses]);
 
   const refreshNetwork = useCallback((cid: string) => {
-    tauriInvoke<MemberInfo[]>("member_list", { networkCid: cid }).then(setMembers);
-    tauriInvoke<PendingMemberInfo[]>("member_pending_list", { networkCid: cid }).then(setPending);
+    tauriInvoke<MemberInfo[]>("member_list", { networkCid: cid }).then((data) => {
+      if (selectedRef.current?.cid_short === cid) setMembers(data);
+    });
+    tauriInvoke<PendingMemberInfo[]>("member_pending_list", { networkCid: cid }).then((data) => {
+      if (selectedRef.current?.cid_short === cid) setPending(data);
+    });
     tauriInvoke<NetworkInfo[]>("network_list").then((nets) => {
       setNetworks(nets);
       const updated = nets.find((n) => n.cid_short === cid);
-      if (updated) setSelected(updated);
+      if (updated && selectedRef.current?.cid_short === cid) setSelected(updated);
     });
   }, []);
 
@@ -1208,25 +1223,75 @@ export default function Dashboard() {
     }
   }
 
+  async function handleJoinNetwork() {
+    if (!joinInviteLink.trim() || !joinDisplayName.trim()) return;
+    setJoining(true);
+    try {
+      let net: NetworkInfo;
+      if (joinPeerAddr.trim()) {
+        net = await tauriInvoke<NetworkInfo>("network_join_p2p", {
+          inviteLink: joinInviteLink.trim(),
+          displayName: joinDisplayName.trim(),
+          peerAddr: joinPeerAddr.trim(),
+        });
+      } else {
+        net = await tauriInvoke<NetworkInfo>("network_join", {
+          inviteLink: joinInviteLink.trim(),
+          displayName: joinDisplayName.trim(),
+        });
+      }
+      const nets = await tauriInvoke<NetworkInfo[]>("network_list");
+      setNetworks(nets);
+      selectedRef.current = net;
+      setSelected(net);
+      setActiveView('messages');
+      setShowJoinForm(false);
+      setJoinInviteLink("");
+      setJoinPeerAddr("");
+      setJoinDisplayName("");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setJoining(false);
+    }
+  }
+
   async function handleCreateNetwork() {
     if (!createName.trim()) return;
     setCreating(true);
     try {
-      await tauriInvoke("network_create", {
-        name: createName.trim(),
-        isDirectory: createType === "directory",
-        isRrm: createType === "rrm",
-      });
+      const name = createName.trim();
+      let createdCid: string | null = null;
+      if (createType === "directory") {
+        const net = await tauriInvoke<NetworkInfo>("directory_create", { name, displayName: name });
+        createdCid = net.cid_short;
+      } else if (createType === "rrm") {
+        const net = await tauriInvoke<NetworkInfo>("rrm_create", { name, displayName: name });
+        createdCid = net.cid_short;
+      } else {
+        const net = await tauriInvoke<NetworkInfo>("network_create", { name, displayName: name, privacy: false });
+        createdCid = net.cid_short;
+      }
+      // Auto-register to RCC if email provided
+      if (createdCid && createAdminEmail.trim()) {
+        tauriInvoke("rcc_register", {
+          networkCid: createdCid,
+          adminEmail: createAdminEmail.trim(),
+        }).catch(() => {});
+      }
       const nets = await tauriInvoke<NetworkInfo[]>("network_list");
       setNetworks(nets);
-      const created = nets.find((n) => n.name === createName.trim());
+      const created = nets.find((n) => n.cid_short === createdCid) ?? nets.find((n) => n.name === name);
       if (created) {
+        selectedRef.current = created;
         setSelected(created);
         setActiveView('messages');
       }
       setShowCreateForm(false);
       setCreateName("");
+      setCreateAdminEmail("");
       setCreateType("standard");
+      setShowAdvancedNetTypes(false);
     } catch (e) {
       alert(String(e));
     } finally {
@@ -1241,22 +1306,57 @@ export default function Dashboard() {
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside className="w-64 bg-civium-900 text-white flex flex-col">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-civium-700 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-bold tracking-wide">Civium</h1>
+        {/* Mon nœud */}
+        <div className="px-4 py-3 border-b border-civium-700">
+          <p className="text-xs font-semibold text-civium-400 uppercase tracking-wider mb-2">Mon nœud</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`} />
+              <span className="text-xs text-civium-100 font-mono truncate max-w-[110px]">
+                {identity ? identity.cid_short : "…"}
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                const next = !showSettings;
+                setShowSettings(next);
+                setActiveView('messages');
+                setShowCreateForm(false);
+                setShowJoinForm(false);
+              }}
+              className={`text-xs px-2 py-1 rounded-lg transition-colors ${
+                showSettings ? "bg-civium-600 text-white" : "text-civium-300 hover:bg-civium-700"
+              }`}
+              title="Paramètres du nœud"
+            >
+              ⚙
+            </button>
           </div>
-          <button
-            onClick={() => { setShowCreateForm((v) => !v); setShowSettings(false); setActiveView('messages'); }}
-            className="text-civium-200 hover:text-white hover:bg-civium-700 rounded-lg w-7 h-7 flex items-center justify-center text-xl transition-colors"
-            title="Créer un nouveau réseau"
-          >
-            +
-          </button>
+        </div>
+
+        {/* Mes réseaux header */}
+        <div className="px-4 pt-3 pb-1 flex items-center justify-between">
+          <p className="text-xs font-semibold text-civium-400 uppercase tracking-wider">Mes réseaux</p>
+          <div className="flex gap-1">
+            <button
+              onClick={() => { setShowJoinForm((v) => !v); setShowCreateForm(false); setShowSettings(false); }}
+              className="text-civium-300 hover:text-white hover:bg-civium-700 rounded-lg w-6 h-6 flex items-center justify-center text-xs transition-colors"
+              title="Rejoindre un réseau existant"
+            >
+              ↩
+            </button>
+            <button
+              onClick={() => { setShowCreateForm((v) => !v); setShowJoinForm(false); setShowSettings(false); setActiveView('messages'); }}
+              className="text-civium-300 hover:text-white hover:bg-civium-700 rounded-lg w-6 h-6 flex items-center justify-center text-base transition-colors"
+              title="Créer un nouveau réseau"
+            >
+              +
+            </button>
+          </div>
         </div>
 
         {/* Network list + plugin sub-nav */}
-        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
           {networks.length === 0 && !showCreateForm && (
             <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau. Cliquez sur + pour en créer un.</p>
           )}
@@ -1286,11 +1386,12 @@ export default function Dashboard() {
               <div key={net.cid_short}>
                 <button
                   onClick={() => {
+                    selectedRef.current = net;
                     setSelected(net);
                     setActiveView('messages');
                     setShowSettings(false);
-                    setActiveView('messages');
                     setShowCreateForm(false);
+                    setShowJoinForm(false);
                   }}
                   className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
                     isSelected && !showSettings && !showCreateForm
@@ -1336,7 +1437,6 @@ export default function Dashboard() {
                     {hasDocuments && navItem('documents', '📄', 'Documents')}
                     {net.is_directory && navItem('annuaire', '🔍', 'Annuaire')}
                     {net.is_rrm && navItem('rrm', '🚫', 'Réseaux signalés')}
-                    {!net.is_directory && !net.is_rrm && navItem('annuaire', '🔍', 'Fédérations')}
                     {navItem('extensions', '🧩', 'Extensions')}
                   </div>
                 )}
@@ -1345,30 +1445,9 @@ export default function Dashboard() {
           })}
         </nav>
 
-        {/* Statut nœud + bouton Paramètres */}
-        <div className="px-4 py-3 border-t border-civium-700 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`} />
-            <span className="text-xs text-civium-100">{nodeStatus.running ? "En ligne" : "Hors ligne"}</span>
-          </div>
-          <button
-            onClick={() => {
-              const next = !showSettings;
-              setShowSettings(next);
-              setActiveView('messages');
-              setShowCreateForm(false);
-              if (next && !identity) {
-                tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_show")
-                  .then(setIdentity).catch(() => {});
-              }
-            }}
-            className={`text-xs px-2.5 py-1.5 rounded-lg transition-colors ${
-              showSettings ? "bg-civium-600 text-white" : "text-civium-200 hover:bg-civium-700"
-            }`}
-            title="Paramètres et configuration"
-          >
-            ⚙ Paramètres
-          </button>
+        {/* Statut réseau */}
+        <div className="px-4 py-2 border-t border-civium-700">
+          <span className="text-xs text-civium-500">{nodeStatus.running ? "Connecté" : "Hors ligne"}</span>
         </div>
       </aside>
 
@@ -1743,6 +1822,113 @@ export default function Dashboard() {
                 ))}
               </div>
             </section>
+
+            {/* ── Zone de danger ── */}
+            {selected && selected.member_count <= 1 && (
+              <section className="border border-red-200 rounded-xl p-4">
+                <h3 className="text-sm font-semibold text-red-600 uppercase tracking-wide mb-3">Zone de danger</h3>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Supprimer ce réseau</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Action irréversible. Toutes les données locales seront effacées.</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`Supprimer définitivement le réseau « ${selected.name} » ? Cette action est irréversible.`)) return;
+                      try {
+                        await tauriInvoke("network_delete", { networkCid: selected.cid_short });
+                        const nets = await tauriInvoke<NetworkInfo[]>("network_list");
+                        setNetworks(nets);
+                        setSelected(nets[0] ?? null);
+                        setShowSettings(false);
+                      } catch (e) {
+                        alert(String(e));
+                      }
+                    }}
+                    className="text-xs border border-red-300 text-red-600 rounded-lg px-3 py-1.5 hover:bg-red-50 transition-colors shrink-0"
+                  >
+                    Supprimer
+                  </button>
+                </div>
+              </section>
+            )}
+          </div>
+
+        ) : showJoinForm ? (
+          /* ══ PANNEAU REJOINDRE UN RÉSEAU ══ */
+          <div className="max-w-lg mx-auto py-12 px-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold text-gray-900">Rejoindre un réseau</h2>
+                <button
+                  className="text-gray-400 hover:text-gray-600 text-sm"
+                  onClick={() => { setShowJoinForm(false); setJoinInviteLink(""); setJoinPeerAddr(""); setJoinDisplayName(""); }}
+                >✕</button>
+              </div>
+
+              <p className="text-sm text-gray-500">
+                Vous avez reçu une invitation d'un administrateur Civium. Collez les informations ci-dessous.
+              </p>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Lien d'invitation</label>
+                  <textarea
+                    autoFocus
+                    rows={3}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 resize-none placeholder:font-sans placeholder:text-gray-400"
+                    placeholder="civium-invite:…"
+                    value={joinInviteLink}
+                    onChange={(e) => setJoinInviteLink(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Adresse de connexion de l'admin
+                    <span className="ml-1 text-xs font-normal text-gray-400">(fournie avec l'invitation)</span>
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 placeholder:font-sans placeholder:text-gray-400"
+                    placeholder="/ip4/1.2.3.4/tcp/4001/p2p/12D3…"
+                    value={joinPeerAddr}
+                    onChange={(e) => setJoinPeerAddr(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Laissez vide seulement si l'admin vous a donné accès direct à sa base de données.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Votre nom dans ce réseau</label>
+                  <input
+                    type="text"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
+                    placeholder="Ex : Marie, Pierre…"
+                    value={joinDisplayName}
+                    onChange={(e) => setJoinDisplayName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleJoinNetwork(); }}
+                  />
+                </div>
+
+                <button
+                  className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                  disabled={joining || !joinInviteLink.trim() || !joinDisplayName.trim()}
+                  onClick={handleJoinNetwork}
+                >
+                  {joining
+                    ? (joinPeerAddr.trim() ? "Connexion en cours…" : "Jonction…")
+                    : "Rejoindre le réseau"}
+                </button>
+
+                {joining && joinPeerAddr.trim() && (
+                  <p className="text-xs text-gray-400 text-center">
+                    Connexion au nœud de l'admin… (jusqu'à 30 secondes)
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
 
         ) : showCreateForm ? (
@@ -1751,7 +1937,7 @@ export default function Dashboard() {
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 space-y-6">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-gray-900">Créer un réseau</h2>
-                <button className="text-gray-400 hover:text-gray-600 text-sm" onClick={() => setShowCreateForm(false)}>✕</button>
+                <button className="text-gray-400 hover:text-gray-600 text-sm" onClick={() => { setShowCreateForm(false); setCreateType("standard"); setShowAdvancedNetTypes(false); }}>✕</button>
               </div>
               <div className="space-y-4">
                 <div>
@@ -1767,29 +1953,67 @@ export default function Dashboard() {
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Votre email <span className="text-xs font-normal text-gray-400">(pour les alertes de sécurité — obligatoire)</span>
+                  </label>
+                  <input
+                    type="email"
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
+                    placeholder="votre@email.com"
+                    value={createAdminEmail}
+                    onChange={(e) => setCreateAdminEmail(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-400 mt-1">
+                    Requis pour déclarer votre réseau au registre central (RCC). Il ne sera jamais partagé publiquement.
+                  </p>
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Type de réseau</label>
                   <div className="space-y-2">
-                    {([
-                      ["standard", "Réseau privé", "Pour une famille, une équipe ou un groupe. Les membres rejoignent sur invitation."],
-                      ["directory", "Annuaire", "Pour référencer et rendre découvrables d'autres réseaux ou membres."],
-                      ["rrm", "Registre de réseaux malveillants (RRM)", "Pour signaler des réseaux ayant un comportement abusif."],
-                    ] as const).map(([val, label, desc]) => (
-                      <label key={val} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${createType === val ? "border-civium-400 bg-civium-50" : "border-gray-200 hover:bg-gray-50"}`}>
-                        <input type="radio" name="netType" value={val} checked={createType === val} onChange={() => setCreateType(val)} className="mt-0.5 accent-civium-600" />
-                        <div>
-                          <div className="text-sm font-medium text-gray-800">{label}</div>
-                          <div className="text-xs text-gray-500 mt-0.5">{desc}</div>
-                        </div>
-                      </label>
-                    ))}
+                    {/* Type standard — visible par défaut */}
+                    <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${createType === "standard" ? "border-civium-400 bg-civium-50" : "border-gray-200 hover:bg-gray-50"}`}>
+                      <input type="radio" name="netType" value="standard" checked={createType === "standard"} onChange={() => setCreateType("standard")} className="mt-0.5 accent-civium-600" />
+                      <div>
+                        <div className="text-sm font-medium text-gray-800">Réseau privé</div>
+                        <div className="text-xs text-gray-500 mt-0.5">Un espace fermé pour votre groupe — famille, équipe, association… Vous invitez les membres et définissez les règles.</div>
+                      </div>
+                    </label>
+
+                    {/* Types avancés */}
+                    {!showAdvancedNetTypes ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowAdvancedNetTypes(true)}
+                        className="text-xs text-gray-400 hover:text-gray-600 pl-1"
+                      >
+                        Types avancés (annuaire, registre de surveillance)…
+                      </button>
+                    ) : (
+                      <>
+                        <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${createType === "directory" ? "border-civium-400 bg-civium-50" : "border-gray-200 hover:bg-gray-50"}`}>
+                          <input type="radio" name="netType" value="directory" checked={createType === "directory"} onChange={() => setCreateType("directory")} className="mt-0.5 accent-civium-600" />
+                          <div>
+                            <div className="text-sm font-medium text-gray-800">Annuaire</div>
+                            <div className="text-xs text-gray-500 mt-0.5">Un répertoire public qui liste et rend visibles d'autres réseaux ou membres. Utile pour une fédération ou une communauté ouverte.</div>
+                          </div>
+                        </label>
+                        <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${createType === "rrm" ? "border-civium-400 bg-civium-50" : "border-gray-200 hover:bg-gray-50"}`}>
+                          <input type="radio" name="netType" value="rrm" checked={createType === "rrm"} onChange={() => setCreateType("rrm")} className="mt-0.5 accent-civium-600" />
+                          <div>
+                            <div className="text-sm font-medium text-gray-800">Registre de surveillance</div>
+                            <div className="text-xs text-gray-500 mt-0.5">Un registre qui signale des réseaux au comportement abusif. Réservé aux organismes de modération.</div>
+                          </div>
+                        </label>
+                      </>
+                    )}
                   </div>
                 </div>
                 <button
                   className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
-                  disabled={creating || !createName.trim()}
+                  disabled={creating || !createName.trim() || !createAdminEmail.trim()}
                   onClick={handleCreateNetwork}
                 >
-                  {creating ? "Création…" : "Créer le réseau"}
+                  {creating ? "Création et déclaration…" : "Créer le réseau"}
                 </button>
               </div>
             </div>
@@ -2022,26 +2246,77 @@ export default function Dashboard() {
               </div>
             </section>}
 
-            {/* Invite link — amélioré */}
+            {/* Invite link */}
             {activeView === 'membres' && inviteLink && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
                   Inviter quelqu'un
                 </h3>
-                <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-                  <p className="text-xs text-gray-500">
-                    Partagez ce lien avec la personne que vous souhaitez inviter. Elle pourra rejoindre votre réseau en cliquant dessus ou en le collant dans Civium.
-                  </p>
-                  <div className="flex gap-2">
-                    <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-600 select-all">
-                      {inviteLink}
+                <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-4">
+
+                  {/* Étape 1 — lien */}
+                  <div>
+                    <p className="text-xs font-semibold text-gray-700 mb-1">
+                      Étape 1 — Envoyez ce lien d'invitation
+                    </p>
+                    <p className="text-xs text-gray-400 mb-2">
+                      Par email, SMS ou messagerie. Ce lien identifie votre réseau et autorise la jonction.
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-600 select-all">
+                        {inviteLink}
+                      </div>
+                      <button
+                        className="flex-shrink-0 text-xs px-3 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+                        onClick={() => navigator.clipboard.writeText(inviteLink)}
+                      >
+                        Copier
+                      </button>
                     </div>
-                    <button
-                      className="flex-shrink-0 text-sm px-3 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
-                      onClick={() => navigator.clipboard.writeText(inviteLink)}
-                    >
-                      Copier
-                    </button>
+                  </div>
+
+                  {/* Étape 2 — adresse P2P */}
+                  <div>
+                    <p className="text-xs font-semibold text-gray-700 mb-1">
+                      Étape 2 — Envoyez aussi votre adresse de connexion
+                    </p>
+                    <p className="text-xs text-gray-400 mb-2">
+                      L'invité en a besoin pour se connecter directement à votre nœud. Envoyez-la avec le lien ci-dessus.
+                    </p>
+                    {nodeStatus?.listen_addrs && nodeStatus.listen_addrs.length > 0 ? (
+                      <div className="space-y-1">
+                        {nodeStatus.listen_addrs.map((addr) => (
+                          <div key={addr} className="flex gap-2">
+                            <div className="flex-1 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-600 select-all">
+                              {addr}
+                            </div>
+                            <button
+                              className="flex-shrink-0 text-xs px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
+                              onClick={() => navigator.clipboard.writeText(addr)}
+                            >
+                              Copier
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-700">
+                        Nœud P2P non démarré — votre adresse de connexion n'est pas disponible. L'invité ne pourra pas se connecter tant que votre nœud est éteint.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Étape 3 — instructions pour l'invité */}
+                  <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-3 text-xs text-gray-500 space-y-1">
+                    <p className="font-semibold text-gray-600">Ce que doit faire l'invité :</p>
+                    <ol className="list-decimal list-inside space-y-1">
+                      <li>Télécharger et ouvrir l'appli Civium</li>
+                      <li>Au démarrage, choisir <strong>Rejoindre un réseau</strong></li>
+                      <li>Coller le lien d'invitation (étape 1)</li>
+                      <li>Coller votre adresse de connexion (étape 2)</li>
+                      <li>Choisir son nom et confirmer</li>
+                    </ol>
+                    <p className="pt-1">Vous recevrez une demande d'admission à approuver ici.</p>
                   </div>
                 </div>
               </section>
@@ -2761,7 +3036,7 @@ export default function Dashboard() {
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
-                    Registres de Réseaux Malveillants de confiance ({trustedRrms.length})
+                    Sources de détection RRM approuvées ({trustedRrms.length})
                   </h3>
                   <button
                     onClick={() => setShowTrustForm((v) => !v)}
@@ -2773,23 +3048,54 @@ export default function Dashboard() {
                 </div>
 
                 {showTrustForm && (
-                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-3 space-y-2">
-                    <input
-                      value={trustRrmCid}
-                      onChange={(e) => setTrustRrmCid(e.target.value)}
-                      placeholder="CID court du registre (RRM)"
-                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
-                                 focus:outline-none focus:ring-2 focus:ring-orange-400
-                                 font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
-                    />
-                    <input
-                      value={trustRrmName}
-                      onChange={(e) => setTrustRrmName(e.target.value)}
-                      placeholder="Nom du registre (RRM)"
-                      className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
-                                 focus:outline-none focus:ring-2 focus:ring-orange-400
-                                 placeholder:text-gray-400 bg-white"
-                    />
+                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-3 space-y-3">
+                    {(() => {
+                      const available = networks.filter(
+                        (n) => n.is_rrm && !trustedRrms.some((t) => t.rrm_cid_short === n.cid_short)
+                      );
+                      return available.length > 0 ? (
+                        <div className="space-y-1.5">
+                          <p className="text-xs text-orange-700 font-medium">Registres connus :</p>
+                          {available.map((n) => (
+                            <button
+                              key={n.cid_short}
+                              onClick={() => { setTrustRrmCid(n.cid_short); setTrustRrmName(n.name); }}
+                              className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
+                                trustRrmCid === n.cid_short
+                                  ? "border-orange-500 bg-orange-100"
+                                  : "border-orange-200 bg-white hover:bg-orange-50"
+                              }`}
+                            >
+                              <div className="font-medium text-orange-900">{n.name}</div>
+                              <div className="text-xs font-mono text-orange-400 mt-0.5">{n.cid_short}</div>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null;
+                    })()}
+                    <details>
+                      <summary className="text-xs text-orange-600 cursor-pointer select-none hover:text-orange-800">
+                        Saisir manuellement (registre externe…)
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        <input
+                          value={trustRrmCid}
+                          onChange={(e) => setTrustRrmCid(e.target.value)}
+                          placeholder="CID court (ex : civ1AbCd1234)"
+                          className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-orange-400
+                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                        />
+                        <input
+                          value={trustRrmName}
+                          onChange={(e) => setTrustRrmName(e.target.value)}
+                          placeholder="Nom du registre"
+                          className="w-full text-sm border border-orange-200 rounded-lg px-3 py-1.5
+                                     focus:outline-none focus:ring-2 focus:ring-orange-400
+                                     placeholder:text-gray-400 bg-white"
+                        />
+                      </div>
+                    </details>
                     <button
                       onClick={handleTrustRrm}
                       disabled={savingTrust || !trustRrmCid.trim() || !trustRrmName.trim()}
@@ -2827,7 +3133,7 @@ export default function Dashboard() {
                 onClick={() => setShowTrustForm(true)}
                 className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
               >
-                + Faire confiance à un RRM (Registre des Réseaux Malveillants)
+                + Approuver un registre de surveillance
               </button>
             )}
 
@@ -2919,22 +3225,56 @@ export default function Dashboard() {
                     </div>
                     {showFedForm && (
                       <div className="space-y-2 pt-1">
-                        <input
-                          value={fedPeerCid}
-                          onChange={(e) => setFedPeerCid(e.target.value)}
-                          placeholder="CID court de l'annuaire pair"
-                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
-                                     focus:outline-none focus:ring-2 focus:ring-blue-400
-                                     font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
-                        />
-                        <input
-                          value={fedPeerName}
-                          onChange={(e) => setFedPeerName(e.target.value)}
-                          placeholder="Nom de l'annuaire pair"
-                          className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
-                                     focus:outline-none focus:ring-2 focus:ring-blue-400
-                                     placeholder:text-gray-400 bg-white"
-                        />
+                        {(() => {
+                          const available = networks.filter(
+                            (n) =>
+                              n.is_directory &&
+                              n.cid_short !== selected.cid_short &&
+                              !federations.some((f) => f.peer_cid_short === n.cid_short)
+                          );
+                          return available.length > 0 ? (
+                            <div className="space-y-1.5">
+                              <p className="text-xs text-blue-700 font-medium">Annuaires connus :</p>
+                              {available.map((n) => (
+                                <button
+                                  key={n.cid_short}
+                                  onClick={() => { setFedPeerCid(n.cid_short); setFedPeerName(n.name); }}
+                                  className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
+                                    fedPeerCid === n.cid_short
+                                      ? "border-blue-500 bg-blue-100"
+                                      : "border-blue-200 bg-white hover:bg-blue-50"
+                                  }`}
+                                >
+                                  <div className="font-medium text-blue-900">{n.name}</div>
+                                  <div className="text-xs font-mono text-blue-400 mt-0.5">{n.cid_short}</div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null;
+                        })()}
+                        <details>
+                          <summary className="text-xs text-blue-600 cursor-pointer select-none hover:text-blue-800">
+                            Saisir manuellement (annuaire externe…)
+                          </summary>
+                          <div className="mt-2 space-y-2">
+                            <input
+                              value={fedPeerCid}
+                              onChange={(e) => setFedPeerCid(e.target.value)}
+                              placeholder="CID court (ex : civ1AbCd1234)"
+                              className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                         focus:outline-none focus:ring-2 focus:ring-blue-400
+                                         font-mono placeholder:font-sans placeholder:text-gray-400 bg-white"
+                            />
+                            <input
+                              value={fedPeerName}
+                              onChange={(e) => setFedPeerName(e.target.value)}
+                              placeholder="Nom de l'annuaire"
+                              className="w-full text-sm border border-blue-200 rounded-lg px-3 py-1.5
+                                         focus:outline-none focus:ring-2 focus:ring-blue-400
+                                         placeholder:text-gray-400 bg-white"
+                            />
+                          </div>
+                        </details>
                         <input
                           value={fedPeerAddr}
                           onChange={(e) => setFedPeerAddr(e.target.value)}

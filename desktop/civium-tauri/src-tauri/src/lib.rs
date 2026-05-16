@@ -55,6 +55,7 @@ pub fn run() {
             identity_init,
             identity_show,
             network_create,
+            network_delete,
             network_list,
             network_invite,
             network_join,

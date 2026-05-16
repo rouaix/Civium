@@ -211,6 +211,14 @@ pub fn save_network(conn: &Connection, network: &Network) -> Result<()> {
     Ok(())
 }
 
+pub fn delete_network(conn: &Connection, cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM networks WHERE cid_short = ?1",
+        params![cid_short],
+    )?;
+    Ok(())
+}
+
 pub fn list_networks(conn: &Connection) -> Result<Vec<Network>> {
     let mut stmt = conn.prepare("SELECT data_json FROM networks")?;
     let mut rows = stmt.query([])?;

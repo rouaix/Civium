@@ -163,6 +163,39 @@ pub fn network_create(
 }
 
 #[tauri::command]
+pub fn network_delete(app: AppHandle, network_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let my_cid = keypair.cid();
+
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+
+    let is_admin = network.data.members.iter().any(|m| {
+        m.cid_short == my_cid.short()
+            && matches!(m.role, civium_core::MemberRole::Admin)
+    });
+    if !is_admin {
+        return Err("Vous n'êtes pas administrateur de ce réseau.".into());
+    }
+
+    let other_members = network
+        .data
+        .members
+        .iter()
+        .filter(|m| m.cid_short != my_cid.short())
+        .count();
+    if other_members > 0 {
+        return Err(format!(
+            "Le réseau a encore {} membre(s). Retirez-les avant de supprimer.",
+            other_members
+        ));
+    }
+
+    store::delete_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
     let conn = open(&app)?;
     let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
