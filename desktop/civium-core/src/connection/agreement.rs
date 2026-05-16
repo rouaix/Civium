@@ -1,6 +1,5 @@
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{CiviumError, CiviumKeypair};
 
@@ -146,9 +145,4 @@ fn verify_ed25519_sig(pubkey_b58: &str, msg: &[u8], sig_b58: &str) -> Result<(),
     Ok(())
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+fn unix_now() -> u64 { crate::time::unix_now() }

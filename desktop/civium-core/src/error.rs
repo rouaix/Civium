@@ -1,5 +1,22 @@
 use thiserror::Error;
 
+/// All errors produced by Civium core operations.
+///
+/// Re-exported by `civium_sdk` — match on this when handling [`anyhow::Error`]
+/// values downcast from SDK calls:
+///
+/// ```rust,no_run
+/// # use civium_sdk::CiviumError;
+/// # fn handle(err: anyhow::Error) {
+/// if let Some(e) = err.downcast_ref::<CiviumError>() {
+///     match e {
+///         CiviumError::Identity(_) => eprintln!("identity problem"),
+///         CiviumError::Crypto(_)   => eprintln!("cryptographic error"),
+///         _                        => eprintln!("other: {e}"),
+///     }
+/// }
+/// # }
+/// ```
 #[derive(Debug, Error)]
 pub enum CiviumError {
     #[error("identity error: {0}")]

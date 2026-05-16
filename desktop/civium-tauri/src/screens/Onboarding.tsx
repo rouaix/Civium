@@ -16,6 +16,7 @@ export default function Onboarding({ onComplete }: Props) {
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
   const [networkName, setNetworkName] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [networkPrivacy, setNetworkPrivacy] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [joinInviteLink, setJoinInviteLink] = useState("");
   const [peerAddr, setPeerAddr] = useState("");
@@ -44,6 +45,7 @@ export default function Onboarding({ onComplete }: Props) {
       const net = await tauriInvoke<NetworkInfo>("network_create", {
         name: networkName.trim(),
         displayName: displayName.trim(),
+        privacy: networkPrivacy,
       });
       setNetwork(net);
       const link = await tauriInvoke<string>("network_invite", {
@@ -227,6 +229,22 @@ export default function Onboarding({ onComplete }: Props) {
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
+              </div>
+              <div className="flex items-start gap-3 pt-1">
+                <input
+                  id="privacy-check"
+                  type="checkbox"
+                  checked={networkPrivacy}
+                  onChange={(e) => setNetworkPrivacy(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-civium-600
+                             focus:ring-civium-500"
+                />
+                <label htmlFor="privacy-check" className="text-sm text-gray-600 cursor-pointer">
+                  <span className="font-medium text-gray-800">Mode privé</span>
+                  <span className="block text-xs text-gray-500 mt-0.5">
+                    Inscrit dans l'annuaire Civium mais non visible des autres réseaux.
+                  </span>
+                </label>
               </div>
             </div>
             {error && (

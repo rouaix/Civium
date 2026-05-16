@@ -1,7 +1,9 @@
+mod ap;
 mod commands;
 mod mcp;
 mod node;
 mod rcc;
+mod root_connect;
 mod store;
 
 use commands::*;
@@ -20,6 +22,7 @@ pub fn run() {
             mcp_shutdown: Mutex::new(None),
             mcp_token: Mutex::new(None),
             mcp_port: Mutex::new(None),
+            active_alerts: Mutex::new(Vec::new()),
         })
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -122,8 +125,24 @@ pub fn run() {
             pair_revoke,
             outbox_count_all,
             rcc_register,
+            rcc_force_retry,
+            rcc_mark_registered,
             rcc_status,
             rcc_status_list,
+            ap_enable,
+            ap_disable,
+            ap_status,
+            ap_list_followers,
+            ap_list_posts,
+            ap_post,
+            get_active_alerts,
+            node_settings_get,
+            node_settings_set,
+            hub_config_set,
+            hub_config_get,
+            hub_network_register,
+            hub_member_join,
+            hub_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

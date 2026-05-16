@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -91,9 +90,4 @@ impl Mailbox {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+fn unix_now() -> u64 { crate::time::unix_now() }

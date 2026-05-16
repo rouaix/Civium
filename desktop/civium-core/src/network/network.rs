@@ -1,6 +1,5 @@
 use crate::{crypto::GroupKey, Cid, CiviumError, CiviumKeypair};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     invitation::Invitation,
@@ -48,6 +47,12 @@ pub struct NetworkData {
     /// Standard (default) or Directory — backward-compatible (missing = Standard).
     #[serde(default)]
     pub kind: NetworkKind,
+    /// Fédération ActivityPub activée pour ce réseau.
+    #[serde(default)]
+    pub ap_enabled: bool,
+    /// URL de l'acteur ActivityPub (défini par le RCC après activation).
+    #[serde(default)]
+    pub ap_actor_url: Option<String>,
 }
 
 /// A Civium network — a sovereign group with its own identity, rules and members.
@@ -92,6 +97,8 @@ impl Network {
             pending: vec![],
             group_key_b58: group_key.to_b58(),
             kind: NetworkKind::Standard,
+            ap_enabled: false,
+            ap_actor_url: None,
         };
 
         Ok(Self { keypair, data })
@@ -261,9 +268,4 @@ impl Network {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+fn unix_now() -> u64 { crate::time::unix_now() }

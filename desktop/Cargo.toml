@@ -1,5 +1,5 @@
 [workspace]
-members  = ["civium-core", "civium-cli", "civium-tauri/src-tauri"]
+members  = ["civium-core", "civium-cli", "civium-tauri/src-tauri", "civium-ffi", "civium-sdk"]
 exclude  = ["civium-tauri"]
 resolver = "2"
 
@@ -20,3 +20,5 @@ bs58        = "0.5"
 futures     = "0.3"
 rand        = "0.8"
 uuid        = { version = "1", features = ["v4"] }
+anyhow      = "1"
+rusqlite    = { version = "0.31", features = ["bundled"] }

@@ -11,9 +11,10 @@ Le protocole Civium est implémenté en **Rust**, dans un module unique partagé
 ```
 civium-core (Rust)
 ├── utilisé par  Desktop  (Tauri — natif)
-├── utilisé par  Mobile   (React Native / Flutter — via FFI)
-├── utilisé par  CLI      (binaire natif)
-└── compilé en  WASM     (pour usage futur dans le navigateur)
+├── utilisé par  Mobile   (React Native — via FFI, civium-ffi)
+├── utilisé par  CLI      (binaire natif, civium-cli)
+├── utilisé par  SDK      (intégrateurs tiers, civium-sdk)
+└── compilé en  WASM     (client web navigateur)
 ```
 
 Une seule implémentation du protocole — pas de divergence entre plateformes.
@@ -48,10 +49,10 @@ Une seule implémentation du protocole — pas de divergence entre plateformes.
 
 ## Application Mobile
 
-**Stack :** React Native ou Flutter *(décision en attente)*
+**Stack :** React Native *(décision arrêtée — Phase 4)*
 
 - Base de code partagée iOS / Android
-- Module natif Rust pour le protocole (via FFI)
+- Module natif Rust pour le protocole (via FFI — `civium-ffi` avec uniffi-rs)
 - Stockage local chiffré (SQLCipher — SQLite + clé dérivée)
 
 **Gestion batterie et connectivité :**

@@ -128,6 +128,22 @@ CREATE TABLE IF NOT EXISTS outbox_queue (
     queued_at   INTEGER NOT NULL,
     PRIMARY KEY (network_cid, message_id)
 );
+CREATE TABLE IF NOT EXISTS ap_followers (
+    network_cid     TEXT    NOT NULL,
+    actor_url       TEXT    NOT NULL,
+    inbox_url       TEXT    NOT NULL,
+    shared_inbox    TEXT,
+    followed_at     INTEGER NOT NULL,
+    PRIMARY KEY (network_cid, actor_url)
+);
+CREATE TABLE IF NOT EXISTS ap_posts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    network_cid     TEXT    NOT NULL,
+    note_id         TEXT    NOT NULL UNIQUE,
+    content         TEXT    NOT NULL,
+    ap_activity_id  TEXT,
+    posted_at       INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS rcc_registrations (
     network_cid_short TEXT    NOT NULL,
     network_cid_full  TEXT    NOT NULL,
@@ -138,6 +154,16 @@ CREATE TABLE IF NOT EXISTS rcc_registrations (
     last_attempt      INTEGER,
     registered_at     INTEGER NOT NULL,
     PRIMARY KEY (network_cid_short)
+);
+CREATE TABLE IF NOT EXISTS node_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hub_config (
+    network_cid_short TEXT PRIMARY KEY,
+    hub_url           TEXT NOT NULL,
+    enabled           INTEGER NOT NULL DEFAULT 1,
+    last_sync_ts      INTEGER NOT NULL DEFAULT 0
 );
 ";
 
@@ -1124,4 +1150,217 @@ pub fn update_rcc_status(
         params![status, attempts as i64, last_attempt as i64, network_cid_short],
     )?;
     Ok(())
+}
+
+// ── ActivityPub ───────────────────────────────────────────────────────────────
+
+use civium_core::{ApFollower, ApPost};
+
+pub fn ap_save_follower(conn: &Connection, network_cid: &str, follower: &ApFollower) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO ap_followers (network_cid, actor_url, inbox_url, shared_inbox, followed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            network_cid,
+            &follower.actor_url,
+            &follower.inbox_url,
+            &follower.shared_inbox,
+            follower.followed_at as i64,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn ap_remove_follower(conn: &Connection, network_cid: &str, actor_url: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM ap_followers WHERE network_cid = ?1 AND actor_url = ?2",
+        params![network_cid, actor_url],
+    )?;
+    Ok(())
+}
+
+pub fn ap_list_followers(conn: &Connection, network_cid: &str) -> Result<Vec<ApFollower>> {
+    let mut stmt = conn.prepare(
+        "SELECT actor_url, inbox_url, shared_inbox, followed_at
+         FROM ap_followers WHERE network_cid = ?1 ORDER BY followed_at DESC",
+    )?;
+    let rows = stmt.query_map(params![network_cid], |r| {
+        Ok(ApFollower {
+            actor_url:    r.get(0)?,
+            inbox_url:    r.get(1)?,
+            shared_inbox: r.get(2)?,
+            followed_at:  r.get::<_, i64>(3)? as u64,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn ap_save_post(conn: &Connection, post: &ApPost) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO ap_posts (network_cid, note_id, content, ap_activity_id, posted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            &post.network_cid,
+            &post.note_id,
+            &post.content,
+            &post.ap_activity_id,
+            post.posted_at as i64,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn ap_list_posts(conn: &Connection, network_cid: &str, limit: usize) -> Result<Vec<ApPost>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, network_cid, note_id, content, ap_activity_id, posted_at
+         FROM ap_posts WHERE network_cid = ?1 ORDER BY posted_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![network_cid, limit as i64], |r| {
+        Ok(ApPost {
+            id:             r.get(0)?,
+            network_cid:    r.get(1)?,
+            note_id:        r.get(2)?,
+            content:        r.get(3)?,
+            ap_activity_id: r.get(4)?,
+            posted_at:      r.get::<_, i64>(5)? as u64,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ── Inter-network connections ─────────────────────────────────────────────────
+
+pub fn save_connection(
+    conn: &Connection,
+    network_cid: &str,
+    record: &civium_core::ConnectionRecord,
+) -> Result<()> {
+    let json = serde_json::to_string(record).context("serialize ConnectionRecord")?;
+    conn.execute(
+        "INSERT OR REPLACE INTO connections (network_cid, peer_cid_full, record_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid, record.peer_cid_full, json],
+    )?;
+    Ok(())
+}
+
+pub fn load_connection(
+    conn: &Connection,
+    network_cid: &str,
+    peer_cid_full: &str,
+) -> Result<Option<civium_core::ConnectionRecord>> {
+    let result = conn.query_row(
+        "SELECT record_json FROM connections WHERE network_cid = ?1 AND peer_cid_full = ?2",
+        params![network_cid, peer_cid_full],
+        |r| r.get::<_, String>(0),
+    );
+    match result {
+        Ok(json) => Ok(Some(serde_json::from_str(&json).context("deserialize ConnectionRecord")?)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn list_connections(
+    conn: &Connection,
+    network_cid: &str,
+) -> Result<Vec<civium_core::ConnectionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT record_json FROM connections WHERE network_cid = ?1",
+    )?;
+    let rows = stmt.query_map(params![network_cid], |r| r.get::<_, String>(0))?;
+    let mut records = Vec::new();
+    for row in rows {
+        if let Ok(json) = row {
+            if let Ok(rec) = serde_json::from_str::<civium_core::ConnectionRecord>(&json) {
+                records.push(rec);
+            }
+        }
+    }
+    Ok(records)
+}
+
+// ── Hub config ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct HubConfig {
+    pub network_cid_short: String,
+    pub hub_url:           String,
+    pub enabled:           bool,
+    pub last_sync_ts:      u64,
+}
+
+pub fn get_hub_config(conn: &Connection, network_cid_short: &str) -> Option<HubConfig> {
+    conn.query_row(
+        "SELECT hub_url, enabled, last_sync_ts FROM hub_config WHERE network_cid_short = ?1",
+        params![network_cid_short],
+        |r| Ok(HubConfig {
+            network_cid_short: network_cid_short.to_string(),
+            hub_url:           r.get(0)?,
+            enabled:           r.get::<_, i64>(1)? != 0,
+            last_sync_ts:      r.get::<_, i64>(2)? as u64,
+        }),
+    ).ok()
+}
+
+pub fn set_hub_config(conn: &Connection, cfg: &HubConfig) -> Result<()> {
+    conn.execute(
+        "INSERT INTO hub_config (network_cid_short, hub_url, enabled, last_sync_ts)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(network_cid_short) DO UPDATE SET
+             hub_url      = excluded.hub_url,
+             enabled      = excluded.enabled,
+             last_sync_ts = excluded.last_sync_ts",
+        params![cfg.network_cid_short, cfg.hub_url, cfg.enabled as i64, cfg.last_sync_ts as i64],
+    )?;
+    Ok(())
+}
+
+pub fn update_hub_last_sync(conn: &Connection, network_cid_short: &str, ts: u64) -> Result<()> {
+    conn.execute(
+        "UPDATE hub_config SET last_sync_ts = ?1 WHERE network_cid_short = ?2",
+        params![ts as i64, network_cid_short],
+    )?;
+    Ok(())
+}
+
+// ── Node settings ─────────────────────────────────────────────────────────────
+
+pub fn get_node_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM node_settings WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    ).ok()
+}
+
+pub fn set_node_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO node_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Retourne la NodeConfig à utiliser au démarrage, construite depuis la base.
+pub fn load_node_config(conn: &Connection) -> civium_core::NodeConfig {
+    let tcp_port = get_node_setting(conn, "tcp_port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    let ws_port = get_node_setting(conn, "ws_port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(0);
+    let external_addr = get_node_setting(conn, "external_addr")
+        .filter(|v| !v.is_empty());
+
+    civium_core::NodeConfig {
+        listen_tcp:  format!("/ip4/0.0.0.0/tcp/{tcp_port}"),
+        listen_quic: format!("/ip4/0.0.0.0/udp/{tcp_port}/quic-v1"),
+        listen_ws:   Some(format!("/ip4/0.0.0.0/tcp/{ws_port}/ws")),
+        external_addr,
+        bootstrap_peers:         vec![],
+        mcp_port:                None,
+        auto_accept_connections: false,
+    }
 }

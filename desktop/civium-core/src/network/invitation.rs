@@ -1,7 +1,6 @@
 use crate::{Cid, CiviumError, CiviumKeypair};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const PREFIX: &str = "civium-invite:";
 const VERSION: u8 = 1;
@@ -137,9 +136,4 @@ impl Invitation {
     }
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+fn unix_now() -> u64 { crate::time::unix_now() }
