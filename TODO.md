@@ -849,6 +849,48 @@
 - Ajouter : longueur max sur tous les champs texte (256 chars), regex de base pour les noms (pas de null bytes), validation B58 avant appel `identity_from_secret`
 - Fichier : `desktop/civium-tauri/src/screens/Onboarding.tsx`
 
+## Connexions inter-réseaux absentes de Tauri — Priorité haute (CRITIQUE)
+
+- Les commandes `connection_request`, `connection_accept`, `connection_list`, `connection_revoke` existent dans la CLI (`civium-cli/src/main.rs`) mais **aucune n'est exposée en commande Tauri** dans `commands.rs` — l'interface desktop ne peut pas gérer les connexions inter-réseaux
+- L'APC (Accord de Partage Civium) est signé et vérifié à la création (`connection/agreement.rs:67-74`) mais n'est **jamais re-vérifié** lors des requêtes ultérieures — si la clé d'un réseau est compromise, l'APC reste "actif"
+- Pas d'expiration ou de durée de vie sur un APC — un accord reste valide indéfiniment sans révocation forcée
+- Ajouter : `connection_request`, `connection_accept`, `connection_list`, `connection_revoke` dans `desktop/civium-tauri/src-tauri/src/commands.rs` + UI dans Dashboard.tsx
+
+## Session web — cookies sans flags de sécurité — Priorité haute (CRITIQUE)
+
+- `website/src/controllers/AuthController.php` : les cookies de session PHP n'ont aucun flag configuré — pas de `HttpOnly` (JS peut lire le cookie), pas de `Secure` (transmis en clair sur HTTP), pas de `SameSite=Strict` (vulnérable CSRF)
+- Aucune protection CSRF sur les formulaires POST — `AuthController->request()` accepte un POST brut sans token CSRF ni vérification de l'origine
+- Pas de rate limiting sur la génération de magic links — `MagicLink::create()` peut être appelée N fois pour le même email sans throttle (pas de "max 5 tokens par email par heure")
+- Corriger : `session_set_cookie_params(['httponly'=>true,'secure'=>true,'samesite'=>'Strict'])` + token CSRF sur chaque formulaire + limite 5 magic links / email / heure
+
+## Rate limiting absent sur l'API RCC — Priorité haute
+
+- `website/src/controllers/ApiController.php` : l'endpoint `/api/register` vérifie bien la signature Ed25519 avant insertion, mais **aucun rate limiting par adresse IP** — une même IP peut enregistrer des milliers de réseaux en quelques secondes
+- `ON DUPLICATE KEY UPDATE` : un ré-enregistrement avec `admin_email` différent est silencieusement accepté — une mise à jour des coordonnées d'un réseau existant ne devrait requérir une nouvelle signature valide
+- Pas d'audit log horodaté sur les `INSERT`/`UPDATE` : impossible de retracer les modifications en cas de litige légal
+- Ajouter : rate limit (ex. 10 enregistrements / IP / heure), vérification signature sur update, table `rcc_audit_log`
+
+## Dashboard — chargement mémoire non borné — Priorité haute
+
+- `desktop/civium-tauri/src/screens/Dashboard.tsx` : les listes de messages, membres, propositions, événements et documents sont chargées en entier dans le state React sans pagination ni virtualisation
+- Sur un nœud actif depuis longtemps (milliers de messages), tous les éléments sont montés dans le DOM — risque OOM et freezes UI
+- Les notifications sont limitées à 30 (`.slice(0,30)`) et les messages récents à 5 (`.slice(-5)`) mais les autres listes n'ont aucune limite
+- Implémenter une pagination côté backend (paramètre `limit`/`offset`) sur les commandes Tauri `message_list`, `agenda_list`, `document_list`, `proposal_list` et une virtualisation de liste côté frontend (ex. `@tanstack/react-virtual`)
+
+## CLI — aucun format de sortie machine-readable — Priorité moyenne
+
+- `desktop/civium-cli/src/main.rs` : toutes les sorties sont du texte humain formaté (`println!("{} — {} ({} members)")`) — aucun flag `--json` ou `--format`
+- Impossible d'intégrer la CLI dans des scripts d'automatisation ou des outils de monitoring
+- Les listes de l'annuaire et des connexions n'ont ni `--limit` ni `--page` — une recherche dans un annuaire fédéré peut retourner des milliers de lignes
+- Ajouter `--json` global (ou par sous-commande) + `--limit N --offset M` sur toutes les commandes de liste
+
+## Agenda — fonctionnalités manquantes — Priorité moyenne
+
+- `desktop/civium-core/src/agenda/mod.rs` : le champ `recurrence: Option<String>` existe mais est toujours `None` à la création — les événements récurrents ne sont pas implémentés
+- Pas de validation des timestamps : `start_at > end_at` ou événement dans le passé ne génèrent aucune erreur
+- Pas de gestion des conflits de plage horaire, pas d'invitation de membres à un événement (pas de champ `attendees`), pas de rappels/notifications
+- Les événements ne sont pas synchronisés via CRDT inter-réseaux — locaux uniquement
+
 ## Partage de contenu entre réseaux (APC étendu) — Priorité basse
 
 - L'APC (Accord de Partage Civium) est actuellement limité à la visibilité de l'annuaire des membres (`expose_member_directory: bool`) — deux réseaux connectés ne peuvent pas partager de messages, documents ou événements dans un espace commun
