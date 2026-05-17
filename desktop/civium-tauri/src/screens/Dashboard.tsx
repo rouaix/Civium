@@ -1978,7 +1978,7 @@ export default function Dashboard() {
                     onKeyDown={(e) => { if (e.key === "Enter") handleCreateNetwork(); }}
                   />
                   <p className="text-xs text-gray-400 mt-1">
-                    Un espace souverain pour votre groupe. Vous invitez les membres et définissez les règles.
+                    Un réseau est un espace de groupe indépendant de votre identité. Vous en êtes l'administrateur et pouvez y inviter qui vous voulez. Vous pouvez aussi rejoindre les réseaux d'autres personnes avec la même identité.
                   </p>
                 </div>
                 <div>
@@ -2042,21 +2042,27 @@ export default function Dashboard() {
         ) : !selected ? (
           <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
             {networks.length === 0 ? (
-              <>
-                <p>Créez votre réseau pour commencer.</p>
-                <button
-                  className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
-                  onClick={() => setShowCreateForm(true)}
-                >
-                  + Créer mon réseau
-                </button>
-                <button
-                  className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
-                  onClick={() => setShowJoinForm(true)}
-                >
-                  Rejoindre un réseau existant
-                </button>
-              </>
+              <div className="text-center max-w-sm space-y-3">
+                <p className="text-gray-600 font-medium">Bienvenue sur Civium</p>
+                <p className="text-sm text-gray-400 leading-relaxed">
+                  Votre identité ({identity?.cid_short ?? "…"}) est distincte de vos réseaux.
+                  Un réseau est un espace de groupe que vous créez ou rejoignez — vous pouvez en rejoindre plusieurs avec la même identité.
+                </p>
+                <div className="flex flex-col gap-2 pt-1">
+                  <button
+                    className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+                    onClick={() => setShowCreateForm(true)}
+                  >
+                    + Créer un nouveau réseau
+                  </button>
+                  <button
+                    className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
+                    onClick={() => setShowJoinForm(true)}
+                  >
+                    Rejoindre un réseau existant
+                  </button>
+                </div>
+              </div>
             ) : (
               <p>Sélectionnez un réseau dans la barre latérale.</p>
             )}

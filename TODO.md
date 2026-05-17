@@ -65,9 +65,9 @@
   - losque j'invite un membre par mail il doit pouvoir créer automatiquement sont propre réseaux et se connecter au mien automatiquement.
   - ✅ le type annuaire est réservé à la recherchede membres dans un réseaux ou de reseaux. C'est un plugin qui gère cela pas un type de réseaux. (Dashboard : formulaire création réseau simplifié, types annuaire/RRM supprimés)
   - un membre invité sur un réseaux peut installer l'application et utiliser le réseaux déjà existant qui l'a invité.
-  - Il faut pouvoir gérer les droits users dans les réseaux.
-  - Il y a une incohérence, si chaque user est un réseau alors comment les regrouper dans un réseau ?
-  - Il faut pouvoir créer des réseaux privés et des réseaux publics.
+  - ✅ Il faut pouvoir gérer les droits users dans les réseaux. (Promouvoir/Rétrograder admin, Exclure du réseau)
+  - ✅ Il y a une incohérence, si chaque user est un réseau alors comment les regrouper dans un réseau ? (Clarification UX : identité ≠ réseau. Un user a un CID, crée ou rejoint des réseaux distincts.)
+  - ✅ Il faut pouvoir créer des réseaux privés et des réseaux publics. (Toggle Privé/Public dans Desktop + Website, stocké dans NetworkData.is_public)
   - Il faut pouvoir créer des réseaux de réseaux exemple dans une famille, il y a un réseau pour la famille et un réseau pour chaque user de la famille.
 
 
