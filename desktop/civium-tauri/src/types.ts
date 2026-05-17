@@ -95,6 +95,8 @@ export interface NodeSettingsInfo {
 
 export interface MessageDisplay {
   id: string;
+  network_cid_short: string;
+  network_name: string;
   author_cid_short: string;
   author_name: string;
   body: string;

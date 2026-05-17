@@ -232,6 +232,9 @@ export default function Dashboard() {
   const [activeAlerts, setActiveAlerts] = useState<FraudAlertInfo[]>([]);
   const [rootConnected, setRootConnected] = useState<string | null>(null);
 
+  // Global activity feed (home screen)
+  const [globalFeed, setGlobalFeed] = useState<ActivityEventInfo[]>([]);
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
   useEffect(() => {
@@ -264,6 +267,10 @@ export default function Dashboard() {
       .catch(() => {});
   }, []);
 
+  const refreshGlobalFeed = useCallback(() => {
+    tauriInvoke<ActivityEventInfo[]>("activity_list_all").then(setGlobalFeed).catch(() => {});
+  }, []);
+
   useEffect(() => {
     tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
     tauriInvoke<PluginInfo[]>("plugin_list").then(setPlugins).catch(() => {});
@@ -272,7 +279,8 @@ export default function Dashboard() {
       .then(setIdentity).catch(() => {});
     refreshOutboxCounts();
     refreshRccStatuses();
-  }, [refreshOutboxCounts, refreshRccStatuses]);
+    refreshGlobalFeed();
+  }, [refreshOutboxCounts, refreshRccStatuses, refreshGlobalFeed]);
 
   const refreshNetwork = useCallback((cid: string) => {
     tauriInvoke<MemberInfo[]>("member_list", { networkCid: cid }).then((data) => {
@@ -491,6 +499,7 @@ export default function Dashboard() {
     const alertInterval = setInterval(pollAlerts, 30 * 60 * 1000);
 
     let unlistenSync: UnlistenFn | null = null;
+    let unlistenHubSync: UnlistenFn | null = null;
     let unlistenOutbox: UnlistenFn | null = null;
     let unlistenRcc: UnlistenFn | null = null;
     let unlistenAlert: UnlistenFn | null = null;
@@ -505,8 +514,19 @@ export default function Dashboard() {
         refreshMessages(cid);
       }
       refreshOutboxCounts();
+      refreshGlobalFeed();
     }).then((fn) => {
       unlistenSync = fn;
+    });
+
+    listen<string>("civium://hub-sync-completed", (event) => {
+      const cid = event.payload;
+      if (selectedRef.current?.cid_short === cid) {
+        refreshMessages(cid);
+      }
+      refreshGlobalFeed();
+    }).then((fn) => {
+      unlistenHubSync = fn;
     });
 
     listen<string>("civium://outbox-cleared", () => {
@@ -539,12 +559,13 @@ export default function Dashboard() {
       clearInterval(interval);
       clearInterval(alertInterval);
       unlistenSync?.();
+      unlistenHubSync?.();
       unlistenOutbox?.();
       unlistenRcc?.();
       unlistenAlert?.();
       unlistenRoot?.();
     };
-  }, [refreshNetwork, refreshMessages, refreshOutboxCounts, refreshRccStatuses]);
+  }, [refreshNetwork, refreshMessages, refreshOutboxCounts, refreshRccStatuses, refreshGlobalFeed]);
 
   async function generateInvite() {
     if (!selected) return;
@@ -1473,9 +1494,6 @@ export default function Dashboard() {
                     {net.is_rrm && (
                       <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
                     )}
-                    {net.is_public && (
-                      <span className="text-xs bg-green-600 text-white px-1 py-0.5 rounded" title="Réseau public — visible dans les annuaires">🌐</span>
-                    )}
                     <span className="ml-auto flex items-center gap-1">
                       {(outboxCounts[net.cid_short] ?? 0) > 0 && (
                         <span className="text-xs bg-amber-400 text-amber-900 rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center" title="Messages en attente">
@@ -1517,7 +1535,6 @@ export default function Dashboard() {
                         >
                           <span className="opacity-50 mr-1">↳</span>
                           <span className="font-medium">{child.name}</span>
-                          {child.is_public && <span className="ml-1 text-green-400">🌐</span>}
                         </button>
                       );
                     })}
@@ -2175,7 +2192,22 @@ export default function Dashboard() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm">Sélectionnez un réseau dans la barre latérale.</p>
+                  <div className="w-full">
+                    <h2 className="text-lg font-semibold text-gray-700 mb-3">Fil d'actualité</h2>
+                    {globalFeed.length === 0 ? (
+                      <p className="text-sm text-gray-400">Aucune activité récente. Sélectionnez un réseau dans la barre latérale pour commencer.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {globalFeed.map((e) => (
+                          <li key={e.id} className="flex items-start gap-3 bg-white border border-gray-100 rounded-lg px-4 py-3 text-sm shadow-sm">
+                            <span className="text-gray-400 font-mono text-xs mt-0.5 shrink-0">{e.network_cid_short}</span>
+                            <span className="text-gray-700 flex-1">{e.summary}</span>
+                            <span className="text-gray-300 text-xs shrink-0">{new Date(e.occurred_at * 1000).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -2902,10 +2934,11 @@ export default function Dashboard() {
                           {msg.author_name[0]?.toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-baseline gap-2">
+                          <div className="flex items-baseline gap-2 flex-wrap">
                             <span className="text-sm font-medium text-gray-900">
                               {msg.author_name}
                             </span>
+                            <span className="text-xs text-civium-400 font-medium">{msg.network_name}</span>
                             <span className="text-xs text-gray-400">{formatTime(msg.sent_at)}</span>
                           </div>
                           <p className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap break-words">

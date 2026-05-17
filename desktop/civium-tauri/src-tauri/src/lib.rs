@@ -113,6 +113,7 @@ pub fn run() {
             agenda_update,
             agenda_delete,
             activity_list,
+            activity_list_all,
             notification_list,
             notification_unread_count,
             notification_mark_read,
