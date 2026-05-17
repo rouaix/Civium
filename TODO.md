@@ -337,6 +337,14 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Support Linux — Priorité haute
+
+- `tauri.conf.json` déclare `"targets": "all"` mais aucun build CI ni packaging Linux n'existe (pas de AppImage, `.deb`, `.rpm`)
+- Ajouter une cible Linux dans le workflow CI Tauri (à créer) : build AppImage + `.deb` sur Ubuntu
+- Tester le nœud P2P (TCP, QUIC, WebSocket, mDNS) sur Linux avant la release publique — libp2p supporte Linux mais non validé en CI
+- Mentionner Linux comme plateforme supportée dans le README et la ROADMAP
+
+
 ## Code signing des builds — Priorité haute
 
 > Sans signature, macOS affiche "développeur non vérifié" et Windows SmartScreen bloque l'installation — bloquant pour tout déploiement public.
@@ -361,6 +369,45 @@
 - Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
 - Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
 - Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
+## WebRTC — P2P direct navigateur-à-navigateur — Priorité moyenne
+
+- Ajouter `libp2p-webrtc` comme transport dans `civium-core/Cargo.toml` (feature `wasm`) pour permettre des connexions P2P directes entre deux clients web WASM sans passer par un nœud desktop relay
+- Actuellement les clients web ne peuvent se connecter qu'à un nœud desktop via WebSocket — deux navigateurs ne peuvent pas communiquer directement
+- Nécessite un serveur STUN/TURN public (ou self-hosted) pour la négociation ICE
+
+
+## Webhooks / intégrations tierces — Priorité moyenne
+
+- Ajouter un système de webhooks dans `civium-core` : un réseau peut enregistrer une URL externe qui reçoit un POST JSON à chaque événement (nouveau message, nouveau membre, nouvelle proposition, alerte RCC)
+- La signature HMAC du payload permet au service destinataire de vérifier l'authenticité
+- Exposer la gestion des webhooks dans le Dashboard (ajouter, tester, supprimer) et dans le CLI
+- Utile pour connecter Civium à des outils tiers : Zapier, Make (ex-Integromat), outils no-code, notifications Slack/Discord
+
+
+## Support proxy SOCKS5 / Tor — Priorité moyenne
+
+- Ajouter un champ `socks_proxy: Option<String>` dans `NodeConfig` (`civium-core/src/node/config.rs`) pour router le trafic libp2p via un proxy SOCKS5 ou Tor
+- Exposer ce paramètre dans le panneau "Paramètres du nœud" du Dashboard
+- Utile pour les utilisateurs dans des pays à censure ou souhaitant un anonymat réseau renforcé
+
+
+## API REST documentée (OpenAPI) — Priorité moyenne
+
+- Documenter les endpoints PHP existants (`/api/register`, `/api/networks`, `/api/status`, `/hub/*`) avec une spécification OpenAPI 3.0 (fichier `openapi.yaml` dans `website/`)
+- Générer une page de documentation interactive (Swagger UI ou Redoc) accessible à `/api/docs`
+- Le serveur MCP du nœud (`mcp.rs`) n'est pas une API REST standard — ajouter un endpoint REST léger (`/api/v1/`) sur le nœud Tauri pour les intégrateurs qui ne veulent pas implémenter MCP
+
+
+## Tests de fuzzing — Priorité moyenne
+
+- Créer des targets de fuzzing avec `cargo-fuzz` sur les fonctions critiques de `civium-core` :
+  - Parsing des messages CBOR (`CiviumRequest` / `CiviumResponse`)
+  - Vérification des signatures Ed25519 (`CiviumKeypair::verify`)
+  - Parsing des adresses multiaddr
+  - Déchiffrement ChaCha20-Poly1305 (input aléatoire → pas de panic)
+- Intégrer le fuzzing dans la CI (GitHub Actions) avec un budget de temps limité (ex. 60 s par target)
 
 
 ## Rôles intermédiaires dans un réseau — Priorité moyenne
