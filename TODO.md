@@ -348,11 +348,40 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Forward secrecy — rotation de la clé de groupe — CRITIQUE
+
+- Quand un membre est exclu du réseau (`member_remove()`), la clé de groupe ChaCha20-Poly1305 n'est **pas renouvelée** — l'ancien membre qui possède une copie de la clé peut continuer à déchiffrer tous les futurs messages (`network.rs:271-279` : aucune action sur `group_key_b58` après suppression)
+- Implémenter une rotation automatique de la clé de groupe à chaque exclusion de membre : générer une nouvelle `GroupKey`, la distribuer chiffrée aux membres restants via leurs paires de clés Ed25519, et invalider l'ancienne
+- Loguer la rotation dans l'`audit_trail` avec le CID du membre exclu et l'horodatage
+
+
+## Sécurité IPC Tauri — ACL des commandes — CRITIQUE
+
+- Les 106 commandes Tauri sont exposées sans restrictions d'accès (`generate_handler!` dans `lib.rs:53-154`) — la CSP est explicitement désactivée (`"csp": null` dans `tauri.conf.json`) et aucun fichier de capabilities ne limite l'accès par WebView
+- La commande `identity_show()` retourne `secret_b58` (clé privée Ed25519) en clair au frontend TypeScript — une vulnérabilité XSS dans les assets `dist/` permettrait d'exfiltrer la clé privée via IPC
+- Activer le système de capabilities Tauri v2 : créer `src-tauri/capabilities/main.json` listant explicitement les commandes autorisées par fenêtre
+- Supprimer `"csp": null` et définir une CSP stricte interdisant les scripts inline et les sources externes
+
+
+## BDD corrompue — gestion d'erreur au démarrage — CRITIQUE
+
+- Si `civium.db` est corrompu, l'erreur SQLite est capturée en `Err(_) => return` (`lib.rs:44`) sans aucune notification à l'UI — le Dashboard s'ouvre vide sans explication, l'utilisateur perd toutes ses données silencieusement
+- Émettre un événement `civium://db-error` vers l'UI avec le message d'erreur SQLite, et afficher un écran d'erreur explicite avec les options : restaurer depuis un backup, ou réinitialiser (perte de données confirmée)
+- Tenter automatiquement une restauration depuis le dernier backup dans `.backups/` avant de proposer la réinitialisation
+
+
 ## Watchdog du nœud P2P — CRITIQUE
 
 - Si le thread P2P (`civium-core`) crashe, l'UI Tauri n'est **pas notifiée** — le Dashboard continue d'afficher l'indicateur "En ligne" alors que le nœud est mort (`lib.rs:47` : erreurs de démarrage silencieuses, `node.rs` : boucle sort sans émettre d'événement)
 - Implémenter un watchdog : détecter la fin du task P2P (`spawn` + `JoinHandle`), émettre un événement `civium://node-crashed` vers l'UI, puis tenter un redémarrage automatique après délai exponentiel
 - Afficher une bannière d'erreur rouge dans le Dashboard si le nœud P2P est inactif, avec un bouton "Redémarrer le nœud"
+
+
+## Saturation DHT (DoS mémoire) — CRITIQUE
+
+- Le store Kademlia utilise `MemoryStore` sans limite de capacité — un attaquant peut inonder le nœud avec des annonces DHT malveillantes et épuiser la RAM jusqu'au crash (`behaviour.rs:15-30` : `MemoryStore::new(peer_id)` sans paramètre de limite)
+- Configurer `kad::store::MemoryStore` avec une capacité maximale (`max_records`, `max_provided_keys`) et rejeter les nouvelles entrées quand le seuil est atteint
+- Combiner avec le rate limiting P2P (section suivante) pour limiter le nombre d'annonces acceptées par pair sur une fenêtre glissante
 
 
 ## Rate limiting P2P (protection DoS) — CRITIQUE
@@ -446,6 +475,28 @@
 
 - Les boutons "Copier" dans le Dashboard (`navigator.clipboard.writeText()`) ne donnent aucun retour visuel — l'utilisateur ne sait pas si la copie a réussi (pas de toast, pas de changement d'icône)
 - Ajouter un feedback post-copie : icône ✓ pendant 2 s, ou mini-toast "Copié !" — applicable à tous les boutons copie : CID, secret, adresse P2P, token MCP, lien d'invitation
+
+
+## Workflow GitHub Releases — Priorité haute
+
+- Créer `.github/workflows/release.yml` déclenché sur tag `v*` : build Tauri pour Windows (`.exe`/`.msi`), macOS (`.dmg`), Linux (`.AppImage`/`.deb`), puis création automatique de la release GitHub avec les artefacts signés
+- Intégrer la signature de code (voir section Code signing) dans ce workflow
+- Les releases sont actuellement créées manuellement — bloquant pour distribuer l'app à des utilisateurs non-techniques
+
+
+## Consentement pour la publication dans l'annuaire — Priorité moyenne
+
+- N'importe quel admin d'un réseau annuaire peut publier un membre (`directory_publish`) sans son consentement — aucun champ `consent_given` dans `DirectoryEntry`, aucune notification envoyée au membre concerné
+- Ajouter un mécanisme de consentement : le membre publié reçoit une notification et doit accepter pour que l'entrée devienne visible
+- Ajouter un bouton "Me retirer de cet annuaire" accessible à chaque membre depuis la section Annuaire du Dashboard
+
+
+## Archivage d'un réseau — Priorité moyenne
+
+- Il n'existe pas de mode "archivé" pour un réseau — la seule option est la suppression complète (`network_delete`), ce qui détruit tout l'historique
+- Ajouter un champ `archived: bool` sur `NetworkData` : un réseau archivé est en lecture seule (consultation des messages autorisée, nouvelles publications et votes bloqués)
+- Afficher les réseaux archivés dans une section séparée du Dashboard avec un badge "Archivé"
+- Utile pour les associations dissoutes, projets terminés ou réseaux saisonniers
 
 
 ## Avatars et logos — Priorité moyenne
