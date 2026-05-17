@@ -337,6 +337,24 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Rate limiting P2P (protection DoS) — CRITIQUE
+
+- Ajouter un compteur de requêtes par pair dans `civium-core/src/node/` : si un pair dépasse N requêtes `CiviumRequest` par seconde, ignorer les requêtes suivantes et éventuellement le déconnecter
+- Le `HashMap<PeerId, PendingResponse>` dans `node.rs` croît sans limite de taille — ajouter un plafond et rejeter les requêtes dépassant le seuil
+- Utiliser `libp2p::swarm::ConnectionLimits` pour limiter le nombre de connexions simultanées par pair et le nombre total de connexions entrantes
+- Sans cette protection, un pair malveillant peut saturer le nœud avec 1 000 requêtes Sync par seconde → débordement mémoire et crash
+
+
+## Validation des inputs utilisateur — Priorité haute
+
+- Ajouter une validation côté Rust dans `civium-core` avant tout `Network::create()`, `submit_join_request()`, `message_send()` :
+  - Nom de réseau et nom d'affichage : 1–64 caractères, pas de caractères de contrôle
+  - Corps de message : longueur maximale configurable (suggestion : 64 Ko)
+  - CID : longueur et format Base58 validés
+- Actuellement seule une vérification `!value.trim().is_empty()` est faite côté React — un nom de 100 000 caractères passe sans erreur
+- Retourner des erreurs `CiviumError::Validation` explicites avec le champ et la contrainte violée
+
+
 ## Support Linux — Priorité haute
 
 - `tauri.conf.json` déclare `"targets": "all"` mais aucun build CI ni packaging Linux n'existe (pas de AppImage, `.deb`, `.rpm`)
@@ -369,6 +387,39 @@
 - Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
 - Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
 - Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
+## Onboarding — indicateur de progression — Priorité moyenne
+
+- Ajouter une barre de progression ou des étapes numérotées ("2 / 5") dans `Onboarding.tsx` — actuellement les 6 étapes (welcome → identity → choice → create/join → done) se succèdent sans aucun indicateur visuel d'avancement
+- Ajouter une option "J'ai déjà un compte" dès l'étape `welcome` permettant de saisir son `secret_b58` pour restaurer une identité existante (actuellement absent — voir section UX Desktop)
+
+
+## Mémoire WASM — pagination des données — Priorité moyenne
+
+- Les fonctions `wasm-bindgen` dans `civium-core/src/wasm.rs` retournent des blobs complets : `network_create` retourne tout `NetworkData` (membres inclus), `vote_compute` reçoit tous les votes en JSON — risque de saturation mémoire pour des réseaux avec des milliers de membres ou de votes
+- Ajouter une pagination côté WASM : `members_list(offset, limit)`, `votes_list(proposal_id, offset, limit)` plutôt que des retours complets
+- Afficher un avertissement dans le client web si un réseau dépasse un seuil (ex. 500 membres) et suggérer l'app desktop
+
+
+## Nœud headless — fichier de configuration — Priorité moyenne
+
+- Le CLI supporte le mode serveur headless via `civium node start` avec des flags, mais il n'y a pas de fichier de configuration persistant (`civium.toml` ou `.env`) — relancer le nœud après un redémarrage serveur nécessite de retaper tous les flags
+- Ajouter la lecture d'un fichier `civium.toml` dans le répertoire de données (ou via `--config`) : `listen_tcp`, `listen_ws`, `external_addr`, `bootstrap_peers`, `announce`, `auto_accept_connections`
+- Fournir un exemple `civium.toml.example` et un template de service systemd dans le dépôt (`deploy/civium.service`)
+
+
+## Affichage des timestamps — Priorité basse
+
+- Les timestamps sont bien stockés en UTC (secondes Unix) dans toute la base de données — ✅
+- Côté CLI, les timestamps sont affichés en secondes Unix brutes — les convertir en date/heure locale lisible (`2026-05-17 14:32:10`) dans toutes les commandes `list`
+- Côté Dashboard, vérifier que l'affichage utilise le fuseau local de l'utilisateur et non UTC (JavaScript `new Date(ts * 1000).toLocaleString()`)
+
+
+## Unicité des noms de réseau — Priorité basse
+
+- Deux réseaux indépendants peuvent avoir le même nom (ex. deux "Famille Martin" sur des nœuds différents) — le RCC indexe par `network_cid`, pas par `network_name`
+- Ajouter une recherche de noms similaires lors de l'enregistrement RCC et avertir (sans bloquer) l'admin si un réseau du même nom existe déjà : "Un réseau nommé 'X' est déjà enregistré — assurez-vous que votre réseau est bien distinct"
 
 
 ## WebRTC — P2P direct navigateur-à-navigateur — Priorité moyenne
