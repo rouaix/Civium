@@ -53,6 +53,9 @@ pub struct NetworkData {
     /// URL de l'acteur ActivityPub (défini par le RCC après activation).
     #[serde(default)]
     pub ap_actor_url: Option<String>,
+    /// Réseau public (découvrable via annuaire) ou privé (invitation uniquement).
+    #[serde(default)]
+    pub is_public: bool,
 }
 
 /// A Civium network — a sovereign group with its own identity, rules and members.
@@ -72,6 +75,7 @@ impl Network {
         admin_cid: &Cid,
         admin_display_name: String,
         admin_pub_key_b58: Option<String>,
+        is_public: bool,
     ) -> Result<Self, CiviumError> {
         let keypair = CiviumKeypair::generate()?;
         let cid = keypair.cid();
@@ -99,6 +103,7 @@ impl Network {
             kind: NetworkKind::Standard,
             ap_enabled: false,
             ap_actor_url: None,
+            is_public,
         };
 
         Ok(Self { keypair, data })

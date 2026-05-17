@@ -36,6 +36,7 @@ pub struct NetworkInfo {
     pub is_rrm: bool,
     pub ap_enabled: bool,
     pub ap_actor_url: Option<String>,
+    pub is_public: bool,
 }
 
 #[derive(Serialize)]
@@ -132,7 +133,7 @@ pub fn network_create(
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
 
-    let network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()))
+    let network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), !privacy)
         .map_err(|e| e.to_string())?;
 
     let info = NetworkInfo {
@@ -144,6 +145,7 @@ pub fn network_create(
         is_rrm: false,
         ap_enabled: false,
         ap_actor_url: None,
+        is_public: network.data.is_public,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -210,6 +212,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             is_rrm: n.data.kind == NetworkKind::Rrm,
             ap_enabled: n.data.ap_enabled,
             ap_actor_url: n.data.ap_actor_url.clone(),
+            is_public: n.data.is_public,
         })
         .collect())
 }
@@ -290,6 +293,7 @@ pub fn network_join(
         is_rrm: network.data.kind == NetworkKind::Rrm,
         ap_enabled: network.data.ap_enabled,
         ap_actor_url: network.data.ap_actor_url.clone(),
+        is_public: network.data.is_public,
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -544,6 +548,7 @@ pub async fn network_join_p2p(
         is_rrm: network.data.kind == NetworkKind::Rrm,
         ap_enabled: network.data.ap_enabled,
         ap_actor_url: network.data.ap_actor_url.clone(),
+        is_public: network.data.is_public,
     })
 }
 
@@ -1282,7 +1287,7 @@ pub fn directory_create(
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()))
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false)
         .map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Directory;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -1295,6 +1300,7 @@ pub fn directory_create(
         is_rrm: false,
         ap_enabled: false,
         ap_actor_url: None,
+        is_public: false,
     })
 }
 
@@ -1315,6 +1321,7 @@ pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, Strin
             is_rrm: n.data.kind == NetworkKind::Rrm,
             ap_enabled: n.data.ap_enabled,
             ap_actor_url: n.data.ap_actor_url.clone(),
+            is_public: n.data.is_public,
         })
         .collect())
 }
@@ -1532,7 +1539,7 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58())).map_err(|e| e.to_string())?;
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false).map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Rrm;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
     Ok(NetworkInfo {
@@ -1544,6 +1551,7 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
         is_rrm: true,
         ap_enabled: false,
         ap_actor_url: None,
+        is_public: false,
     })
 }
 

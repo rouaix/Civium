@@ -866,7 +866,7 @@ fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
+            let network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()), false)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             store::save_network(data, &network)?;
             println!("Network '{}' created.", name);
@@ -2257,7 +2257,7 @@ fn run_directory(cmd: DirectoryCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
+            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()), false)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             network.data.kind = NetworkKind::Directory;
             store::save_network(data, &network)?;
@@ -2445,7 +2445,7 @@ fn run_rrm(cmd: RrmCmd, data: &PathBuf) -> Result<()> {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let admin_cid = keypair.cid();
-            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()))
+            let mut network = Network::create(name.clone(), &admin_cid, display_name, Some(keypair.pub_key_b58()), false)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             network.data.kind = NetworkKind::Rrm;
             store::save_network(data, &network)?;

@@ -211,6 +211,7 @@ export default function Dashboard() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createAdminEmail, setCreateAdminEmail] = useState("");
+  const [createIsPublic, setCreateIsPublic] = useState(false);
   const [creating, setCreating] = useState(false);
 
   // Email invite
@@ -1292,7 +1293,7 @@ export default function Dashboard() {
     setCreating(true);
     try {
       const name = createName.trim();
-      const net = await tauriInvoke<NetworkInfo>("network_create", { name, displayName: name, privacy: false });
+      const net = await tauriInvoke<NetworkInfo>("network_create", { name, displayName: name, privacy: !createIsPublic });
       const createdCid = net.cid_short;
       // Auto-register to RCC if email provided
       if (createAdminEmail.trim()) {
@@ -1428,6 +1429,9 @@ export default function Dashboard() {
                     )}
                     {net.is_rrm && (
                       <span className="text-xs bg-red-600 text-white px-1 py-0.5 rounded">RRM</span>
+                    )}
+                    {net.is_public && (
+                      <span className="text-xs bg-green-600 text-white px-1 py-0.5 rounded" title="Réseau public — visible dans les annuaires">🌐</span>
                     )}
                     <span className="ml-auto flex items-center gap-1">
                       {(outboxCounts[net.cid_short] ?? 0) > 0 && (
@@ -1990,6 +1994,39 @@ export default function Dashboard() {
                   />
                   <p className="text-xs text-gray-400 mt-1">
                     Pour déclarer votre réseau au Registre Central Civium (RCC — registre légal obligatoire). Il ne sera jamais partagé publiquement.
+                  </p>
+                </div>
+                {/* Visibilité */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Visibilité</label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setCreateIsPublic(false)}
+                      className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                        !createIsPublic
+                          ? "bg-civium-50 border-civium-400 text-civium-700"
+                          : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                      }`}
+                    >
+                      🔒 Privé
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCreateIsPublic(true)}
+                      className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                        createIsPublic
+                          ? "bg-green-50 border-green-400 text-green-700"
+                          : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                      }`}
+                    >
+                      🌐 Public
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {createIsPublic
+                      ? "Votre réseau sera visible dans les annuaires Civium. Tout le monde peut demander à le rejoindre."
+                      : "Votre réseau est sur invitation uniquement. Seules les personnes que vous invitez peuvent le rejoindre."}
                   </p>
                 </div>
                 <button

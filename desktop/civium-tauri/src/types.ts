@@ -13,6 +13,7 @@ export interface NetworkInfo {
   is_rrm: boolean;
   ap_enabled: boolean;
   ap_actor_url: string | null;
+  is_public: boolean;
 }
 
 export interface ApStatusInfo {
