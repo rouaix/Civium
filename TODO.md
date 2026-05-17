@@ -292,6 +292,17 @@
 - Les endpoints `/api/status` et `/hub/status` existent déjà — les brancher à un outil de monitoring externe (UptimeRobot ou équivalent) pour surveiller la disponibilité du RCC
 
 
+## Tests unitaires civium-core — Priorité haute
+
+- Sur les 40+ modules de `civium-core`, seul `wasm.rs` contient des tests (`#[cfg(test)]`) — les modules critiques `identity/`, `messaging/`, `network/`, `governance/`, `crypto/`, `node/`, `store` n'ont aucun test unitaire
+- Ajouter des tests unitaires sur les fonctions critiques en priorité :
+  - `identity/keypair.rs` : génération, sérialisation, désérialisation, signature/vérification
+  - `crypto/group_key.rs` : chiffrement/déchiffrement, clés incorrectes, données corrompues
+  - `network/network.rs` : `create`, `admit`, `remove_member`, `submit_join_request` — vérification des invariants
+  - `governance/mod.rs` : `compute_result`, `compute_result_with_delegations`, garde-fou majoritaire
+  - `messaging/mailbox.rs` : merge CRDT, déduplication, ordre des messages
+
+
 ## Tests et qualité — Priorité moyenne
 
 - Écrire des tests d'intégration entre deux nœuds réels `civium-core` (lancer deux instances, échange de messages, vérification CRDT) — actuellement seuls des tests unitaires et WASM existent
@@ -335,6 +346,13 @@
 - Ajouter un `manifest.json` pour rendre le client web installable (PWA)
 - Ajouter un service worker pour le fonctionnement hors-ligne du client web
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
+
+
+## Watchdog du nœud P2P — CRITIQUE
+
+- Si le thread P2P (`civium-core`) crashe, l'UI Tauri n'est **pas notifiée** — le Dashboard continue d'afficher l'indicateur "En ligne" alors que le nœud est mort (`lib.rs:47` : erreurs de démarrage silencieuses, `node.rs` : boucle sort sans émettre d'événement)
+- Implémenter un watchdog : détecter la fin du task P2P (`spawn` + `JoinHandle`), émettre un événement `civium://node-crashed` vers l'UI, puis tenter un redémarrage automatique après délai exponentiel
+- Afficher une bannière d'erreur rouge dans le Dashboard si le nœud P2P est inactif, avec un bouton "Redémarrer le nœud"
 
 
 ## Rate limiting P2P (protection DoS) — CRITIQUE
@@ -387,6 +405,26 @@
 - Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
 - Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
 - Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
+## Sessions web — durée et révocation — Priorité moyenne
+
+- La session PHP après validation du magic link n'a pas de durée configurée explicitement — elle expire selon le `gc_maxlifetime` du serveur (défaut 24 min) ce qui peut déconnecter l'utilisateur de façon imprévisible pendant une longue session
+- Configurer une durée de session explicite dans `AuthController.php` (ex. 30 jours avec cookie `remember_me`, ou 8h pour une session normale)
+- Implémenter un logout global ("se déconnecter de tous les appareils") : stocker les sessions en BDD (table `sessions`) et les invalider toutes d'un coup à la demande
+
+
+## Documentation du serveur MCP — Priorité moyenne
+
+- Les 6 resources exposées par le serveur MCP (`civium://networks`, `civium://network/{cid}/members`, `messages`, `proposals`, `agenda`, `documents`) ne sont documentées que dans le code `mcp.rs`
+- Créer un fichier `docs/mcp.md` : liste des resources, format JSON retourné, exemples de requêtes `resources/list` et `resources/read`, authentification Bearer token, limitations (lecture seule, CIL appliqué)
+- Ajouter un lien vers cette doc dans le Dashboard (section MCP) pour que les utilisateurs sachent comment connecter un assistant IA à leur nœud
+
+
+## Retour visuel après copie (clipboard) — Priorité basse
+
+- Les boutons "Copier" dans le Dashboard (`navigator.clipboard.writeText()`) ne donnent aucun retour visuel — l'utilisateur ne sait pas si la copie a réussi (pas de toast, pas de changement d'icône)
+- Ajouter un feedback post-copie : icône ✓ pendant 2 s, ou mini-toast "Copié !" — applicable à tous les boutons copie : CID, secret, adresse P2P, token MCP, lien d'invitation
 
 
 ## Onboarding — indicateur de progression — Priorité moyenne
