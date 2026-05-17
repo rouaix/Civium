@@ -30,7 +30,7 @@
 
 ## Déploiement PHP / Infrastructure — Priorité haute
 
-> Ces critères de succès de la ROADMAP sont bloqués par l'absence de déploiement du serveur PHP sur `https://www.rouaix.com/civium`.
+> Serveur PHP déployé sur `https://www.rouaix.com/civium`.
 
 - Décider du domaine et de l'hébergement (civium.net ou civium.fr — Scaleway, ou rester sur rouaix.com/civium)
 - Déployer le site PHP F3 en production (Apache/Nginx + PHP 8.x + MySQL)
@@ -723,6 +723,57 @@
 - Remplacer le polling HTTP toutes les 30 s dans le client web par l'API Web Push (Service Worker + `PushManager`) pour recevoir les notifications même onglet fermé
 - Ajouter la table `web_push_subscriptions` dans les migrations PHP pour stocker les endpoints Push par utilisateur
 - Envoyer une notification push lors d'un nouveau message, invitation, ou alerte fraude
+
+
+## Révocation de clé publique (CID compromis) — Priorité haute
+
+- Il n'existe aucun mécanisme pour annoncer qu'un CID est compromis — une clé Ed25519 volée reste valide indéfiniment dans tous les réseaux où le membre est inscrit (`identity/cid.rs` : CID immuable, aucun champ `revoked`)
+- Implémenter un message de révocation signé par la clé compromise elle-même (ou par un admin réseau) : `RevocationRecord { cid_full, reason, revoked_at, signature }`
+- Propager la révocation via P2P et DHT ; les nœuds qui reçoivent une révocation valide bloquent les messages signés par ce CID
+- Lier à la rotation de la clé de groupe (section Forward secrecy) : révocation d'un membre → nouvelle clé groupe
+
+
+## Rate limit sur l'envoi de messages — Priorité haute
+
+- Un membre peut envoyer des milliers de messages par seconde sans aucune limite — il n'existe pas de rate limit par membre dans `civium-core/src/messaging/` ni dans le protocole de sync
+- Ajouter un compteur de messages par membre par fenêtre glissante (ex. 60 messages/minute) dans `civium-core` ; dépasser le seuil produit une erreur `CiviumError::RateLimited`
+- Appliquer le même rate limit côté réception P2P : ignorer les messages d'un pair qui dépasse le seuil et lui notifier le blocage temporaire
+
+
+## Erreurs frontend web — handler global — Priorité haute
+
+- Le client web (`app.html`) n'a aucun handler global d'erreur JavaScript — les crashes WASM et les promises rejetées tombent silencieusement dans la console, l'utilisateur voit une interface gelée sans explication
+- Ajouter `window.addEventListener('error', ...)` et `window.addEventListener('unhandledrejection', ...)` pour capturer toutes les erreurs non traitées et les afficher à l'utilisateur (bandeau rouge + message)
+- Ajouter des attributs `integrity` (SRI) sur les scripts chargés depuis CDN (Alpine.js, TweetNaCl.js, blake3) pour détecter toute altération
+
+
+## `node_modules` dans le dépôt — Priorité haute
+
+- Le dossier `node_modules` de `desktop/civium-tauri/` est tracké dans Git — il alourdit le dépôt et empêche `npm audit` de fonctionner correctement
+- Vérifier et corriger le `.gitignore` de `desktop/civium-tauri/` pour exclure `node_modules/`
+- Supprimer `node_modules` de l'historique Git si présent (via `git filter-repo` ou BFG Repo Cleaner)
+- Intégrer `npm audit` dans le workflow CI PHP/JS pour détecter les vulnérabilités dans les dépendances
+
+
+## Synchronisation des cercles de confiance — Priorité moyenne
+
+- Les cercles de confiance sont définis une seule fois à l'admission et ne sont jamais modifiables ni synchronisés entre appareils — chaque client maintient sa propre copie locale sans merge (`network.rs` : aucune fonction `set_member_circle()`)
+- Ajouter une commande `member_change_circle` (déjà listée dans la section Cercles de confiance) et propager les changements via CRDT (Last-Write-Wins sur le champ `circle` avec timestamp)
+- Synchroniser les changements de cercle entre appareils jumelés au même compte
+
+
+## Optimisation des syncs P2P — delta plutôt que full — Priorité moyenne
+
+- À chaque sync P2P, `SyncData` retourne la liste complète des membres (`Vec<MemberRecord>`) sans diff — pour un réseau de 1 000 membres, cela représente ~350 Ko transférés intégralement à chaque sync, même si rien n'a changé
+- Ajouter un mécanisme de sync incrémentale : le nœud initiateur envoie un hash ou un numéro de version de sa liste de membres ; le nœud distant ne retourne que les enregistrements modifiés depuis ce hash
+- Réduire drastiquement la bande passante pour les réseaux actifs avec de nombreux membres
+
+
+## Partage de contenu entre réseaux (APC étendu) — Priorité basse
+
+- L'APC (Accord de Partage Civium) est actuellement limité à la visibilité de l'annuaire des membres (`expose_member_directory: bool`) — deux réseaux connectés ne peuvent pas partager de messages, documents ou événements dans un espace commun
+- Étendre `ShareTerms` dans `civium-core/src/connection/record.rs` pour inclure des permissions de partage de contenu : `share_messages`, `share_documents`, `share_events` par type
+- Créer un "espace partagé" inter-réseaux chiffré avec une clé dérivée des deux clés de groupe
 
 
 ## Demandes du concepteur - Priorité basse
