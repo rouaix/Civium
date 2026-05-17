@@ -568,6 +568,8 @@ pub async fn network_join_p2p(
 #[derive(Serialize)]
 pub struct MessageDisplay {
     pub id: String,
+    pub network_cid_short: String,
+    pub network_name: String,
     pub author_cid_short: String,
     pub author_name: String,
     pub body: String,
@@ -652,6 +654,8 @@ pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDi
 
         result.push(MessageDisplay {
             id: msg.id,
+            network_cid_short: network.cid_short().to_string(),
+            network_name: network.data.name.clone(),
             author_cid_short: msg.author_cid_short,
             author_name,
             body,
@@ -711,6 +715,8 @@ pub fn message_send(
 
     Ok(MessageDisplay {
         id: msg.id,
+        network_cid_short: network.cid_short().to_string(),
+        network_name: network.data.name.clone(),
         author_cid_short: msg.author_cid_short,
         author_name,
         body,
@@ -772,6 +778,8 @@ pub fn message_send_direct(
 
     Ok(MessageDisplay {
         id: msg.id,
+        network_cid_short: network.cid_short().to_string(),
+        network_name: network.data.name.clone(),
         author_cid_short: msg.author_cid_short,
         author_name,
         body,
@@ -841,6 +849,8 @@ pub fn message_send_e2e(
 
     Ok(MessageDisplay {
         id: msg.id,
+        network_cid_short: network.cid_short().to_string(),
+        network_name: network.data.name.clone(),
         author_cid_short: msg.author_cid_short,
         author_name,
         body,
@@ -2024,6 +2034,21 @@ pub fn activity_list(app: AppHandle, network_cid_short: String) -> Result<Vec<Ac
     }).collect())
 }
 
+/// List the last 200 activity events across all networks.
+#[tauri::command]
+pub fn activity_list_all(app: AppHandle) -> Result<Vec<ActivityEventInfo>, String> {
+    let conn = open(&app)?;
+    let events = store::list_activity_all(&conn).map_err(|e| e.to_string())?;
+    Ok(events.into_iter().map(|e| ActivityEventInfo {
+        id: e.id,
+        network_cid_short: e.network_cid_short,
+        kind: e.kind.to_string(),
+        actor_cid_short: e.actor_cid_short,
+        summary: e.summary,
+        occurred_at: e.occurred_at,
+    }).collect())
+}
+
 /// List notifications for the current identity in a network.
 #[tauri::command]
 pub fn notification_list(app: AppHandle, network_cid_short: String) -> Result<Vec<NotificationInfo>, String> {
@@ -2713,7 +2738,11 @@ pub async fn hub_sync(app: AppHandle, network_cid: String) -> Result<u32, String
     // ── Auto-join : s'enregistrer comme membre si ce n'est pas déjà fait ─
     {
         let ts_join = timestamp;
-        let display_name = keypair.cid().short().to_string();
+        let my_cid_short = keypair.cid().short().to_string();
+        let display_name = network.data.members.iter()
+            .find(|m| m.cid_short == my_cid_short)
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| my_cid_short.clone());
         let canonical_join = format!(
             "join|{}|{}|{}|{}",
             network.cid_full(), keypair.cid().full(), display_name, ts_join

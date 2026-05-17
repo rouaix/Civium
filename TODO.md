@@ -3,37 +3,35 @@
 ---
 
 ## A Développer ou corriger dans desktop — Priorité haute
-- L'app doit s'ouvrir sur un fil d'actualité qui affiche toutes les activités de tous les réseaux. Avec le type d'activité, le nom du réseau et le nom du user. Et le contenu de l'activité (message, événement, etc.)
-- Les messages du serveur principal ne s'affichent pas dans l'app desktop.
+- ~~L'app doit s'ouvrir sur un fil d'actualité qui affiche toutes les activités de tous les réseaux. Avec le type d'activité, le nom du réseau et le nom du user. Et le contenu de l'activité (message, événement, etc.)~~ ✅ `activity_list_all` + fil global home screen (Dashboard.tsx)
+- ~~Les messages du serveur principal ne s'affichent pas dans l'app desktop.~~ ✅ Listener `civium://hub-sync-completed` ajouté → `refreshMessages()` déclenché
 - L'app doit pouvoir signaler un spam ou un abus etc. C'est à dire envoyer un message au serveur principal.
 - ~~L'app doit pouvoir demander à rejoindre un réseau, au serveur principal avec un simple clic dans une liste des réseaux publics.~~ ✅ `hub_join_public_network` + modal Rejoindre (Dashboard.tsx:1976)
 - ~~L'app doit afficher l'annuaire des réseaux publics (rejoindre sans invitation) et privés.~~ ✅ `hub_public_networks()` + modal Annuaire Civium (Dashboard.tsx:1930)
 - ~~La messagerie est destinée à échanger des messages privés entre users et réseaux. On doit donc pouvoir choisir à qui on envoi les messages.~~ ✅ `message_send_direct` + sélection destinataire (commands.rs:726)
 - Les messages peuvent contenir du texte, des fichiers, (audio, vidéo, images, pdf, etc.) et des événements (calendrier, tâches, etc.)
-- Supprimer l'icône à côté du nom du réseau Civium.
-- Dans les messages, afficher le nom du réseau et le nom du user qui envoie le message.
+- ~~Supprimer l'icône à côté du nom du réseau Civium.~~ ✅ Badges 🌐 supprimés de la barre latérale (Dashboard.tsx)
+- ~~Dans les messages, afficher le nom du réseau et le nom du user qui envoie le message.~~ ✅ Champs `network_name` + `author_name` dans `MessageDisplay` (commands.rs + Dashboard.tsx)
 - La partie gouvernance est à revoir. Incompréhensible et inutilisable en l'état — trop complexe, le user doit juste cliquer sur des boutons.
-- Le lien Fédération avec d'autres réseaux est faux : https://www.rouaix.com/civium/civium/users/civ18N7G42tR
+- ~~Le lien Fédération avec d'autres réseaux est faux : https://www.rouaix.com/civium/civium/users/civ18N7G42tR~~ ✅ `baseUrl()` corrigé dans `ActivityPubController.php`
 
 ## A Développer ou corriger dans websuite — Priorité haute
-- Bugg dans /auth le lien de connexion est envoyé à n'importe qui et connecte le nouveau user à n'importe quel réseau sur le serveur principal.
-- si un usesr se connecte via /auth et que sont email n'est connue, cela doit créer un nouveau réseaux (Noeud) et donc un nouveau user.
-- On doit pouvoir supprimer les messages et alertes du seveur et elles doivent dans ce cas disparaitre dans l'app.
-- dans admin on doit pouvoir dans la liste des réseaux, agir sur le réseau (supprimer, désactiver, etc.)
+- ~~Bugg dans /auth le lien de connexion est envoyé à n'importe qui et connecte le nouveau user à n'importe quel réseau sur le serveur principal.~~ ✅ `ensureNetworkForNewUser()` : chaque user obtient son propre réseau à la connexion
+- ~~si un user se connecte via /auth et que son email n'est connue, cela doit créer un nouveau réseau (Noeud) et donc un nouveau user.~~ ✅ `ensureNetworkForNewUser()` dans `AuthController::verify()` (AuthController.php)
+- On doit pouvoir supprimer les messages et alertes du serveur et elles doivent dans ce cas disparaitre dans l'app.
+- ~~dans admin on doit pouvoir dans la liste des réseaux, agir sur le réseau (supprimer, désactiver, etc.)~~ ✅ `DELETE /admin/network` + bouton Supprimer dans admin.html
 - dans admin on doit pouvoir dans la liste des users, agir sur le user (supprimer, désactiver, etc.)
 - dans admin on doit pouvoir dans la liste des messages, agir sur le message (supprimer, désactiver, etc.)
-- dans admin on doit pouvoir dans la liste des alertes, agir sur l'alerte (supprimer, désactiver, etc.)
-- dans les mails envoyés par le serveur, l'url affichée est fausse : https://www.rouaix.com/civium/civium/auth/verify?token=2e652448fb6008edc4b36f658945983671a8c8eecc01b2af32dc9c75e4fa807d HTTP 404 (GET /civium/auth?erreur=lien_expire)
-- dans website, je dois pouvoir me connecter ou créer un nouveau noeud(réseau) avec login et mot de passe. et que cela m'envoi par email les infos nécessaire pour se connecter à l'app desktop.
+- ~~dans admin on doit pouvoir dans la liste des alertes, agir sur l'alerte (supprimer, désactiver, etc.)~~ ✅ `DELETE /admin/alert` + bouton Supprimer dans admin.html
+- ~~dans les mails envoyés par le serveur, l'url affichée est fausse : https://www.rouaix.com/civium/civium/auth/verify?token=…~~ ✅ URL corrigée dans `MagicLink::send()` (SCHEME+HOST+BASE, plus de double /civium)
+- ~~dans website, je dois pouvoir me connecter ou créer un nouveau noeud(réseau) avec login et mot de passe. et que cela m'envoi par email les infos nécessaire pour se connecter à l'app desktop.~~ ✅ Onglet "Mot de passe" dans auth.html + `handlePasswordAuth()` + `Mailer::sendWelcome()` (migration 022)
 
 
 
 ## Déploiement PHP / Infrastructure — Priorité haute
 
-> Ces critères de succès de la ROADMAP sont bloqués par l'absence de déploiement du serveur PHP sur `https://www.rouaix.com/civium`.
+> Serveur PHP déployé sur `https://www.rouaix.com/civium`.
 
-- Décider du domaine et de l'hébergement (civium.net ou civium.fr — Scaleway, ou rester sur rouaix.com/civium)
-- Déployer le site PHP F3 en production (Apache/Nginx + PHP 8.x + MySQL)
 - Vérifier que `POST /api/register` reçoit bien les enregistrements desktop et les stocke
 - Vérifier que `GET /api/networks` retourne les réseaux enregistrés
 - Tester le flux complet : créer un réseau dans l'app desktop → apparaît dans `/api/networks` en < 5 s
@@ -274,8 +272,8 @@
 
 ## Fil d'activité global — Priorité moyenne
 
-- Ajouter une commande Tauri `activity_list_all` (sans `network_cid_short`) qui agrège les événements de tous les réseaux, triés par date décroissante
-- Afficher ce fil global comme vue d'accueil de l'app (premier écran à l'ouverture — item déjà listé dans la section Desktop ci-dessus), avec le nom du réseau source sur chaque événement
+- ~~Ajouter une commande Tauri `activity_list_all` (sans `network_cid_short`) qui agrège les événements de tous les réseaux, triés par date décroissante~~ ✅ `store::list_activity_all()` + commande `activity_list_all` (store.rs + commands.rs + lib.rs)
+- ~~Afficher ce fil global comme vue d'accueil de l'app (premier écran à l'ouverture — item déjà listé dans la section Desktop ci-dessus), avec le nom du réseau source sur chaque événement~~ ✅ Home screen remplacé par le fil global quand un réseau existe (Dashboard.tsx)
 - Ajouter un filtre par type d'événement dans le fil d'activité (messages, votes, admissions, alertes…)
 
 
@@ -348,11 +346,40 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Forward secrecy — rotation de la clé de groupe — CRITIQUE
+
+- Quand un membre est exclu du réseau (`member_remove()`), la clé de groupe ChaCha20-Poly1305 n'est **pas renouvelée** — l'ancien membre qui possède une copie de la clé peut continuer à déchiffrer tous les futurs messages (`network.rs:271-279` : aucune action sur `group_key_b58` après suppression)
+- Implémenter une rotation automatique de la clé de groupe à chaque exclusion de membre : générer une nouvelle `GroupKey`, la distribuer chiffrée aux membres restants via leurs paires de clés Ed25519, et invalider l'ancienne
+- Loguer la rotation dans l'`audit_trail` avec le CID du membre exclu et l'horodatage
+
+
+## Sécurité IPC Tauri — ACL des commandes — CRITIQUE
+
+- Les 106 commandes Tauri sont exposées sans restrictions d'accès (`generate_handler!` dans `lib.rs:53-154`) — la CSP est explicitement désactivée (`"csp": null` dans `tauri.conf.json`) et aucun fichier de capabilities ne limite l'accès par WebView
+- La commande `identity_show()` retourne `secret_b58` (clé privée Ed25519) en clair au frontend TypeScript — une vulnérabilité XSS dans les assets `dist/` permettrait d'exfiltrer la clé privée via IPC
+- Activer le système de capabilities Tauri v2 : créer `src-tauri/capabilities/main.json` listant explicitement les commandes autorisées par fenêtre
+- Supprimer `"csp": null` et définir une CSP stricte interdisant les scripts inline et les sources externes
+
+
+## BDD corrompue — gestion d'erreur au démarrage — CRITIQUE
+
+- Si `civium.db` est corrompu, l'erreur SQLite est capturée en `Err(_) => return` (`lib.rs:44`) sans aucune notification à l'UI — le Dashboard s'ouvre vide sans explication, l'utilisateur perd toutes ses données silencieusement
+- Émettre un événement `civium://db-error` vers l'UI avec le message d'erreur SQLite, et afficher un écran d'erreur explicite avec les options : restaurer depuis un backup, ou réinitialiser (perte de données confirmée)
+- Tenter automatiquement une restauration depuis le dernier backup dans `.backups/` avant de proposer la réinitialisation
+
+
 ## Watchdog du nœud P2P — CRITIQUE
 
 - Si le thread P2P (`civium-core`) crashe, l'UI Tauri n'est **pas notifiée** — le Dashboard continue d'afficher l'indicateur "En ligne" alors que le nœud est mort (`lib.rs:47` : erreurs de démarrage silencieuses, `node.rs` : boucle sort sans émettre d'événement)
 - Implémenter un watchdog : détecter la fin du task P2P (`spawn` + `JoinHandle`), émettre un événement `civium://node-crashed` vers l'UI, puis tenter un redémarrage automatique après délai exponentiel
 - Afficher une bannière d'erreur rouge dans le Dashboard si le nœud P2P est inactif, avec un bouton "Redémarrer le nœud"
+
+
+## Saturation DHT (DoS mémoire) — CRITIQUE
+
+- Le store Kademlia utilise `MemoryStore` sans limite de capacité — un attaquant peut inonder le nœud avec des annonces DHT malveillantes et épuiser la RAM jusqu'au crash (`behaviour.rs:15-30` : `MemoryStore::new(peer_id)` sans paramètre de limite)
+- Configurer `kad::store::MemoryStore` avec une capacité maximale (`max_records`, `max_provided_keys`) et rejeter les nouvelles entrées quand le seuil est atteint
+- Combiner avec le rate limiting P2P (section suivante) pour limiter le nombre d'annonces acceptées par pair sur une fenêtre glissante
 
 
 ## Rate limiting P2P (protection DoS) — CRITIQUE
@@ -361,6 +388,20 @@
 - Le `HashMap<PeerId, PendingResponse>` dans `node.rs` croît sans limite de taille — ajouter un plafond et rejeter les requêtes dépassant le seuil
 - Utiliser `libp2p::swarm::ConnectionLimits` pour limiter le nombre de connexions simultanées par pair et le nombre total de connexions entrantes
 - Sans cette protection, un pair malveillant peut saturer le nœud avec 1 000 requêtes Sync par seconde → débordement mémoire et crash
+
+
+## Migrations du schéma SQLite desktop — Priorité haute
+
+- Le schéma SQLite local est appliqué via `CREATE TABLE IF NOT EXISTS` (un seul bloc `SCHEMA` dans `store.rs`) — si une mise à jour de l'app ajoute une colonne, elle n'est pas ajoutée aux bases existantes des utilisateurs
+- Implémenter un système de migrations versionnées côté desktop, analogue au système PHP déjà en place (`website/src/migrations/`) : fichiers numérotés `001_initial.sql`, `002_add_column.sql`…, table `schema_migrations` SQLite, application automatique au démarrage de l'app
+- Sans ce système, toute évolution du schéma (nouvelle table, nouvelle colonne) **casse silencieusement** les installations existantes
+
+
+## NAT traversal — Circuit Relay — Priorité haute
+
+- Deux nœuds derrière NAT sans IP publique ne peuvent pas se connecter directement — `libp2p-circuit-relay` et `libp2p-autonat` sont absents des features de `civium-core/Cargo.toml`
+- Ajouter les features `circuit-relay` et `autonat` dans `civium-core` pour permettre le relay via un nœud tiers (ex. le nœud bootstrap Civium) quand la connexion directe échoue
+- Documenter le workaround actuel (Cloudflare Tunnel via `external_addr`) dans la CONTRIBUTING.md en attendant l'implémentation native
 
 
 ## Validation des inputs utilisateur — Priorité haute
@@ -421,10 +462,72 @@
 - Ajouter un lien vers cette doc dans le Dashboard (section MCP) pour que les utilisateurs sachent comment connecter un assistant IA à leur nœud
 
 
+## Internationalisation des emails — Priorité basse
+
+- Les emails envoyés par le serveur PHP (magic link, alertes fraude) sont uniquement en français codé en dur dans `MagicLink.php` et `Mailer.php`
+- Créer un système de templates email multilingues (fr/en minimum) : détecter la langue préférée de l'utilisateur depuis le `Accept-Language` HTTP ou un champ `lang` en BDD, sélectionner le template correspondant
+- Fournir les templates dans `website/src/templates/emails/fr/` et `en/`
+
+
 ## Retour visuel après copie (clipboard) — Priorité basse
 
 - Les boutons "Copier" dans le Dashboard (`navigator.clipboard.writeText()`) ne donnent aucun retour visuel — l'utilisateur ne sait pas si la copie a réussi (pas de toast, pas de changement d'icône)
 - Ajouter un feedback post-copie : icône ✓ pendant 2 s, ou mini-toast "Copié !" — applicable à tous les boutons copie : CID, secret, adresse P2P, token MCP, lien d'invitation
+
+
+## Workflow GitHub Releases — Priorité haute
+
+- Créer `.github/workflows/release.yml` déclenché sur tag `v*` : build Tauri pour Windows (`.exe`/`.msi`), macOS (`.dmg`), Linux (`.AppImage`/`.deb`), puis création automatique de la release GitHub avec les artefacts signés
+- Intégrer la signature de code (voir section Code signing) dans ce workflow
+- Les releases sont actuellement créées manuellement — bloquant pour distribuer l'app à des utilisateurs non-techniques
+
+
+## Consentement pour la publication dans l'annuaire — Priorité moyenne
+
+- N'importe quel admin d'un réseau annuaire peut publier un membre (`directory_publish`) sans son consentement — aucun champ `consent_given` dans `DirectoryEntry`, aucune notification envoyée au membre concerné
+- Ajouter un mécanisme de consentement : le membre publié reçoit une notification et doit accepter pour que l'entrée devienne visible
+- Ajouter un bouton "Me retirer de cet annuaire" accessible à chaque membre depuis la section Annuaire du Dashboard
+
+
+## Archivage d'un réseau — Priorité moyenne
+
+- Il n'existe pas de mode "archivé" pour un réseau — la seule option est la suppression complète (`network_delete`), ce qui détruit tout l'historique
+- Ajouter un champ `archived: bool` sur `NetworkData` : un réseau archivé est en lecture seule (consultation des messages autorisée, nouvelles publications et votes bloqués)
+- Afficher les réseaux archivés dans une section séparée du Dashboard avec un badge "Archivé"
+- Utile pour les associations dissoutes, projets terminés ou réseaux saisonniers
+
+
+## Avatars et logos — Priorité moyenne
+
+- Ajouter un champ `avatar_b58: Option<String>` (image encodée en base58 ou URL IPFS) sur `MemberRecord` dans `civium-core/src/network/member.rs` pour les photos de profil
+- Ajouter un champ `logo_b58: Option<String>` sur `NetworkData` pour le logo d'un réseau
+- Chiffrer les avatars avec la clé de groupe (cercles 0-2) — seuls les membres du réseau voient les photos
+- Afficher l'avatar ou une initiale colorée dans la liste des membres, le fil de messages et le fil d'activité du Dashboard
+
+
+## Rotation du token MCP — Priorité moyenne
+
+- Le token Bearer MCP est généré une fois au démarrage du nœud et ne change jamais — aucune expiration, aucun endpoint de rotation (`mcp.rs:52-66`)
+- Ajouter une commande Tauri `mcp_rotate_token` qui régénère le token sans redémarrer le nœud et invalide l'ancien immédiatement
+- Ajouter une date d'expiration configurable (ex. 30 jours) avec renouvellement automatique et notification dans le Dashboard
+
+
+## Interface admin RCC — fonctionnalités manquantes — Priorité moyenne
+
+- Ajouter une recherche et un filtrage des réseaux enregistrés dans la page admin (`/admin`) : actuellement liste brute sans WHERE dynamique ni pagination avancée
+- Ajouter une page de statistiques globales : nombre total de réseaux, évolution dans le temps, répartition par tier white-label
+- Ajouter des actions de modération sur un réseau : suspension temporaire, suppression, signalement comme malveillant (alimentation automatique du RRM Global)
+- Exposer les logs d'erreur PHP récents dans l'interface admin (lecture du fichier `tmp/php_error.log`) pour faciliter le débogage en production
+
+
+## Benchmarks de performance — Priorité moyenne
+
+- Ajouter un répertoire `desktop/civium-core/benches/` avec des benchmarks `criterion` sur les opérations critiques :
+  - Chiffrement/déchiffrement ChaCha20-Poly1305 (messages de 1 Ko, 10 Ko, 1 Mo)
+  - Sérialisation/désérialisation CBOR d'un `CiviumRequest`
+  - Merge CRDT d'une mailbox de 1 000 messages
+  - Vérification de signature Ed25519
+- Intégrer `cargo bench` dans la CI pour détecter les régressions de performance
 
 
 ## Onboarding — indicateur de progression — Priorité moyenne
@@ -618,6 +721,181 @@
 - Remplacer le polling HTTP toutes les 30 s dans le client web par l'API Web Push (Service Worker + `PushManager`) pour recevoir les notifications même onglet fermé
 - Ajouter la table `web_push_subscriptions` dans les migrations PHP pour stocker les endpoints Push par utilisateur
 - Envoyer une notification push lors d'un nouveau message, invitation, ou alerte fraude
+
+
+## Révocation de clé publique (CID compromis) — Priorité haute
+
+- Il n'existe aucun mécanisme pour annoncer qu'un CID est compromis — une clé Ed25519 volée reste valide indéfiniment dans tous les réseaux où le membre est inscrit (`identity/cid.rs` : CID immuable, aucun champ `revoked`)
+- Implémenter un message de révocation signé par la clé compromise elle-même (ou par un admin réseau) : `RevocationRecord { cid_full, reason, revoked_at, signature }`
+- Propager la révocation via P2P et DHT ; les nœuds qui reçoivent une révocation valide bloquent les messages signés par ce CID
+- Lier à la rotation de la clé de groupe (section Forward secrecy) : révocation d'un membre → nouvelle clé groupe
+
+
+## Rate limit sur l'envoi de messages — Priorité haute
+
+- Un membre peut envoyer des milliers de messages par seconde sans aucune limite — il n'existe pas de rate limit par membre dans `civium-core/src/messaging/` ni dans le protocole de sync
+- Ajouter un compteur de messages par membre par fenêtre glissante (ex. 60 messages/minute) dans `civium-core` ; dépasser le seuil produit une erreur `CiviumError::RateLimited`
+- Appliquer le même rate limit côté réception P2P : ignorer les messages d'un pair qui dépasse le seuil et lui notifier le blocage temporaire
+
+
+## Erreurs frontend web — handler global — Priorité haute
+
+- Le client web (`app.html`) n'a aucun handler global d'erreur JavaScript — les crashes WASM et les promises rejetées tombent silencieusement dans la console, l'utilisateur voit une interface gelée sans explication
+- Ajouter `window.addEventListener('error', ...)` et `window.addEventListener('unhandledrejection', ...)` pour capturer toutes les erreurs non traitées et les afficher à l'utilisateur (bandeau rouge + message)
+- Ajouter des attributs `integrity` (SRI) sur les scripts chargés depuis CDN (Alpine.js, TweetNaCl.js, blake3) pour détecter toute altération
+
+
+## `node_modules` dans le dépôt — Priorité haute
+
+- Le dossier `node_modules` de `desktop/civium-tauri/` est tracké dans Git — il alourdit le dépôt et empêche `npm audit` de fonctionner correctement
+- Vérifier et corriger le `.gitignore` de `desktop/civium-tauri/` pour exclure `node_modules/`
+- Supprimer `node_modules` de l'historique Git si présent (via `git filter-repo` ou BFG Repo Cleaner)
+- Intégrer `npm audit` dans le workflow CI PHP/JS pour détecter les vulnérabilités dans les dépendances
+
+
+## Synchronisation des cercles de confiance — Priorité moyenne
+
+- Les cercles de confiance sont définis une seule fois à l'admission et ne sont jamais modifiables ni synchronisés entre appareils — chaque client maintient sa propre copie locale sans merge (`network.rs` : aucune fonction `set_member_circle()`)
+- Ajouter une commande `member_change_circle` (déjà listée dans la section Cercles de confiance) et propager les changements via CRDT (Last-Write-Wins sur le champ `circle` avec timestamp)
+- Synchroniser les changements de cercle entre appareils jumelés au même compte
+
+
+## Optimisation des syncs P2P — delta plutôt que full — Priorité moyenne
+
+- À chaque sync P2P, `SyncData` retourne la liste complète des membres (`Vec<MemberRecord>`) sans diff — pour un réseau de 1 000 membres, cela représente ~350 Ko transférés intégralement à chaque sync, même si rien n'a changé
+- Ajouter un mécanisme de sync incrémentale : le nœud initiateur envoie un hash ou un numéro de version de sa liste de membres ; le nœud distant ne retourne que les enregistrements modifiés depuis ce hash
+- Réduire drastiquement la bande passante pour les réseaux actifs avec de nombreux membres
+
+
+## Intégrité des assets WASM et CDN — Priorité haute (CRITIQUE)
+
+- `website/src/www/civium/app.html` charge Alpine.js, TweetNaCl.js et blake3 depuis des CDN sans attributs `integrity` (SRI — Subresource Integrity) : une compromission du CDN permet d'injecter du code malveillant qui vole la clé privée de l'utilisateur
+- `civium_core_bg.wasm` est servi par PHP et chargé par le JS sans aucune vérification d'intégrité côté client (pas de hash SHA-256 vérifié avant instanciation `WebAssembly.instantiate`)
+- Actions : (1) ajouter `integrity="sha256-…" crossorigin="anonymous"` sur chaque `<script>` CDN ; (2) générer et vérifier un hash du WASM au moment du build ; (3) configurer une CSP stricte avec `require-sri-for script style`
+- Fichier : `website/src/www/civium/app.html`
+
+## Tests E2E frontend (Tauri + web) — Priorité haute (CRITIQUE)
+
+- Zéro test E2E pour l'interface Tauri : pas de Playwright, pas de Cypress, pas de `tauri-driver` — toute régression UI est détectable seulement manuellement
+- Les flux critiques (création identité, création réseau, invitation membre, vote, messagerie) ne sont jamais vérifiés automatiquement
+- Ajouter `tauri-driver` + WebDriver (`@tauri-apps/api/mocks`) pour les tests Tauri, Playwright pour le client web
+- Couvrir en priorité : onboarding complet, admission d'un membre, cycle de vote, envoi/réception message, connexion web (magic link)
+
+## Délégation de vote circulaire — Priorité moyenne
+
+- `governance/mod.rs` : `compute_result_with_delegations()` parcourt le graphe de délégation sans détecter les cycles — une boucle A→B→A provoque une récursion infinie (stack overflow / panic en production)
+- Ajouter une détection de cycle (`HashSet<CID>` de nœuds visités) et rejeter toute délégation créant un cycle ; afficher une erreur explicite à l'utilisateur dans l'UI
+- Fichier : `desktop/civium-core/src/governance/mod.rs`
+
+## Timeout P2P — feedback UI manquant — Priorité moyenne
+
+- Le protocole configure 30 s de timeout pour les connexions libp2p, mais les appels `tauriInvoke()` dans `Dashboard.tsx` n'ont ni timeout côté frontend ni indicateur de chargement — l'UI peut bloquer silencieusement pendant 30 s sans retour visuel à l'utilisateur
+- Ajouter un timeout côté JS sur chaque `tauriInvoke` (ex. `Promise.race` avec 35 s) et afficher un spinner/toast "connexion en cours…" pendant les opérations P2P longues
+- Fichiers : `desktop/civium-tauri/src/screens/Dashboard.tsx`, tous les hooks qui appellent `tauriInvoke`
+
+## Pagination SQL CLI — Priorité moyenne
+
+- `civium-cli/src/store.rs` : `load_mailbox()`, `list_proposals()` et `list_votes()` n'ont pas de clause `LIMIT` — sur un nœud actif depuis longtemps, un appel CLI charge toute la table en mémoire
+- Ajouter `LIMIT 200 OFFSET ?` (ou pagination par curseur) sur ces trois requêtes, comme c'est déjà fait pour `list_activity()` et `list_notifications()`
+- Fichier : `desktop/civium-cli/src/store.rs`
+
+## ActivityPub — implémentation manquante — Priorité haute (CRITIQUE)
+
+- `desktop/civium-core/src/activitypub/mod.rs` ne contient que 38 lignes de structures de données (`ApStatus`, `ApFollower`, `ApPost`) — zéro logique implémentée
+- Il n'existe pas d'endpoint `GET /.well-known/webfinger` : Mastodon/PeerTube ne peuvent pas découvrir le réseau
+- Pas d'inbox ni d'outbox : impossible de recevoir ou d'envoyer des activités vers d'autres serveurs
+- **CRITIQUE sécurité** : aucune vérification de signature HTTP sur les activités entrantes — un acteur malveillant peut usurper l'identité d'un serveur Mastodon en POSTant directement sur l'inbox
+- Les tables SQLite `ap_followers` et `ap_posts` existent (`store.rs` lignes 131-145) mais ne sont jamais peuplées ni lues
+- À implémenter : signature HTTP (draft-cavage-http-signatures-12), `webfinger`, `actor.json`, inbox/outbox, `Accept`/`Follow`/`Create Note` activi types
+- Fichier : `desktop/civium-core/src/activitypub/mod.rs`
+
+## FFI mobile — fonctions manquantes — Priorité haute
+
+- `desktop/civium-ffi/src/lib.rs` expose seulement : `identity_exists/init/from_secret/info`, `pairing_complete`, `network_list`, `message_list/send` — total 8 fonctions
+- Manquent pour la parité fonctionnelle mobile : `network_create`, `member_admit`, `message_send_direct`, `document_list/create`, `agenda_list`, `proposal_list/create`, `vote_cast` — le mobile ne peut créer ni gérer un réseau
+- Pas de fichier `.udl` — UniFFI génère les bindings uniquement depuis les macros Rust (`#[uniffi::export]`), ce qui est fragile si des types `HashMap` sont ajoutés (non supportés par UniFFI — utiliser `Vec<(K,V)>` ou une struct wrapper)
+- Fichier : `desktop/civium-ffi/src/lib.rs`
+
+## CLI — `unwrap()` pouvant paniquer — Priorité haute
+
+- `desktop/civium-cli/src/main.rs` contient au moins 3 `unwrap()` critiques qui provoquent un crash en production :
+  - Ligne 1918 : `mailbox.messages.last().unwrap()` — panic si la boîte de réception est vide
+  - Lignes 1897 et 2106 : `unwrap()` sans contexte ni fallback
+- Remplacer par `ok_or_else(|| anyhow!("…"))` avec message d'erreur explicite
+- Fichier : `desktop/civium-cli/src/main.rs`
+
+## Documents — absence de CRDT — Priorité haute
+
+- `desktop/civium-core/src/document/mod.rs` : le champ `version: u32` est un simple compteur, pas un CRDT — si deux membres éditent le même document hors-ligne, la resynchronisation écrase silencieusement l'une des versions
+- Le module de messagerie utilise un Mailbox G-Set CRDT (`civium-core/src/messaging/mailbox.rs`) mais les documents n'ont aucun équivalent
+- Implémenter au minimum un LWW-Register (Last-Write-Wins) sur les documents avec horodatage logique (Lamport clock), ou ajouter un flag de conflit à résoudre manuellement
+- Pas de limite de taille sur les documents — un document de plusieurs centaines de Mo est chiffré entièrement en mémoire
+- Fichier : `desktop/civium-core/src/document/mod.rs`
+
+## CORS wildcard sur le serveur MCP — Priorité moyenne
+
+- `desktop/civium-tauri/src-tauri/src/mcp.rs` ligne ~113 : le header CORS `Access-Control-Allow-Origin: *` est envoyé à tous les clients — n'importe quelle page web peut appeler le serveur MCP local si le token est connu (ou deviné)
+- Remplacer par une whitelist explicite (ex. `null` pour les fichiers locaux, ou uniquement les origines autorisées)
+- Ajouter un rate limiting sur les requêtes MCP (ex. 60 req/min par IP) — actuellement aucun
+- Absence de limite de taille sur les payloads JSON entrants (risque DoS par payload énorme)
+- Fichier : `desktop/civium-tauri/src-tauri/src/mcp.rs`
+
+## Validation des inputs onboarding (Tauri) — Priorité moyenne
+
+- `desktop/civium-tauri/src/screens/Onboarding.tsx` : seul `.trim()` est appliqué, sans aucune validation de longueur ni de format
+- Un nom de réseau de 100 000 caractères passe sans erreur et est persisté en SQLite et envoyé au RCC
+- Caractères spéciaux, emoji composés, injection SQL (transmis via Tauri command en Rust puis SQLite) non filtrés
+- Pas de validation de la clé secrète B58 (longueur attendue, alphabet Base58)
+- Ajouter : longueur max sur tous les champs texte (256 chars), regex de base pour les noms (pas de null bytes), validation B58 avant appel `identity_from_secret`
+- Fichier : `desktop/civium-tauri/src/screens/Onboarding.tsx`
+
+## Connexions inter-réseaux absentes de Tauri — Priorité haute (CRITIQUE)
+
+- Les commandes `connection_request`, `connection_accept`, `connection_list`, `connection_revoke` existent dans la CLI (`civium-cli/src/main.rs`) mais **aucune n'est exposée en commande Tauri** dans `commands.rs` — l'interface desktop ne peut pas gérer les connexions inter-réseaux
+- L'APC (Accord de Partage Civium) est signé et vérifié à la création (`connection/agreement.rs:67-74`) mais n'est **jamais re-vérifié** lors des requêtes ultérieures — si la clé d'un réseau est compromise, l'APC reste "actif"
+- Pas d'expiration ou de durée de vie sur un APC — un accord reste valide indéfiniment sans révocation forcée
+- Ajouter : `connection_request`, `connection_accept`, `connection_list`, `connection_revoke` dans `desktop/civium-tauri/src-tauri/src/commands.rs` + UI dans Dashboard.tsx
+
+## Session web — cookies sans flags de sécurité — Priorité haute (CRITIQUE)
+
+- `website/src/controllers/AuthController.php` : les cookies de session PHP n'ont aucun flag configuré — pas de `HttpOnly` (JS peut lire le cookie), pas de `Secure` (transmis en clair sur HTTP), pas de `SameSite=Strict` (vulnérable CSRF)
+- Aucune protection CSRF sur les formulaires POST — `AuthController->request()` accepte un POST brut sans token CSRF ni vérification de l'origine
+- Pas de rate limiting sur la génération de magic links — `MagicLink::create()` peut être appelée N fois pour le même email sans throttle (pas de "max 5 tokens par email par heure")
+- Corriger : `session_set_cookie_params(['httponly'=>true,'secure'=>true,'samesite'=>'Strict'])` + token CSRF sur chaque formulaire + limite 5 magic links / email / heure
+
+## Rate limiting absent sur l'API RCC — Priorité haute
+
+- `website/src/controllers/ApiController.php` : l'endpoint `/api/register` vérifie bien la signature Ed25519 avant insertion, mais **aucun rate limiting par adresse IP** — une même IP peut enregistrer des milliers de réseaux en quelques secondes
+- `ON DUPLICATE KEY UPDATE` : un ré-enregistrement avec `admin_email` différent est silencieusement accepté — une mise à jour des coordonnées d'un réseau existant ne devrait requérir une nouvelle signature valide
+- Pas d'audit log horodaté sur les `INSERT`/`UPDATE` : impossible de retracer les modifications en cas de litige légal
+- Ajouter : rate limit (ex. 10 enregistrements / IP / heure), vérification signature sur update, table `rcc_audit_log`
+
+## Dashboard — chargement mémoire non borné — Priorité haute
+
+- `desktop/civium-tauri/src/screens/Dashboard.tsx` : les listes de messages, membres, propositions, événements et documents sont chargées en entier dans le state React sans pagination ni virtualisation
+- Sur un nœud actif depuis longtemps (milliers de messages), tous les éléments sont montés dans le DOM — risque OOM et freezes UI
+- Les notifications sont limitées à 30 (`.slice(0,30)`) et les messages récents à 5 (`.slice(-5)`) mais les autres listes n'ont aucune limite
+- Implémenter une pagination côté backend (paramètre `limit`/`offset`) sur les commandes Tauri `message_list`, `agenda_list`, `document_list`, `proposal_list` et une virtualisation de liste côté frontend (ex. `@tanstack/react-virtual`)
+
+## CLI — aucun format de sortie machine-readable — Priorité moyenne
+
+- `desktop/civium-cli/src/main.rs` : toutes les sorties sont du texte humain formaté (`println!("{} — {} ({} members)")`) — aucun flag `--json` ou `--format`
+- Impossible d'intégrer la CLI dans des scripts d'automatisation ou des outils de monitoring
+- Les listes de l'annuaire et des connexions n'ont ni `--limit` ni `--page` — une recherche dans un annuaire fédéré peut retourner des milliers de lignes
+- Ajouter `--json` global (ou par sous-commande) + `--limit N --offset M` sur toutes les commandes de liste
+
+## Agenda — fonctionnalités manquantes — Priorité moyenne
+
+- `desktop/civium-core/src/agenda/mod.rs` : le champ `recurrence: Option<String>` existe mais est toujours `None` à la création — les événements récurrents ne sont pas implémentés
+- Pas de validation des timestamps : `start_at > end_at` ou événement dans le passé ne génèrent aucune erreur
+- Pas de gestion des conflits de plage horaire, pas d'invitation de membres à un événement (pas de champ `attendees`), pas de rappels/notifications
+- Les événements ne sont pas synchronisés via CRDT inter-réseaux — locaux uniquement
+
+## Partage de contenu entre réseaux (APC étendu) — Priorité basse
+
+- L'APC (Accord de Partage Civium) est actuellement limité à la visibilité de l'annuaire des membres (`expose_member_directory: bool`) — deux réseaux connectés ne peuvent pas partager de messages, documents ou événements dans un espace commun
+- Étendre `ShareTerms` dans `civium-core/src/connection/record.rs` pour inclure des permissions de partage de contenu : `share_messages`, `share_documents`, `share_events` par type
+- Créer un "espace partagé" inter-réseaux chiffré avec une clé dérivée des deux clés de groupe
 
 
 ## Demandes du concepteur - Priorité basse

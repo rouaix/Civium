@@ -948,6 +948,21 @@ pub fn list_activity(conn: &Connection, network_cid_short: &str) -> Result<Vec<A
     Ok(events)
 }
 
+pub fn list_activity_all(conn: &Connection) -> Result<Vec<ActivityEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM activity_feed ORDER BY rowid DESC LIMIT 200",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        if let Ok(e) = serde_json::from_str(&json) {
+            events.push(e);
+        }
+    }
+    Ok(events)
+}
+
 pub fn list_notifications(conn: &Connection, network_cid_short: &str) -> Result<Vec<Notification>> {
     let mut stmt = conn.prepare(
         "SELECT notif_json FROM notifications WHERE json_extract(notif_json,'$.network_cid_short') = ?1 ORDER BY rowid DESC LIMIT 50",
