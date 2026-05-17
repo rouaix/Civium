@@ -245,6 +245,30 @@ impl Network {
         Ok(record)
     }
 
+    /// Change the role of an admitted member (admin-only operation).
+    pub fn set_member_role(&mut self, member_cid_short: &str, role: MemberRole) -> Result<(), CiviumError> {
+        let m = self
+            .data
+            .members
+            .iter_mut()
+            .find(|m| m.cid_short == member_cid_short)
+            .ok_or_else(|| CiviumError::Network(format!("member {member_cid_short} not found")))?;
+        m.role = role;
+        Ok(())
+    }
+
+    /// Remove an admitted member from the network.
+    pub fn remove_member(&mut self, member_cid_short: &str) -> Result<(), CiviumError> {
+        let idx = self
+            .data
+            .members
+            .iter()
+            .position(|m| m.cid_short == member_cid_short)
+            .ok_or_else(|| CiviumError::Network(format!("member {member_cid_short} not found")))?;
+        self.data.members.remove(idx);
+        Ok(())
+    }
+
     /// Reject a pending join request.
     pub fn reject(&mut self, member_cid_short: &str) -> Result<(), CiviumError> {
         let idx = self

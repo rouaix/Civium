@@ -58,17 +58,17 @@
 ### Dans desktop et website — Priorité haute
 
 1 de nombreuses incohérence dans l'usage et la création de réseaux.
-  - je ne dois pas pouvoir créer plusieurs réseaux dans mon application.
+  - ✅ je ne dois pas pouvoir créer plusieurs réseaux dans mon application. (Dashboard : bouton "+" masqué si réseau déjà existant)
   - je dois pouvoir me connecter à plusieurs réseaux.
   - lorsque j'utilise un plugin, je dois pouvoir choisir si j'envoi l'information à un réseaux ou à un autre, ou a un membre ou un ensemble de membres. ETC.
-  - Je dois pouvoir inviter un membre par mail
+  - ✅ Je dois pouvoir inviter un membre par mail (Dashboard : champ email + bouton "Envoyer par email" → mailto: avec lien + adresses P2P)
   - losque j'invite un membre par mail il doit pouvoir créer automatiquement sont propre réseaux et se connecter au mien automatiquement.
-  - le type annuaire est réservé à la recherchede membres dans un réseaux ou de reseaux. C'est un plgin qui gère cela pas un type de réseaux.
+  - ✅ le type annuaire est réservé à la recherchede membres dans un réseaux ou de reseaux. C'est un plugin qui gère cela pas un type de réseaux. (Dashboard : formulaire création réseau simplifié, types annuaire/RRM supprimés)
   - un membre invité sur un réseaux peut installer l'application et utiliser le réseaux déjà existant qui l'a invité.
   - Il faut pouvoir gérer les droits users dans les réseaux.
-  - Il y a une inchorénce, si chaque user est un réseau alors comment les regrouper dans un réseau ?
+  - Il y a une incohérence, si chaque user est un réseau alors comment les regrouper dans un réseau ?
   - Il faut pouvoir créer des réseaux privés et des réseaux publics.
-  - Il faut pouvoir créer des réseaux de réseaux exemple dan sun e famille, il y a un réseaux pour la famille et un réseaux pour chaque user de la famille.
+  - Il faut pouvoir créer des réseaux de réseaux exemple dans une famille, il y a un réseau pour la famille et un réseau pour chaque user de la famille.
 
 
 ### Dans Website — Priorité haute

@@ -397,6 +397,48 @@ pub fn member_reject(
     Ok(())
 }
 
+/// Change the role of an admitted member (admin only). Role: "admin" or "member".
+#[tauri::command]
+pub fn member_set_role(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+    role: String,
+) -> Result<MemberInfo, String> {
+    let new_role: MemberRole = role.parse().map_err(|e: String| e)?;
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    network.set_member_role(&member_cid, new_role).map_err(|e| e.to_string())?;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    let m = network
+        .data
+        .members
+        .iter()
+        .find(|m| m.cid_short == member_cid)
+        .ok_or_else(|| "membre introuvable".to_string())?;
+    Ok(MemberInfo {
+        cid_short: m.cid_short.clone(),
+        display_name: m.display_name.clone(),
+        circle: m.circle as u8,
+        role: m.role.to_string(),
+        is_minor: m.is_minor,
+    })
+}
+
+/// Remove an admitted member from the network (admin only).
+#[tauri::command]
+pub fn member_remove(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    network.remove_member(&member_cid).map_err(|e| e.to_string())?;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── P2P join ──────────────────────────────────────────────────────────────────
 
 /// Join a network over P2P using a real invite link + known peer multiaddr.

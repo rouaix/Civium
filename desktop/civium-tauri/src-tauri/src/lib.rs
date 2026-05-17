@@ -63,6 +63,8 @@ pub fn run() {
             member_pending_list,
             member_admit,
             member_reject,
+            member_set_role,
+            member_remove,
             node_status,
             node_sync,
             network_join_p2p,
