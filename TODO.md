@@ -363,6 +363,20 @@
 - Sans cette protection, un pair malveillant peut saturer le nœud avec 1 000 requêtes Sync par seconde → débordement mémoire et crash
 
 
+## Migrations du schéma SQLite desktop — Priorité haute
+
+- Le schéma SQLite local est appliqué via `CREATE TABLE IF NOT EXISTS` (un seul bloc `SCHEMA` dans `store.rs`) — si une mise à jour de l'app ajoute une colonne, elle n'est pas ajoutée aux bases existantes des utilisateurs
+- Implémenter un système de migrations versionnées côté desktop, analogue au système PHP déjà en place (`website/src/migrations/`) : fichiers numérotés `001_initial.sql`, `002_add_column.sql`…, table `schema_migrations` SQLite, application automatique au démarrage de l'app
+- Sans ce système, toute évolution du schéma (nouvelle table, nouvelle colonne) **casse silencieusement** les installations existantes
+
+
+## NAT traversal — Circuit Relay — Priorité haute
+
+- Deux nœuds derrière NAT sans IP publique ne peuvent pas se connecter directement — `libp2p-circuit-relay` et `libp2p-autonat` sont absents des features de `civium-core/Cargo.toml`
+- Ajouter les features `circuit-relay` et `autonat` dans `civium-core` pour permettre le relay via un nœud tiers (ex. le nœud bootstrap Civium) quand la connexion directe échoue
+- Documenter le workaround actuel (Cloudflare Tunnel via `external_addr`) dans la CONTRIBUTING.md en attendant l'implémentation native
+
+
 ## Validation des inputs utilisateur — Priorité haute
 
 - Ajouter une validation côté Rust dans `civium-core` avant tout `Network::create()`, `submit_join_request()`, `message_send()` :
@@ -421,10 +435,50 @@
 - Ajouter un lien vers cette doc dans le Dashboard (section MCP) pour que les utilisateurs sachent comment connecter un assistant IA à leur nœud
 
 
+## Internationalisation des emails — Priorité basse
+
+- Les emails envoyés par le serveur PHP (magic link, alertes fraude) sont uniquement en français codé en dur dans `MagicLink.php` et `Mailer.php`
+- Créer un système de templates email multilingues (fr/en minimum) : détecter la langue préférée de l'utilisateur depuis le `Accept-Language` HTTP ou un champ `lang` en BDD, sélectionner le template correspondant
+- Fournir les templates dans `website/src/templates/emails/fr/` et `en/`
+
+
 ## Retour visuel après copie (clipboard) — Priorité basse
 
 - Les boutons "Copier" dans le Dashboard (`navigator.clipboard.writeText()`) ne donnent aucun retour visuel — l'utilisateur ne sait pas si la copie a réussi (pas de toast, pas de changement d'icône)
 - Ajouter un feedback post-copie : icône ✓ pendant 2 s, ou mini-toast "Copié !" — applicable à tous les boutons copie : CID, secret, adresse P2P, token MCP, lien d'invitation
+
+
+## Avatars et logos — Priorité moyenne
+
+- Ajouter un champ `avatar_b58: Option<String>` (image encodée en base58 ou URL IPFS) sur `MemberRecord` dans `civium-core/src/network/member.rs` pour les photos de profil
+- Ajouter un champ `logo_b58: Option<String>` sur `NetworkData` pour le logo d'un réseau
+- Chiffrer les avatars avec la clé de groupe (cercles 0-2) — seuls les membres du réseau voient les photos
+- Afficher l'avatar ou une initiale colorée dans la liste des membres, le fil de messages et le fil d'activité du Dashboard
+
+
+## Rotation du token MCP — Priorité moyenne
+
+- Le token Bearer MCP est généré une fois au démarrage du nœud et ne change jamais — aucune expiration, aucun endpoint de rotation (`mcp.rs:52-66`)
+- Ajouter une commande Tauri `mcp_rotate_token` qui régénère le token sans redémarrer le nœud et invalide l'ancien immédiatement
+- Ajouter une date d'expiration configurable (ex. 30 jours) avec renouvellement automatique et notification dans le Dashboard
+
+
+## Interface admin RCC — fonctionnalités manquantes — Priorité moyenne
+
+- Ajouter une recherche et un filtrage des réseaux enregistrés dans la page admin (`/admin`) : actuellement liste brute sans WHERE dynamique ni pagination avancée
+- Ajouter une page de statistiques globales : nombre total de réseaux, évolution dans le temps, répartition par tier white-label
+- Ajouter des actions de modération sur un réseau : suspension temporaire, suppression, signalement comme malveillant (alimentation automatique du RRM Global)
+- Exposer les logs d'erreur PHP récents dans l'interface admin (lecture du fichier `tmp/php_error.log`) pour faciliter le débogage en production
+
+
+## Benchmarks de performance — Priorité moyenne
+
+- Ajouter un répertoire `desktop/civium-core/benches/` avec des benchmarks `criterion` sur les opérations critiques :
+  - Chiffrement/déchiffrement ChaCha20-Poly1305 (messages de 1 Ko, 10 Ko, 1 Mo)
+  - Sérialisation/désérialisation CBOR d'un `CiviumRequest`
+  - Merge CRDT d'une mailbox de 1 000 messages
+  - Vérification de signature Ed25519
+- Intégrer `cargo bench` dans la CI pour détecter les régressions de performance
 
 
 ## Onboarding — indicateur de progression — Priorité moyenne
