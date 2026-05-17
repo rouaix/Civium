@@ -108,7 +108,10 @@
       "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.0.31\\\\bin\\\\mysql.exe\" --version 2>&1; & \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.0.31\\\\bin\\\\mysqladmin.exe\" --version 2>&1)",
       "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -e \"SHOW VARIABLES LIKE 'innodb_large_prefix'; SHOW VARIABLES LIKE 'innodb_file_format'; SHOW VARIABLES LIKE 'character_set_database'; SHOW VARIABLES LIKE 'row_format';\" 2>&1)",
       "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -e \"SELECT VERSION\\(\\); SHOW VARIABLES LIKE 'innodb_page_size'; SHOW VARIABLES LIKE 'innodb_file_per_table';\" 2>&1)",
-      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 -e \"SELECT VERSION\\(\\), @@default_storage_engine, @@innodb_page_size;\" 2>&1)"
+      "PowerShell(& \"C:\\\\wamp64\\\\bin\\\\mysql\\\\mysql8.4.7\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 -e \"SELECT VERSION\\(\\), @@default_storage_engine, @@innodb_page_size;\" 2>&1)",
+      "Bash(npm run *)",
+      "Bash(Get-ChildItem -Recurse \"P:\\\\Projets\\\\rouaix.com\\\\civium\\\\desktop\\\\civium-tauri\\\\src-tauri\\\\target\\\\release\\\\bundle\" -Include \"*.exe\",\"*.msi\")",
+      "Bash(Select-Object FullName, Length, LastWriteTime)"
     ]
   }
 }

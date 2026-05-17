@@ -56,6 +56,9 @@ pub struct NetworkData {
     /// Réseau public (découvrable via annuaire) ou privé (invitation uniquement).
     #[serde(default)]
     pub is_public: bool,
+    /// CID complet du réseau parent (réseaux de réseaux). None = réseau racine.
+    #[serde(default)]
+    pub parent_cid: Option<String>,
 }
 
 /// A Civium network — a sovereign group with its own identity, rules and members.
@@ -76,6 +79,7 @@ impl Network {
         admin_display_name: String,
         admin_pub_key_b58: Option<String>,
         is_public: bool,
+        parent_cid: Option<String>,
     ) -> Result<Self, CiviumError> {
         let keypair = CiviumKeypair::generate()?;
         let cid = keypair.cid();
@@ -104,6 +108,7 @@ impl Network {
             ap_enabled: false,
             ap_actor_url: None,
             is_public,
+            parent_cid,
         };
 
         Ok(Self { keypair, data })

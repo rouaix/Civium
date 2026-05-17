@@ -14,6 +14,7 @@ export interface NetworkInfo {
   ap_enabled: boolean;
   ap_actor_url: string | null;
   is_public: boolean;
+  parent_cid: string | null;
 }
 
 export interface ApStatusInfo {

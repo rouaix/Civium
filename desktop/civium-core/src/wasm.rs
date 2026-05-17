@@ -99,6 +99,8 @@ pub fn network_create(name: &str, admin_secret_b58: &str, admin_display_name: &s
         &admin_cid,
         admin_display_name.to_string(),
         Some(pub_key_b58),
+        false,
+        None,
     ).map_err(|e| js_err(e))?;
     to_js(&net.data)
 }

@@ -37,6 +37,7 @@ pub struct NetworkInfo {
     pub ap_enabled: bool,
     pub ap_actor_url: Option<String>,
     pub is_public: bool,
+    pub parent_cid: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -133,7 +134,7 @@ pub fn network_create(
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
 
-    let network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), !privacy)
+    let network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), !privacy, None)
         .map_err(|e| e.to_string())?;
 
     let info = NetworkInfo {
@@ -146,6 +147,7 @@ pub fn network_create(
         ap_enabled: false,
         ap_actor_url: None,
         is_public: network.data.is_public,
+        parent_cid: network.data.parent_cid.clone(),
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -201,6 +203,12 @@ pub fn network_delete(app: AppHandle, network_cid: String) -> Result<(), String>
 pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
     let conn = open(&app)?;
     let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
+    // Clear outbox for solo networks — nothing to sync to
+    for n in &networks {
+        if n.data.members.len() <= 1 {
+            let _ = store::clear_outbox(&conn, &n.cid_short());
+        }
+    }
     Ok(networks
         .iter()
         .map(|n| NetworkInfo {
@@ -213,6 +221,7 @@ pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
             ap_enabled: n.data.ap_enabled,
             ap_actor_url: n.data.ap_actor_url.clone(),
             is_public: n.data.is_public,
+            parent_cid: n.data.parent_cid.clone(),
         })
         .collect())
 }
@@ -294,6 +303,7 @@ pub fn network_join(
         ap_enabled: network.data.ap_enabled,
         ap_actor_url: network.data.ap_actor_url.clone(),
         is_public: network.data.is_public,
+        parent_cid: network.data.parent_cid.clone(),
     };
 
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -549,6 +559,7 @@ pub async fn network_join_p2p(
         ap_enabled: network.data.ap_enabled,
         ap_actor_url: network.data.ap_actor_url.clone(),
         is_public: network.data.is_public,
+        parent_cid: network.data.parent_cid.clone(),
     })
 }
 
@@ -682,7 +693,9 @@ pub fn message_send(
         sent_at,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
-    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    if network.data.members.len() > 1 {
+        let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    }
 
     let author_name = network
         .data
@@ -748,7 +761,9 @@ pub fn message_send_direct(
         sent_at,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
-    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    if network.data.members.len() > 1 {
+        let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    }
 
     let author_name = network.data.members.iter()
         .find(|m| m.cid_short == author_cid_short)
@@ -815,7 +830,9 @@ pub fn message_send_e2e(
         sent_at,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
-    let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    if network.data.members.len() > 1 {
+        let _ = store::enqueue_outbox(&conn, &network_cid, &msg.id);
+    }
 
     let author_name = network.data.members.iter()
         .find(|m| m.cid_short == author_cid_short)
@@ -1287,7 +1304,7 @@ pub fn directory_create(
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false)
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false, None)
         .map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Directory;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
@@ -1301,6 +1318,7 @@ pub fn directory_create(
         ap_enabled: false,
         ap_actor_url: None,
         is_public: false,
+        parent_cid: None,
     })
 }
 
@@ -1322,6 +1340,7 @@ pub fn directory_list_networks(app: AppHandle) -> Result<Vec<NetworkInfo>, Strin
             ap_enabled: n.data.ap_enabled,
             ap_actor_url: n.data.ap_actor_url.clone(),
             is_public: n.data.is_public,
+            parent_cid: n.data.parent_cid.clone(),
         })
         .collect())
 }
@@ -1539,7 +1558,7 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let admin_cid = keypair.cid();
-    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false).map_err(|e| e.to_string())?;
+    let mut network = Network::create(name, &admin_cid, display_name, Some(keypair.pub_key_b58()), false, None).map_err(|e| e.to_string())?;
     network.data.kind = NetworkKind::Rrm;
     store::save_network(&conn, &network).map_err(|e| e.to_string())?;
     Ok(NetworkInfo {
@@ -1552,6 +1571,7 @@ pub fn rrm_create(app: AppHandle, name: String, display_name: String) -> Result<
         ap_enabled: false,
         ap_actor_url: None,
         is_public: false,
+        parent_cid: None,
     })
 }
 
@@ -2537,6 +2557,138 @@ pub async fn hub_member_join(
     Ok(())
 }
 
+/// Retourne la liste des réseaux publics hébergés sur le hub principal Civium.
+#[tauri::command]
+pub async fn hub_public_networks() -> Result<Vec<serde_json::Value>, String> {
+    let url = format!("{}/hub/network/public", RCC_URL);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("réseau : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("hub {}", resp.status().as_u16()));
+    }
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(json["networks"].as_array().cloned().unwrap_or_default())
+}
+
+/// Retourne le réseau principal Civium hébergé sur le hub.
+#[tauri::command]
+pub async fn hub_main_network() -> Result<serde_json::Value, String> {
+    let url = format!("{}/hub/main-network", RCC_URL);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build().map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| format!("réseau : {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("hub {}", resp.status().as_u16()));
+    }
+    resp.json().await.map_err(|e| e.to_string())
+}
+
+/// Rejoint un réseau public hébergé sur le hub, sans lien d'invitation.
+/// Crée un stub local si le réseau n'est pas encore connu.
+#[tauri::command]
+pub async fn hub_join_public_network(
+    app: AppHandle,
+    network_cid: String,
+    network_name: String,
+) -> Result<NetworkInfo, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let member_cid = keypair.cid();
+
+    // cid_short = "civ1" + 8 premiers chars base58 = 12 chars total
+    let cid_short = network_cid.chars().take(12).collect::<String>();
+
+    // Créer un stub local si absent (hub-only network)
+    if store::load_network(&conn, &cid_short).is_err() {
+        use civium_core::{GroupKey, MemberRecord, MemberRole, TrustCircle};
+        use civium_core::network::{Network, NetworkData, NetworkKind};
+
+        let net_kp = civium_core::CiviumKeypair::generate().map_err(|e| e.to_string())?;
+        let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let data = NetworkData {
+            network_secret_b58: net_kp.secret_b58(),
+            cid_short: cid_short.clone(),
+            cid_full: network_cid.clone(),
+            name: network_name.clone(),
+            members: vec![MemberRecord {
+                cid_short: member_cid.short().to_string(),
+                cid_full: member_cid.full().to_string(),
+                display_name: member_cid.short().to_string(),
+                circle: TrustCircle::Connaissance,
+                role: MemberRole::Member,
+                joined_at: now_ts,
+                is_minor: false,
+                pub_key_b58: Some(keypair.pub_key_b58()),
+            }],
+            pending: vec![],
+            group_key_b58: GroupKey::generate().to_b58(),
+            kind: NetworkKind::Standard,
+            ap_enabled: false,
+            ap_actor_url: None,
+            is_public: true,
+            parent_cid: None,
+        };
+
+        let network = Network::from_data(data).map_err(|e| e.to_string())?;
+        store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    }
+
+    // Configurer le hub pour ce réseau
+    store::set_hub_config(&conn, &store::HubConfig {
+        network_cid_short: cid_short.clone(),
+        hub_url: RCC_URL.to_string(),
+        enabled: true,
+        last_sync_ts: 0,
+    }).map_err(|e| e.to_string())?;
+
+    // POST /hub/member/join
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let display_name = member_cid.short().to_string();
+    let canonical = format!("join|{}|{}|{}|{}", network_cid, member_cid.full(), display_name, ts);
+    let sig_bytes = keypair.sign_bytes(canonical.as_bytes()).map_err(|e| e.to_string())?;
+
+    let body = serde_json::json!({
+        "network_cid":  network_cid,
+        "member_cid":   member_cid.full(),
+        "display_name": display_name,
+        "pubkey_b58":   keypair.pub_key_b58(),
+        "timestamp":    ts,
+        "signature":    bs58::encode(&sig_bytes).into_string(),
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build().map_err(|e| e.to_string())?;
+
+    let url = format!("{}/hub/member/join", RCC_URL);
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("réseau : {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("hub {status}: {text}"));
+    }
+
+    let network = store::load_network(&conn, &cid_short).map_err(|e| e.to_string())?;
+    Ok(NetworkInfo {
+        cid_short: network.cid_short().to_string(),
+        cid_full: network.cid_full().to_string(),
+        name: network.name().to_string(),
+        member_count: network.data.members.len(),
+        is_directory: false,
+        is_rrm: false,
+        ap_enabled: false,
+        ap_actor_url: None,
+        is_public: true,
+        parent_cid: None,
+    })
+}
+
 /// Pousse les messages en attente vers le hub, puis tire les nouveaux.
 /// Retourne le nombre de messages reçus.
 #[tauri::command]
@@ -2979,4 +3131,66 @@ pub fn get_active_alerts(app: AppHandle) -> Vec<FraudAlertInfo> {
         .cloned()
         .map(FraudAlertInfo::from)
         .collect()
+}
+
+/// Shape of each alert object returned by GET /api/alerts on the hub.
+#[derive(serde::Deserialize)]
+struct HubAlertRow {
+    #[serde(rename = "type")]
+    alert_type: String,
+    description: String,
+    #[serde(default)]
+    network_cids: Vec<String>,
+    emitted_at: u64,
+    #[serde(default)]
+    emitted_by: String,
+}
+
+#[derive(serde::Deserialize)]
+struct HubAlertsResponse {
+    alerts: Vec<HubAlertRow>,
+}
+
+/// Fetch the latest fraud alerts from the hub REST API and merge them into
+/// the in-memory active_alerts list.  Returns the newly added alerts.
+#[tauri::command]
+pub async fn poll_hub_alerts(app: AppHandle) -> Result<Vec<FraudAlertInfo>, String> {
+    let url = format!("{}/api/alerts", civium_core::RCC_URL);
+
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("poll_hub_alerts: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("poll_hub_alerts: HTTP {}", resp.status()));
+    }
+
+    let data: HubAlertsResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("poll_hub_alerts parse: {e}"))?;
+
+    let state = app.state::<AppState>();
+    let mut active = state.active_alerts.lock().unwrap();
+
+    let mut added: Vec<FraudAlertInfo> = Vec::new();
+    for row in data.alerts {
+        let already = active
+            .iter()
+            .any(|a| a.alert_type == row.alert_type && a.emitted_at == row.emitted_at);
+        if !already {
+            let alert = civium_core::FraudAlert {
+                alert_type:   row.alert_type,
+                description:  row.description,
+                network_cids: row.network_cids,
+                emitted_at:   row.emitted_at,
+                emitted_by:   row.emitted_by,
+            };
+            active.push(alert.clone());
+            let _ = app.emit("civium://fraud-alert", &alert);
+            added.push(FraudAlertInfo::from(alert));
+        }
+    }
+
+    Ok(added)
 }

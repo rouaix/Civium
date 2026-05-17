@@ -223,6 +223,10 @@ export default function Dashboard() {
   const [joinPeerAddr, setJoinPeerAddr] = useState("");
   const [joinDisplayName, setJoinDisplayName] = useState("");
   const [joining, setJoining] = useState(false);
+  const [joinTab, setJoinTab] = useState<"invite" | "directory">("directory");
+  const [publicNetworks, setPublicNetworks] = useState<Array<{ network_cid: string; network_name: string; is_main?: boolean }>>([]);
+  const [loadingDirectory, setLoadingDirectory] = useState(false);
+  const [joiningPublic, setJoiningPublic] = useState<string | null>(null);
 
   // Fraud alerts
   const [activeAlerts, setActiveAlerts] = useState<FraudAlertInfo[]>([]);
@@ -479,6 +483,13 @@ export default function Dashboard() {
       if (mounted) setActiveAlerts(a);
     }).catch(() => {});
 
+    // Poll hub for fraud alerts immediately then every 30 min
+    const pollAlerts = () => {
+      tauriInvoke<FraudAlertInfo[]>("poll_hub_alerts").catch(() => {});
+    };
+    pollAlerts();
+    const alertInterval = setInterval(pollAlerts, 30 * 60 * 1000);
+
     let unlistenSync: UnlistenFn | null = null;
     let unlistenOutbox: UnlistenFn | null = null;
     let unlistenRcc: UnlistenFn | null = null;
@@ -526,6 +537,7 @@ export default function Dashboard() {
     return () => {
       mounted = false;
       clearInterval(interval);
+      clearInterval(alertInterval);
       unlistenSync?.();
       unlistenOutbox?.();
       unlistenRcc?.();
@@ -1255,6 +1267,35 @@ export default function Dashboard() {
     }
   }
 
+  async function loadPublicNetworks() {
+    setLoadingDirectory(true);
+    try {
+      const nets = await tauriInvoke<Array<{ network_cid: string; network_name: string; is_main?: boolean }>>("hub_public_networks");
+      setPublicNetworks(nets);
+    } catch {
+      setPublicNetworks([]);
+    } finally {
+      setLoadingDirectory(false);
+    }
+  }
+
+  async function handleJoinPublicNetwork(networkCid: string, networkName: string) {
+    setJoiningPublic(networkCid);
+    try {
+      const net = await tauriInvoke<NetworkInfo>("hub_join_public_network", { networkCid, networkName });
+      const nets = await tauriInvoke<NetworkInfo[]>("network_list");
+      setNetworks(nets);
+      const joined = nets.find(n => n.cid_short === net.cid_short);
+      if (joined) { selectedRef.current = joined; setSelected(joined); }
+      setShowJoinForm(false);
+      setActiveView("messages");
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setJoiningPublic(null);
+    }
+  }
+
   async function handleJoinNetwork() {
     if (!joinInviteLink.trim() || !joinDisplayName.trim()) return;
     setJoining(true);
@@ -1323,6 +1364,28 @@ export default function Dashboard() {
   const circleLabel = (c: number) =>
     ["Annuaire", "Connaissance", "Confiance", "Intime"][c] ?? `Cercle ${c}`;
 
+  const enabledPluginIds = plugins.filter((p) => p.state === "enabled").map((p) => p.id);
+  const hasAgenda = enabledPluginIds.some((id) => id.includes("agenda"));
+  const hasDocuments = enabledPluginIds.some((id) => id.includes("document"));
+
+  const globalNavItem = (view: ActiveView, icon: string, label: string, badge?: number) => (
+    <button
+      key={view}
+      onClick={() => { setActiveView(view); setShowSettings(false); setShowCreateForm(false); setShowJoinForm(false); }}
+      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${
+        activeView === view && !showSettings && !showCreateForm && !showJoinForm
+          ? "bg-civium-500 text-white"
+          : "text-civium-200 hover:bg-civium-700"
+      }`}
+    >
+      <span>{icon}</span>
+      <span className="flex-1">{label}</span>
+      {badge !== undefined && badge > 0 && (
+        <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">{badge}</span>
+      )}
+    </button>
+  );
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
@@ -1383,35 +1446,15 @@ export default function Dashboard() {
           {networks.length === 0 && !showCreateForm && (
             <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau. Cliquez sur + pour en créer un.</p>
           )}
-          {networks.map((net) => {
+          {networks.filter(n => !n.parent_cid).map((net) => {
             const isSelected = selected?.cid_short === net.cid_short;
-            const navItem = (view: ActiveView, icon: string, label: string, badge?: number) => (
-              <button
-                key={view}
-                onClick={() => { setActiveView(view); setShowSettings(false); setShowCreateForm(false); }}
-                className={`w-full text-left pl-8 pr-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${
-                  isSelected && activeView === view && !showSettings && !showCreateForm
-                    ? "bg-civium-500 text-white"
-                    : "text-civium-200 hover:bg-civium-700"
-                }`}
-              >
-                <span>{icon}</span>
-                <span className="flex-1">{label}</span>
-                {badge !== undefined && badge > 0 && (
-                  <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">{badge}</span>
-                )}
-              </button>
-            );
-            const enabledPluginIds = plugins.filter((p) => p.state === "enabled").map((p) => p.id);
-            const hasAgenda = enabledPluginIds.some((id) => id.includes("agenda"));
-            const hasDocuments = enabledPluginIds.some((id) => id.includes("document"));
+            const children = networks.filter(n => n.parent_cid === net.cid_full);
             return (
               <div key={net.cid_short}>
                 <button
                   onClick={() => {
                     selectedRef.current = net;
                     setSelected(net);
-                    setActiveView('messages');
                     setShowSettings(false);
                     setShowCreateForm(false);
                     setShowJoinForm(false);
@@ -1451,25 +1494,58 @@ export default function Dashboard() {
                     {net.is_directory ? "Annuaire" : net.is_rrm ? "Registre malveillants" : `${net.member_count} membre(s)`}
                   </div>
                 </button>
-                {/* Plugin sub-navigation when this network is selected */}
-                {isSelected && !showSettings && !showCreateForm && (
-                  <div className="mt-0.5 space-y-0.5">
-                    {navItem('messages', '💬', 'Messages', unreadCount > 0 ? unreadCount : undefined)}
-                    {navItem('membres', '👥', 'Membres')}
-                    {navItem('gouvernance', '🗳', 'Gouvernance')}
-                    {navItem('activite', '📊', 'Activité')}
-                    {navItem('notifications', '🔔', 'Notifications', unreadCount > 0 ? unreadCount : undefined)}
-                    {hasAgenda && navItem('agenda', '📅', 'Agenda')}
-                    {hasDocuments && navItem('documents', '📄', 'Documents')}
-                    {net.is_directory && navItem('annuaire', '🔍', 'Annuaire')}
-                    {net.is_rrm && navItem('rrm', '🚫', 'Réseaux signalés')}
-                    {navItem('extensions', '🧩', 'Extensions')}
+                {/* Sous-réseaux */}
+                {children.length > 0 && (
+                  <div className="ml-3 pl-2 border-l border-civium-700 mt-0.5 space-y-0.5">
+                    {children.map((child) => {
+                      const isChildSelected = selected?.cid_short === child.cid_short;
+                      return (
+                        <button
+                          key={child.cid_short}
+                          onClick={() => {
+                            selectedRef.current = child;
+                            setSelected(child);
+                            setShowSettings(false);
+                            setShowCreateForm(false);
+                            setShowJoinForm(false);
+                          }}
+                          className={`w-full text-left px-2 py-1.5 rounded-lg text-xs transition-colors ${
+                            isChildSelected && !showSettings && !showCreateForm
+                              ? "bg-civium-700 text-white"
+                              : "text-civium-200 hover:bg-civium-700"
+                          }`}
+                        >
+                          <span className="opacity-50 mr-1">↳</span>
+                          <span className="font-medium">{child.name}</span>
+                          {child.is_public && <span className="ml-1 text-green-400">🌐</span>}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             );
           })}
         </nav>
+
+        {/* Navigation globale */}
+        <div className="px-3 py-2 border-t border-civium-700 space-y-0.5">
+          {selected && (
+            <p className="text-xs text-civium-500 px-1 pb-1 truncate" title={selected.name}>
+              ◈ {selected.name}
+            </p>
+          )}
+          {globalNavItem('messages', '💬', 'Messages', unreadCount > 0 ? unreadCount : undefined)}
+          {globalNavItem('membres', '👥', 'Membres')}
+          {globalNavItem('gouvernance', '🗳', 'Gouvernance')}
+          {hasAgenda && globalNavItem('agenda', '📅', 'Agenda')}
+          {hasDocuments && globalNavItem('documents', '📄', 'Documents')}
+          {globalNavItem('activite', '📊', 'Activité')}
+          {globalNavItem('notifications', '🔔', 'Notifications', unreadCount > 0 ? unreadCount : undefined)}
+          {selected?.is_directory && globalNavItem('annuaire', '🔍', 'Annuaire')}
+          {selected?.is_rrm && globalNavItem('rrm', '🚫', 'Réseaux signalés')}
+          {globalNavItem('extensions', '🧩', 'Extensions')}
+        </div>
 
         {/* Statut réseau */}
         <div className="px-4 py-2 border-t border-civium-700">
@@ -1820,35 +1896,6 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {/* ── Plugins ── */}
-            <section>
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Extensions (Plugins)</h3>
-              <p className="text-xs text-gray-400 mb-3">
-                Les extensions ajoutent des fonctionnalités à vos réseaux. Celles marquées "système" sont indispensables au fonctionnement.
-              </p>
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
-                {plugins.length === 0 && <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucune extension installée.</p>}
-                {plugins.map((p) => (
-                  <div key={p.id} className="px-4 py-4 flex items-start gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-semibold text-gray-800">{p.name}</span>
-                        {p.is_system && <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">système</span>}
-                        {p.certification === "certified" && <span className="text-xs px-1.5 py-0.5 bg-indigo-100 text-indigo-700 rounded">Certifié</span>}
-                        <span className={`text-xs px-1.5 py-0.5 rounded ${p.state === "enabled" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>{p.state === "enabled" ? "actif" : "inactif"}</span>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-0.5">{p.description}</p>
-                    </div>
-                    {!p.is_system && (
-                      <button className={`flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-50 ${p.state === "enabled" ? "border-gray-200 text-gray-600 hover:bg-gray-50" : "border-civium-200 text-civium-700 bg-civium-50 hover:bg-civium-100"}`} disabled={togglingPlugin === p.id} onClick={() => handleTogglePlugin(p.id, p.state)}>
-                        {togglingPlugin === p.id ? "…" : p.state === "enabled" ? "Désactiver" : "Activer"}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-
             {/* ── Zone de danger ── */}
             {selected && selected.member_count <= 1 && (
               <section className="border border-red-200 rounded-xl p-4">
@@ -1883,7 +1930,7 @@ export default function Dashboard() {
         ) : showJoinForm ? (
           /* ══ PANNEAU REJOINDRE UN RÉSEAU ══ */
           <div className="max-w-lg mx-auto py-12 px-6">
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 space-y-5">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold text-gray-900">Rejoindre un réseau</h2>
                 <button
@@ -1892,68 +1939,129 @@ export default function Dashboard() {
                 >✕</button>
               </div>
 
-              <p className="text-sm text-gray-500">
-                Vous avez reçu une invitation d'un administrateur Civium. Collez les informations ci-dessous.
-              </p>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Lien d'invitation</label>
-                  <textarea
-                    autoFocus
-                    rows={3}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 resize-none placeholder:font-sans placeholder:text-gray-400"
-                    placeholder="civium-invite:…"
-                    value={joinInviteLink}
-                    onChange={(e) => setJoinInviteLink(e.target.value)}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Adresse de connexion de l'admin
-                    <span className="ml-1 text-xs font-normal text-gray-400">(fournie avec l'invitation)</span>
-                  </label>
-                  <input
-                    type="text"
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 placeholder:font-sans placeholder:text-gray-400"
-                    placeholder="/ip4/1.2.3.4/tcp/4001/p2p/12D3…"
-                    value={joinPeerAddr}
-                    onChange={(e) => setJoinPeerAddr(e.target.value)}
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Laissez vide seulement si l'admin vous a donné accès direct à sa base de données.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Votre nom dans ce réseau</label>
-                  <input
-                    type="text"
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
-                    placeholder="Ex : Marie, Pierre…"
-                    value={joinDisplayName}
-                    onChange={(e) => setJoinDisplayName(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleJoinNetwork(); }}
-                  />
-                </div>
-
+              {/* Onglets */}
+              <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
                 <button
-                  className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
-                  disabled={joining || !joinInviteLink.trim() || !joinDisplayName.trim()}
-                  onClick={handleJoinNetwork}
+                  className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${joinTab === "directory" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+                  onClick={() => { setJoinTab("directory"); if (publicNetworks.length === 0) loadPublicNetworks(); }}
                 >
-                  {joining
-                    ? (joinPeerAddr.trim() ? "Connexion en cours…" : "Jonction…")
-                    : "Rejoindre le réseau"}
+                  Annuaire Civium
                 </button>
-
-                {joining && joinPeerAddr.trim() && (
-                  <p className="text-xs text-gray-400 text-center">
-                    Connexion au nœud de l'admin… (jusqu'à 30 secondes)
-                  </p>
-                )}
+                <button
+                  className={`flex-1 py-1.5 rounded-md text-sm font-medium transition-colors ${joinTab === "invite" ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
+                  onClick={() => setJoinTab("invite")}
+                >
+                  Lien d'invitation
+                </button>
               </div>
+
+              {/* Onglet Annuaire */}
+              {joinTab === "directory" && (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-500">
+                    Réseaux publics hébergés sur le serveur Civium. Rejoignez-en un directement, sans invitation.
+                  </p>
+                  {loadingDirectory ? (
+                    <p className="text-sm text-gray-400 text-center py-4">Chargement…</p>
+                  ) : publicNetworks.length === 0 ? (
+                    <div className="text-center py-4 space-y-2">
+                      <p className="text-sm text-gray-400">Aucun réseau public disponible.</p>
+                      <button
+                        className="text-xs text-civium-600 hover:underline"
+                        onClick={loadPublicNetworks}
+                      >Réessayer</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {publicNetworks.map((net) => {
+                        const alreadyJoined = networks.some(n => n.cid_full === net.network_cid || n.cid_short === net.network_cid.slice(0, 12));
+                        return (
+                          <div key={net.network_cid} className="flex items-center gap-3 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-semibold text-gray-800 flex items-center gap-1.5">
+                                {net.network_name}
+                                {net.is_main && <span className="text-xs bg-civium-100 text-civium-700 px-1.5 py-0.5 rounded-full">Principal</span>}
+                                <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">🌐 Public</span>
+                              </div>
+                              <div className="text-xs text-gray-400 font-mono truncate">{net.network_cid.slice(0, 20)}…</div>
+                            </div>
+                            {alreadyJoined ? (
+                              <span className="text-xs text-green-600 font-medium shrink-0">Déjà membre</span>
+                            ) : (
+                              <button
+                                className="shrink-0 text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                                disabled={joiningPublic === net.network_cid}
+                                onClick={() => handleJoinPublicNetwork(net.network_cid, net.network_name)}
+                              >
+                                {joiningPublic === net.network_cid ? "…" : "Rejoindre"}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <button className="text-xs text-gray-400 hover:text-gray-600 w-full text-center pt-1" onClick={loadPublicNetworks}>
+                        Actualiser la liste
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Onglet Invitation */}
+              {joinTab === "invite" && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-500">
+                    Vous avez reçu un lien d'invitation d'un administrateur. Collez-le ci-dessous.
+                  </p>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Lien d'invitation</label>
+                    <textarea
+                      autoFocus
+                      rows={3}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 resize-none placeholder:font-sans placeholder:text-gray-400"
+                      placeholder="civium-invite:…"
+                      value={joinInviteLink}
+                      onChange={(e) => setJoinInviteLink(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Adresse P2P de l'admin
+                      <span className="ml-1 text-xs font-normal text-gray-400">(optionnel)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-civium-400 placeholder:font-sans placeholder:text-gray-400"
+                      placeholder="/ip4/1.2.3.4/tcp/4001/p2p/12D3…"
+                      value={joinPeerAddr}
+                      onChange={(e) => setJoinPeerAddr(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Votre nom dans ce réseau</label>
+                    <input
+                      type="text"
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
+                      placeholder="Ex : Marie, Pierre…"
+                      value={joinDisplayName}
+                      onChange={(e) => setJoinDisplayName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleJoinNetwork(); }}
+                    />
+                  </div>
+                  <button
+                    className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
+                    disabled={joining || !joinInviteLink.trim() || !joinDisplayName.trim()}
+                    onClick={handleJoinNetwork}
+                  >
+                    {joining ? (joinPeerAddr.trim() ? "Connexion…" : "Jonction…") : "Rejoindre le réseau"}
+                  </button>
+                  {joining && joinPeerAddr.trim() && (
+                    <p className="text-xs text-gray-400 text-center">
+                      Connexion au nœud de l'admin… (jusqu'à 30 secondes)
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -2039,58 +2147,63 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-        ) : !selected ? (
-          <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-400">
-            {networks.length === 0 ? (
-              <div className="text-center max-w-sm space-y-3">
-                <p className="text-gray-600 font-medium">Bienvenue sur Civium</p>
-                <p className="text-sm text-gray-400 leading-relaxed">
-                  Votre identité ({identity?.cid_short ?? "…"}) est distincte de vos réseaux.
-                  Un réseau est un espace de groupe que vous créez ou rejoignez — vous pouvez en rejoindre plusieurs avec la même identité.
-                </p>
-                <div className="flex flex-col gap-2 pt-1">
-                  <button
-                    className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
-                    onClick={() => setShowCreateForm(true)}
-                  >
-                    + Créer un nouveau réseau
-                  </button>
-                  <button
-                    className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
-                    onClick={() => setShowJoinForm(true)}
-                  >
-                    Rejoindre un réseau existant
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p>Sélectionnez un réseau dans la barre latérale.</p>
-            )}
-          </div>
         ) : (
           <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
-            {/* Header */}
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900">{selected.name}</h2>
-                <p className="text-xs text-gray-400 font-mono mt-0.5">{selected.cid_short}</p>
+            {/* Welcome / select prompt (non-Extensions views only) */}
+            {activeView !== 'extensions' && !selected && (
+              <div className="flex flex-col items-center justify-center h-96 gap-4 text-gray-400">
+                {networks.length === 0 ? (
+                  <div className="text-center max-w-sm space-y-3">
+                    <p className="text-gray-600 font-medium">Bienvenue sur Civium</p>
+                    <p className="text-sm text-gray-400 leading-relaxed">
+                      Votre identité ({identity?.cid_short ?? "…"}) est distincte de vos réseaux.
+                      Un réseau est un espace de groupe que vous créez ou rejoignez — vous pouvez en rejoindre plusieurs avec la même identité.
+                    </p>
+                    <div className="flex flex-col gap-2 pt-1">
+                      <button
+                        className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+                        onClick={() => setShowCreateForm(true)}
+                      >
+                        + Créer un nouveau réseau
+                      </button>
+                      <button
+                        className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
+                        onClick={() => { setShowJoinForm(true); setJoinTab("directory"); loadPublicNetworks(); }}
+                      >
+                        Rejoindre un réseau existant
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm">Sélectionnez un réseau dans la barre latérale.</p>
+                )}
               </div>
-              {nodeStatus.running && (
-                <button
-                  onClick={handleSync}
-                  disabled={syncing}
-                  className="flex-shrink-0 text-xs px-3 py-1.5 bg-white border border-gray-200
-                             text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50
-                             transition-colors flex items-center gap-1.5"
-                >
-                  <span className={syncing ? "animate-spin inline-block" : ""}>↻</span>
-                  {syncing ? "Synchronisation…" : "Synchroniser"}
-                </button>
-              )}
-            </div>
+            )}
+
+            {/* Header: réseau sélectionné */}
+            {activeView !== 'extensions' && selected && (
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-gray-900">{selected.name}</h2>
+                  <p className="text-xs text-gray-400 font-mono mt-0.5">{selected.cid_short}</p>
+                </div>
+                {nodeStatus.running && (
+                  <button
+                    onClick={handleSync}
+                    disabled={syncing}
+                    className="flex-shrink-0 text-xs px-3 py-1.5 bg-white border border-gray-200
+                               text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50
+                               transition-colors flex items-center gap-1.5"
+                  >
+                    <span className={syncing ? "animate-spin inline-block" : ""}>↻</span>
+                    {syncing ? "Synchronisation…" : "Synchroniser"}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Pending members — always visible as notification */}
-            {activeView === 'membres' && pending.length > 0 && (
+            {selected && activeView === 'membres' && pending.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
                   Demandes en attente ({pending.length})
@@ -2131,7 +2244,7 @@ export default function Dashboard() {
             )}
 
             {/* Members */}
-            {activeView === 'membres' && <section>
+            {selected && activeView === 'membres' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Membres ({members.length})
@@ -2315,7 +2428,7 @@ export default function Dashboard() {
             </section>}
 
             {/* Invite link */}
-            {activeView === 'membres' && inviteLink && (
+            {selected && activeView === 'membres' && inviteLink && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
                   Inviter quelqu'un
@@ -2397,18 +2510,27 @@ export default function Dashboard() {
                           const addrBlock = addrs.length > 0
                             ? addrs.map((a) => `  • ${a}`).join("\n")
                             : "  (nœud non démarré — démarrez votre nœud avant d'envoyer)";
+                          const networkName = selected?.name ?? "Civium";
+                          const networkCid  = selected?.cid_full ?? "";
+                          const webLink = networkCid
+                            ? `https://www.rouaix.com/civium/app?join=${encodeURIComponent(networkCid)}&jname=${encodeURIComponent(networkName)}`
+                            : "";
                           const body = [
                             `Bonjour,`,
                             ``,
-                            `Je vous invite à rejoindre mon réseau sur Civium.`,
+                            `Je vous invite à rejoindre mon réseau "${networkName}" sur Civium.`,
                             ``,
-                            `1. Téléchargez l'application Civium : https://civium.app`,
-                            `2. Au démarrage, choisissez "Rejoindre un réseau"`,
-                            `3. Collez ce lien d'invitation :`,
-                            `   ${inviteLink}`,
-                            `4. Collez mon adresse de connexion :`,
+                            `— Option A : depuis votre navigateur (sans installation)`,
+                            webLink ? `  ${webLink}` : `  (CID du réseau : ${networkCid})`,
+                            ``,
+                            `— Option B : depuis l'application desktop`,
+                            `  1. Téléchargez l'application Civium : https://civium.app`,
+                            `  2. Au démarrage, choisissez "Rejoindre un réseau"`,
+                            `  3. Collez ce lien d'invitation :`,
+                            `     ${inviteLink}`,
+                            `  4. Collez mon adresse de connexion :`,
                             addrBlock,
-                            `5. Choisissez votre nom et confirmez`,
+                            `  5. Choisissez votre nom et confirmez`,
                             ``,
                             `J'approuverai votre demande dès que je la recevrai.`,
                           ].join("\n");
@@ -2439,7 +2561,7 @@ export default function Dashboard() {
             )}
 
             {/* Garde-fou majoritaire */}
-            {activeView === 'gouvernance' && adminActions.length > 0 && (
+            {selected && activeView === 'gouvernance' && adminActions.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
                   Actions admin — Garde-fou
@@ -2500,7 +2622,7 @@ export default function Dashboard() {
             )}
 
             {/* Governance */}
-            {activeView === 'gouvernance' && <section>
+            {selected && activeView === 'gouvernance' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Propositions ({proposals.length})
@@ -2745,7 +2867,7 @@ export default function Dashboard() {
             </section>}
 
             {/* Thread messages */}
-            {activeView === 'messages' && <section>
+            {selected && activeView === 'messages' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Fil de discussion
@@ -2821,7 +2943,7 @@ export default function Dashboard() {
             </section>}
 
             {/* ── Activité section ── */}
-            {activeView === 'activite' && <section>
+            {selected && activeView === 'activite' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide flex items-center gap-2">
                   Fil d'activité
@@ -2864,7 +2986,7 @@ export default function Dashboard() {
             </section>}
 
             {/* ── Agenda section ── */}
-            {activeView === 'agenda' && <section>
+            {selected && activeView === 'agenda' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Agenda ({agendaEvents.length})
@@ -2966,7 +3088,7 @@ export default function Dashboard() {
             </section>}
 
             {/* ── Documents section ── */}
-            {activeView === 'documents' && <section>
+            {selected && activeView === 'documents' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Documents ({documents.length})
@@ -3048,7 +3170,7 @@ export default function Dashboard() {
             </section>}
 
             {/* ── RRM section (RRM networks only) ── */}
-            {activeView === 'rrm' && selected.is_rrm && (
+            {selected && activeView === 'rrm' && selected.is_rrm && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -3148,7 +3270,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Trusted RRMs section (standard networks only) ── */}
-            {activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
+            {selected && activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && (trustedRrms.length > 0 || showTrustForm) && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -3244,7 +3366,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Add trusted RRM button when none yet ── */}
-            {activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
+            {selected && activeView === 'annuaire' && !selected.is_directory && !selected.is_rrm && trustedRrms.length === 0 && !showTrustForm && (
               <button
                 onClick={() => setShowTrustForm(true)}
                 className="text-xs text-gray-400 hover:text-orange-600 transition-colors block"
@@ -3254,7 +3376,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Annuaire section (directory networks only) ── */}
-            {activeView === 'annuaire' && selected.is_directory && (
+            {selected && activeView === 'annuaire' && selected.is_directory && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
@@ -3537,7 +3659,7 @@ export default function Dashboard() {
             )}
 
             {/* ── Notifications section ── */}
-            {activeView === 'notifications' && (
+            {selected && activeView === 'notifications' && (
               <section>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide flex items-center gap-2">
@@ -3599,7 +3721,10 @@ export default function Dashboard() {
             {/* ── Extensions section ── */}
             {activeView === 'extensions' && (
               <section>
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Extensions (Plugins)</h3>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-1">Extensions (Plugins)</h3>
+                <p className="text-xs text-gray-400 mb-3">
+                  Les extensions s'appliquent à <strong>tous vos réseaux</strong>. Activer ou désactiver une extension ici la modifie pour l'ensemble du nœud.
+                </p>
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 divide-y divide-gray-100">
                   {plugins.length === 0 && (
                     <p className="px-4 py-6 text-sm text-gray-400 text-center">Aucun plugin installé.</p>

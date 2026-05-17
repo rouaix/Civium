@@ -140,6 +140,7 @@ pub fn run() {
             ap_list_posts,
             ap_post,
             get_active_alerts,
+            poll_hub_alerts,
             node_settings_get,
             node_settings_set,
             hub_config_set,
@@ -147,6 +148,9 @@ pub fn run() {
             hub_network_register,
             hub_member_join,
             hub_sync,
+            hub_public_networks,
+            hub_main_network,
+            hub_join_public_network,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

@@ -17,7 +17,7 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 | 2 | Gouvernance & Annuaires | ✅ Terminé |
 | 3 | Services & Intégrations | ✅ Terminé |
 | 4 | Applications & Écosystème | ✅ Terminé (1 critère nécessite déploiement PHP) |
-| 5 | Maturité | 🚧 En cours (certification ✅, SDK ✅, docs ✅, white-label ✅ — audit externe + gouvernance associative à planifier) |
+| 5 | Maturité | 🚧 En cours (certification ✅, SDK ✅, docs ✅, white-label ✅, hub agenda ✅, hub gouvernance ✅ — audit externe + gouvernance associative à planifier) |
 
 ---
 
@@ -473,6 +473,13 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] Documentation utilisateur v0.1 — site web PHP F3 (`home.html`, `how.html`, `usecases.html`) + `README.md` mis à jour avec statut v0.1 et critères MVP
 - [x] Publication protocole v0.1 — `README.md` : bandeau v0.1, critères MVP cochés, feuille de route mise à jour Phases 0-4 ✅
 - [x] White-label (licence par taille d'organisation) — tiers open/famille/association/entreprise, branding configurable, limites enforced sur `POST /api/register`, `GET /api/info` public, page admin `/admin/white-label`
+- [x] Hub gouvernance web : `POST /hub/governance/proposal`, `GET /hub/governance/proposals`, `POST /hub/governance/vote` — app.html : onglet Gouvernance (propositions + votes Oui/Non/Abstention signés Ed25519, résultats en temps réel)
+- [x] Hub agenda web : `POST /hub/agenda/event`, `GET /hub/agenda/events` — app.html : onglet Agenda (liste chronologique + créer événement)
+- [x] Réseau Civium principal hébergé sur le hub (`ensureMainNetwork()`) — auto-rejoint à la connexion sur Desktop + web
+- [x] Annuaire des réseaux publics (`GET /hub/network/public`) — modal "Rejoindre" avec onglets Annuaire/Invitation sur Desktop + web
+- [x] Lien d'invitation email Desktop : option A (URL web `?join=CID`) + option B (deep link P2P desktop)
+- [x] Auto-join depuis URL web (`/app?join=CID&jname=NOM`) — rejoindre un réseau en un clic depuis un email
+- [ ] Audit de sécurité externe
 - [ ] Gouvernance du projet Civium lui-même (association ou fondation)
 
 ---
@@ -486,4 +493,4 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-*Dernière mise à jour : 2026-05-16 (Phase 5 — certification ✅, SDK ✅, docs développeur ✅, publication protocole v0.1 ✅, white-label ✅)*
+*Dernière mise à jour : 2026-05-17 (Phase 5 — hub gouvernance/agenda web ✅, réseau principal hub ✅, annuaire public ✅, liens invitation web ✅)*

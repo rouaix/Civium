@@ -2,42 +2,33 @@
 
 ---
 
-## Demandes du concepteur
+## A Développer ou corriger dans desktop — Priorité haute
+- L'app doit s'ouvrir sur un fil d'actualité qui affiche toutes les activités de tous les réseaux. Avec le type d'activité, le nom du réseau et le nom du user. Et le contenu de l'activité (message, événement, etc.)
+- Les message du serveur principal ne s'affichent pas dans l'app desktop.
+- L'app doit pouvoir signaler un spam ou un abus etc. C'est à dire envoyer un message au serveur principal.
+- L'app doit pouvoir demander à rejoindre un réseau, au serveur principal avec un simple clic dans une liste des réseaux publics.
+- L'app doit afficher l'annuaire des réseaux publics (rejoindre sans invitation) et privés.
+- La messagerie est destinée à échanger des messages privés entre users et réseaux. On doit donc pouvoir choisir à qui on envoi les messages.
+- Les messages peuvent contenir du texte, des fichiers, (audio, vidéo, images, pdf, etc.) et des événements (calendrier, tâches, etc.)
+- supprimer l'icone à côté du nom du résaeau civium.
+- dans les messages il faut aussi afficher le nom du réseau et le nom du user qui envoi le message.
+- LA gpartie gouvernance est à revoir. imcompréhensible et inutilisable en l'état. c'est trop compliquer le user doit juste cliquer sur des boutons.
+- le lien Fédération avec d'autres réseaux est faux : https://www.rouaix.com/civium/civium/users/civ18N7G42tR
 
- Desktop — UX prioritaire
+## A Développer ou corriger dans websuite — Priorité haute
+- Bugg dans /auth le lien de connexion est envoyé à n'importe qui et connecte le nouveau user à n'importe quel réseau sur le serveur principal.
+- si un usesr se connecte via /auth et que sont email n'est connue, cela doit créer un nouveau réseaux (Noeud) et donc un nouveau user.
+- On doit pouvoir supprimer les messages et alertes du seveur et elles doivent dans ce cas disparaitre dans l'app.
+- dans admin on doit pouvoir dans la liste des réseaux, agir sur le réseau (supprimer, désactiver, etc.)
+- dans admin on doit pouvoir dans la liste des users, agir sur le user (supprimer, désactiver, etc.)
+- dans admin on doit pouvoir dans la liste des messages, agir sur le message (supprimer, désactiver, etc.)
+- dans admin on doit pouvoir dans la liste des alertes, agir sur l'alerte (supprimer, désactiver, etc.)
+- dans les mails envoyés par le serveur, l'url affichée est fausse : https://www.rouaix.com/civium/civium/auth/verify?token=2e652448fb6008edc4b36f658945983671a8c8eecc01b2af32dc9c75e4fa807d HTTP 404 (GET /civium/auth?erreur=lien_expire)
+- dans website, je dois pouvoir me connecter ou créer un nouveau noeud(réseau) avec login et mot de passe. et que cela m'envoi par email les infos nécessaire pour se connecter à l'app desktop.
 
-  1. ✅ Restructuration de la navigation
-  - Éléments de configuration → panneau ⚙ Paramètres
-  - Adresses P2P, ports, RCC, hub, MCP, appareils → Paramètres
-  - Page principale = messagerie, membres, gouvernance, activité
 
-  2. ✅ Affichage statut nœud
-  - Seul le point vert "En ligne" / "Hors ligne" sur l'écran principal
-  - Adresses multiaddr, ports → Paramètres
 
-  3. ✅ Plugins comme menus
-  - Plugins actifs comme entrées de navigation dans la barre latérale
-  - Chaque section accessible individuellement (Messages, Membres, Gouvernance, Agenda, Documents, Activité, Extensions…)
-
-  4. ✅ Invitation simplifiée
-  - Lien d'invitation avec description claire + bouton "Copier"
-
-  5. ✅ Créer/gérer plusieurs réseaux
-  - Bouton "+" pour créer un réseau (avec choix de type : privé, annuaire, RRM)
-  - Page de création avec formulaire lisible
-
-  ---
-  Website — Priorité haute
-
-  6. ✅ Application web complète
-  - Partie publique/admin existante ✓
-  - Interface utilisateur complète en PHP+Alpine.js (app.html)
-  - Connexion via PIN + clé secrète (IndexedDB, sans WASM)
-  - Ed25519 signing via TweetNaCl.js
-  - Hub API : pull messages, push messages, rejoindre un réseau
-  - Sidebar avec réseaux + navigation par section
-  - Messages, Membres, Activité, Paramètres
-
+## Demandes du concepteur - Priorité basse
   ---
   Mobile
 
@@ -53,34 +44,3 @@
   - À planifier après les points précédents
 
 ---
-
-
-### Dans desktop et website — Priorité haute
-
-1 de nombreuses incohérence dans l'usage et la création de réseaux.
-  - ✅ je ne dois pas pouvoir créer plusieurs réseaux dans mon application. (Dashboard : bouton "+" masqué si réseau déjà existant)
-  - je dois pouvoir me connecter à plusieurs réseaux.
-  - lorsque j'utilise un plugin, je dois pouvoir choisir si j'envoi l'information à un réseaux ou à un autre, ou a un membre ou un ensemble de membres. ETC.
-  - ✅ Je dois pouvoir inviter un membre par mail (Dashboard : champ email + bouton "Envoyer par email" → mailto: avec lien + adresses P2P)
-  - losque j'invite un membre par mail il doit pouvoir créer automatiquement sont propre réseaux et se connecter au mien automatiquement.
-  - ✅ le type annuaire est réservé à la recherchede membres dans un réseaux ou de reseaux. C'est un plugin qui gère cela pas un type de réseaux. (Dashboard : formulaire création réseau simplifié, types annuaire/RRM supprimés)
-  - un membre invité sur un réseaux peut installer l'application et utiliser le réseaux déjà existant qui l'a invité.
-  - ✅ Il faut pouvoir gérer les droits users dans les réseaux. (Promouvoir/Rétrograder admin, Exclure du réseau)
-  - ✅ Il y a une incohérence, si chaque user est un réseau alors comment les regrouper dans un réseau ? (Clarification UX : identité ≠ réseau. Un user a un CID, crée ou rejoint des réseaux distincts.)
-  - ✅ Il faut pouvoir créer des réseaux privés et des réseaux publics. (Toggle Privé/Public dans Desktop + Website, stocké dans NetworkData.is_public)
-  - Il faut pouvoir créer des réseaux de réseaux exemple dans une famille, il y a un réseau pour la famille et un réseau pour chaque user de la famille.
-
-
-### Dans Website — Priorité haute
-
-1 ✅ On doit pouvoir créer son propre réseau via le site avant même d'avoir installé l'application
-  - app.html : bouton "+" → "Créer un réseau" (POST /hub/network/register signé Ed25519)
-2 ✅ Une fois l'application installée on doit pouvoir récupérer ses infos du site (import clé secrète). Ensuite l'application devient maître du réseau.
-  - app.html : "Importer depuis l'application bureau" dans le setup
-3 Si on n'installe pas l'application on peut tout faire avec le site.
-  - Messagerie hub ✅ / gouvernance ❌ / agenda ❌
-4 ✅ Bug résolu : nouveau compte bloqué par demande de clé secrète
-  - app.html : écran de bienvenue avec choix "Créer une nouvelle identité" (génère keypair Ed25519 + CID blake3) ou "Importer"
-5 il faut pouvoir créer un nœud en ligne et s'y connecter en ligne.
-  - Un réseau créé via /app est hébergé sur le hub (nœud en ligne). ✅ partiel
-
