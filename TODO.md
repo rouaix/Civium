@@ -4,16 +4,16 @@
 
 ## A Développer ou corriger dans desktop — Priorité haute
 - L'app doit s'ouvrir sur un fil d'actualité qui affiche toutes les activités de tous les réseaux. Avec le type d'activité, le nom du réseau et le nom du user. Et le contenu de l'activité (message, événement, etc.)
-- Les message du serveur principal ne s'affichent pas dans l'app desktop.
+- Les messages du serveur principal ne s'affichent pas dans l'app desktop.
 - L'app doit pouvoir signaler un spam ou un abus etc. C'est à dire envoyer un message au serveur principal.
-- L'app doit pouvoir demander à rejoindre un réseau, au serveur principal avec un simple clic dans une liste des réseaux publics.
-- L'app doit afficher l'annuaire des réseaux publics (rejoindre sans invitation) et privés.
-- La messagerie est destinée à échanger des messages privés entre users et réseaux. On doit donc pouvoir choisir à qui on envoi les messages.
+- ~~L'app doit pouvoir demander à rejoindre un réseau, au serveur principal avec un simple clic dans une liste des réseaux publics.~~ ✅ `hub_join_public_network` + modal Rejoindre (Dashboard.tsx:1976)
+- ~~L'app doit afficher l'annuaire des réseaux publics (rejoindre sans invitation) et privés.~~ ✅ `hub_public_networks()` + modal Annuaire Civium (Dashboard.tsx:1930)
+- ~~La messagerie est destinée à échanger des messages privés entre users et réseaux. On doit donc pouvoir choisir à qui on envoi les messages.~~ ✅ `message_send_direct` + sélection destinataire (commands.rs:726)
 - Les messages peuvent contenir du texte, des fichiers, (audio, vidéo, images, pdf, etc.) et des événements (calendrier, tâches, etc.)
-- supprimer l'icone à côté du nom du résaeau civium.
-- dans les messages il faut aussi afficher le nom du réseau et le nom du user qui envoi le message.
-- LA gpartie gouvernance est à revoir. imcompréhensible et inutilisable en l'état. c'est trop compliquer le user doit juste cliquer sur des boutons.
-- le lien Fédération avec d'autres réseaux est faux : https://www.rouaix.com/civium/civium/users/civ18N7G42tR
+- Supprimer l'icône à côté du nom du réseau Civium.
+- Dans les messages, afficher le nom du réseau et le nom du user qui envoie le message.
+- La partie gouvernance est à revoir. Incompréhensible et inutilisable en l'état — trop complexe, le user doit juste cliquer sur des boutons.
+- Le lien Fédération avec d'autres réseaux est faux : https://www.rouaix.com/civium/civium/users/civ18N7G42tR
 
 ## A Développer ou corriger dans websuite — Priorité haute
 - Bugg dans /auth le lien de connexion est envoyé à n'importe qui et connecte le nouveau user à n'importe quel réseau sur le serveur principal.
@@ -298,6 +298,36 @@
 - Ajouter `cargo test` dans le workflow CI pour `civium-core`
 - Ajouter la commande `civium version` au CLI (affiche la version du binaire depuis `Cargo.toml`)
 - Tester les migrations SQL en CI : lancer les migrations sur une BDD vierge et vérifier qu'elles passent toutes
+
+
+## Messagerie — fonctionnalités manquantes — Priorité moyenne
+
+- **Accusé de réception** : ajouter un statut "envoyé / livré / lu" sur les messages directs — le type `MessageDisplay` n'a pas de champ `read` ou `receipt` (actuellement aucun feedback visuel sur la réception)
+- **Indicateur de frappe** : ajouter un "en train d'écrire..." visible par le destinataire lors de la saisie d'un message direct (typing indicator via événement P2P éphémère non persisté)
+- **Réactions** : ajouter la possibilité de réagir à un message avec un emoji (persisté en CRDT G-Set pour éviter les conflits)
+- **Réponse à un message** : ajouter un système de fil de réponse (`reply_to_id`) permettant de citer et répondre à un message spécifique
+
+
+## Agenda — fonctionnalités manquantes — Priorité moyenne
+
+- **Récurrence dans l'UI** : le modèle `AgendaEvent` possède un champ `recurrence` mais le formulaire de création dans le Dashboard n'expose aucun champ de récurrence (quotidien, hebdomadaire, mensuel…) — à ajouter
+- **Fuseaux horaires** : les événements sont stockés en Unix timestamp sans indication de fuseau — ajouter un sélecteur de timezone dans le formulaire et afficher les heures converties dans le fuseau local de l'utilisateur
+- **Vue calendrier** : le Dashboard affiche les événements en liste chronologique — ajouter une vue calendrier mensuel/hebdomadaire pour une meilleure lisibilité
+- **Rappels / notifications** : déclencher une notification OS (Tauri) X minutes avant un événement de l'agenda
+
+
+## Préférences utilisateur persistées — Priorité basse
+
+- Ajouter une table `user_preferences` dans `store.rs` (clé/valeur) pour persister les préférences UI : thème clair/sombre, langue, notifications activées, taille de police
+- Ajouter un panneau "Préférences" dans le Dashboard avec un toggle thème clair/sombre (Tailwind `dark:` classes à activer)
+- Persister le réseau et l'onglet sélectionnés au dernier usage pour restaurer l'état au redémarrage
+
+
+## Internationalisation (i18n) — Priorité basse
+
+- Tous les textes de l'interface sont codés en dur en français dans `Dashboard.tsx` et `Onboarding.tsx` — aucune infrastructure i18n (pas de i18next ou équivalent)
+- Ajouter `i18next` + `react-i18next` et extraire toutes les chaînes dans des fichiers de traduction `fr.json` / `en.json`
+- Permettre à la communauté de contribuer des traductions via un fichier JSON versionné
 
 
 ## Client web — PWA et découvrabilité — Priorité basse
