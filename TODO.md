@@ -28,19 +28,46 @@
 
 
 
+## Déploiement PHP / Infrastructure — Priorité haute
+
+> Ces critères de succès de la ROADMAP sont bloqués par l'absence de déploiement du serveur PHP sur `https://www.rouaix.com/civium`.
+
+- Décider du domaine et de l'hébergement (civium.net ou civium.fr — Scaleway, ou rester sur rouaix.com/civium)
+- Déployer le site PHP F3 en production (Apache/Nginx + PHP 8.x + MySQL)
+- Vérifier que `POST /api/register` reçoit bien les enregistrements desktop et les stocke
+- Vérifier que `GET /api/networks` retourne les réseaux enregistrés
+- Tester le flux complet : créer un réseau dans l'app desktop → apparaît dans `/api/networks` en < 5 s
+- Tester le retry exponentiel : couper Internet lors de la création → ré-enregistrement automatique à la reconnexion
+- Tester le flux magic link de bout en bout : email → lien → session → saisie `secret_b58` + PIN → clé dans IndexedDB
+- Tester l'émission d'une alerte fraude depuis `/admin` → réception email admin + affichage bandeau dans l'app desktop
+- Configurer les variables SMTP dans `config.ini` (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS)
+- Configurer ADMIN_TOKEN en production (variable d'environnement ou `config.ini`)
+- Corriger l'URL dans les mails magic link (actuellement `/civium/auth/verify` → doit être `/civium/auth/verify`) — voir bug dans websuite
+
+
+## Interopérabilité ActivityPub — Priorité moyenne
+
+- Valider qu'un message Civium posté dans un réseau avec ActivityPub activé apparaît dans un fil Mastodon abonné (critère Phase 4 non coché)
+- Tester `GET /.well-known/webfinger` et `GET /users/<cid>` depuis une instance Mastodon externe
+- Tester la réception d'une note Mastodon via `POST /inbox` → apparaît en message Civium dans le Dashboard
+
+
+## Phase 5 — Maturité — Priorité basse
+
+- Planifier et mandater un audit de sécurité externe (cryptographie, P2P, CIL, plugin sandbox WASM)
+- Créer la gouvernance du projet Civium lui-même (association loi 1901 ou fondation) — statuts, membres fondateurs, premier vote
+
+
 ## Demandes du concepteur - Priorité basse
+
   ---
   Mobile
 
-  7. Parité fonctionnelle
-  - Mêmes plugins que desktop/website
-  - Adapté mobile (ergonomie tactile)
+  - Parité fonctionnelle avec desktop/website (mêmes plugins, ergonomie tactile)
 
   ---
   Plugin futur (backlog)
 
-  8. Partage de ressources matérielles
-  - Distribution de calcul entre machines (rendu 3D, LLM distribué…)
-  - À planifier après les points précédents
+  - Partage de ressources matérielles : distribution de calcul entre machines (rendu 3D, LLM distribué…) — à planifier après les points précédents
 
 ---
