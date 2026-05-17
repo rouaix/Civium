@@ -337,6 +337,22 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Deep links `civium://` — Priorité haute
+
+- Déclarer le protocole `civium://` dans `desktop/civium-tauri/src-tauri/tauri.conf.json` (section `app.security.assetProtocol` ou `plugins.deep-link`) pour que l'OS puisse ouvrir l'app depuis un lien
+- Implémenter un handler dans `src-tauri/src/` qui parse le deep link à l'ouverture de l'app (`civium://pair/<b58>` → déclenche le pairing, `civium://join/<cid>` → ouvre le modal de rejoindre)
+- Gérer le cas où l'app est fermée : l'OS doit l'ouvrir, puis lui transmettre le lien (actuellement `civium://` est seulement utilisé en interne comme nom d'événement Tauri, pas comme protocole système)
+- Sans ce handler, les liens d'invitation par email et les liens de pairing QR code ne fonctionnent pas depuis un navigateur ou un client mail
+
+
+## Logs applicatifs desktop — Priorité haute
+
+- Remplacer les `eprintln!` / `println!` dispersés dans `node.rs`, `root_connect.rs` et ailleurs par des appels `tracing` structurés (`tracing` est déjà en dépendance mais peu utilisé)
+- Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
+- Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
+- Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
 ## Plugin Tâches — Priorité moyenne
 
 - Créer un modèle `Task` dans `civium-core/src/` : titre, description, assigné (`assigned_to_cid`), échéance, statut (À faire / En cours / Terminé), priorité
@@ -351,6 +367,35 @@
 - Ajouter `--limit` et `--offset` (ou `--page` / `--per-page`) sur toutes les commandes `list` du CLI : `msg list`, `member list`, `governance list`, `doc list`, `agenda list`, `activity list`
 - Actuellement toutes les listes sont affichées intégralement sans limite — un réseau avec des milliers de messages génère une sortie illisible
 - Ajouter aussi un flag `--json` pour obtenir la sortie en JSON plutôt qu'en texte formaté (utile pour scripter)
+
+
+## Export iCal (calendrier externe) — Priorité moyenne
+
+- Ajouter une sérialisation des `AgendaEvent` au format iCalendar (`.ics` / RFC 5545) dans `civium-core/src/agenda/`
+- Ajouter une commande Tauri `agenda_export_ics(network_cid)` qui génère un fichier `.ics` téléchargeable
+- Ajouter un bouton "Exporter vers calendrier" dans la section Agenda du Dashboard (ouvre le fichier `.ics` → Google Calendar / Apple Calendar / Thunderbird l'importent automatiquement)
+- Ajouter une URL d'abonnement CalDAV ou webcal pour une synchronisation en continu (optionnel — backlog)
+
+
+## Multi-compte / multi-identité — Priorité moyenne
+
+- Actuellement la table `identity` impose `id = 1` — un seul compte par installation, aucun switch possible
+- Permettre plusieurs profils sur le même nœud : modifier le schéma SQLite pour supporter N identités avec une notion d'identité "active"
+- Ajouter dans le Dashboard un sélecteur de profil (icône utilisateur → "Changer de compte") et un bouton "Ajouter un compte"
+- Utile pour les cas famille (plusieurs membres sur le même ordinateur) ou test/développement
+
+
+## TTL et nettoyage des nœuds DHT morts — Priorité moyenne
+
+- Le store Kademlia utilise `MemoryStore` avec le TTL par défaut libp2p (~24h) — les nœuds offline restent dans les tables de routage jusqu'à expiration naturelle
+- Implémenter un ping périodique actif des pairs connus pour détecter rapidement les nœuds devenus injoignables et les retirer des tables de routage
+- Persister les pairs de confiance connus entre redémarrages (actuellement `MemoryStore` = perdu à l'arrêt) pour accélérer la reconnexion au DHT
+
+
+## Thème web — adaptation au système — Priorité basse
+
+- Le client web (`app.html`) impose un thème sombre fixe (`background: #0f1117`) sans respecter `prefers-color-scheme`
+- Remplacer les couleurs codées en dur par des variables CSS et ajouter une media query `@media (prefers-color-scheme: light)` pour adapter l'interface au thème OS de l'utilisateur
 
 
 ## Complétion shell CLI — Priorité basse
