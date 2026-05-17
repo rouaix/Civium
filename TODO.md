@@ -32,8 +32,6 @@
 
 > Serveur PHP déployé sur `https://www.rouaix.com/civium`.
 
-- Décider du domaine et de l'hébergement (civium.net ou civium.fr — Scaleway, ou rester sur rouaix.com/civium)
-- Déployer le site PHP F3 en production (Apache/Nginx + PHP 8.x + MySQL)
 - Vérifier que `POST /api/register` reçoit bien les enregistrements desktop et les stocke
 - Vérifier que `GET /api/networks` retourne les réseaux enregistrés
 - Tester le flux complet : créer un réseau dans l'app desktop → apparaît dans `/api/networks` en < 5 s
@@ -768,6 +766,88 @@
 - Ajouter un mécanisme de sync incrémentale : le nœud initiateur envoie un hash ou un numéro de version de sa liste de membres ; le nœud distant ne retourne que les enregistrements modifiés depuis ce hash
 - Réduire drastiquement la bande passante pour les réseaux actifs avec de nombreux membres
 
+
+## Intégrité des assets WASM et CDN — Priorité haute (CRITIQUE)
+
+- `website/src/www/civium/app.html` charge Alpine.js, TweetNaCl.js et blake3 depuis des CDN sans attributs `integrity` (SRI — Subresource Integrity) : une compromission du CDN permet d'injecter du code malveillant qui vole la clé privée de l'utilisateur
+- `civium_core_bg.wasm` est servi par PHP et chargé par le JS sans aucune vérification d'intégrité côté client (pas de hash SHA-256 vérifié avant instanciation `WebAssembly.instantiate`)
+- Actions : (1) ajouter `integrity="sha256-…" crossorigin="anonymous"` sur chaque `<script>` CDN ; (2) générer et vérifier un hash du WASM au moment du build ; (3) configurer une CSP stricte avec `require-sri-for script style`
+- Fichier : `website/src/www/civium/app.html`
+
+## Tests E2E frontend (Tauri + web) — Priorité haute (CRITIQUE)
+
+- Zéro test E2E pour l'interface Tauri : pas de Playwright, pas de Cypress, pas de `tauri-driver` — toute régression UI est détectable seulement manuellement
+- Les flux critiques (création identité, création réseau, invitation membre, vote, messagerie) ne sont jamais vérifiés automatiquement
+- Ajouter `tauri-driver` + WebDriver (`@tauri-apps/api/mocks`) pour les tests Tauri, Playwright pour le client web
+- Couvrir en priorité : onboarding complet, admission d'un membre, cycle de vote, envoi/réception message, connexion web (magic link)
+
+## Délégation de vote circulaire — Priorité moyenne
+
+- `governance/mod.rs` : `compute_result_with_delegations()` parcourt le graphe de délégation sans détecter les cycles — une boucle A→B→A provoque une récursion infinie (stack overflow / panic en production)
+- Ajouter une détection de cycle (`HashSet<CID>` de nœuds visités) et rejeter toute délégation créant un cycle ; afficher une erreur explicite à l'utilisateur dans l'UI
+- Fichier : `desktop/civium-core/src/governance/mod.rs`
+
+## Timeout P2P — feedback UI manquant — Priorité moyenne
+
+- Le protocole configure 30 s de timeout pour les connexions libp2p, mais les appels `tauriInvoke()` dans `Dashboard.tsx` n'ont ni timeout côté frontend ni indicateur de chargement — l'UI peut bloquer silencieusement pendant 30 s sans retour visuel à l'utilisateur
+- Ajouter un timeout côté JS sur chaque `tauriInvoke` (ex. `Promise.race` avec 35 s) et afficher un spinner/toast "connexion en cours…" pendant les opérations P2P longues
+- Fichiers : `desktop/civium-tauri/src/screens/Dashboard.tsx`, tous les hooks qui appellent `tauriInvoke`
+
+## Pagination SQL CLI — Priorité moyenne
+
+- `civium-cli/src/store.rs` : `load_mailbox()`, `list_proposals()` et `list_votes()` n'ont pas de clause `LIMIT` — sur un nœud actif depuis longtemps, un appel CLI charge toute la table en mémoire
+- Ajouter `LIMIT 200 OFFSET ?` (ou pagination par curseur) sur ces trois requêtes, comme c'est déjà fait pour `list_activity()` et `list_notifications()`
+- Fichier : `desktop/civium-cli/src/store.rs`
+
+## ActivityPub — implémentation manquante — Priorité haute (CRITIQUE)
+
+- `desktop/civium-core/src/activitypub/mod.rs` ne contient que 38 lignes de structures de données (`ApStatus`, `ApFollower`, `ApPost`) — zéro logique implémentée
+- Il n'existe pas d'endpoint `GET /.well-known/webfinger` : Mastodon/PeerTube ne peuvent pas découvrir le réseau
+- Pas d'inbox ni d'outbox : impossible de recevoir ou d'envoyer des activités vers d'autres serveurs
+- **CRITIQUE sécurité** : aucune vérification de signature HTTP sur les activités entrantes — un acteur malveillant peut usurper l'identité d'un serveur Mastodon en POSTant directement sur l'inbox
+- Les tables SQLite `ap_followers` et `ap_posts` existent (`store.rs` lignes 131-145) mais ne sont jamais peuplées ni lues
+- À implémenter : signature HTTP (draft-cavage-http-signatures-12), `webfinger`, `actor.json`, inbox/outbox, `Accept`/`Follow`/`Create Note` activi types
+- Fichier : `desktop/civium-core/src/activitypub/mod.rs`
+
+## FFI mobile — fonctions manquantes — Priorité haute
+
+- `desktop/civium-ffi/src/lib.rs` expose seulement : `identity_exists/init/from_secret/info`, `pairing_complete`, `network_list`, `message_list/send` — total 8 fonctions
+- Manquent pour la parité fonctionnelle mobile : `network_create`, `member_admit`, `message_send_direct`, `document_list/create`, `agenda_list`, `proposal_list/create`, `vote_cast` — le mobile ne peut créer ni gérer un réseau
+- Pas de fichier `.udl` — UniFFI génère les bindings uniquement depuis les macros Rust (`#[uniffi::export]`), ce qui est fragile si des types `HashMap` sont ajoutés (non supportés par UniFFI — utiliser `Vec<(K,V)>` ou une struct wrapper)
+- Fichier : `desktop/civium-ffi/src/lib.rs`
+
+## CLI — `unwrap()` pouvant paniquer — Priorité haute
+
+- `desktop/civium-cli/src/main.rs` contient au moins 3 `unwrap()` critiques qui provoquent un crash en production :
+  - Ligne 1918 : `mailbox.messages.last().unwrap()` — panic si la boîte de réception est vide
+  - Lignes 1897 et 2106 : `unwrap()` sans contexte ni fallback
+- Remplacer par `ok_or_else(|| anyhow!("…"))` avec message d'erreur explicite
+- Fichier : `desktop/civium-cli/src/main.rs`
+
+## Documents — absence de CRDT — Priorité haute
+
+- `desktop/civium-core/src/document/mod.rs` : le champ `version: u32` est un simple compteur, pas un CRDT — si deux membres éditent le même document hors-ligne, la resynchronisation écrase silencieusement l'une des versions
+- Le module de messagerie utilise un Mailbox G-Set CRDT (`civium-core/src/messaging/mailbox.rs`) mais les documents n'ont aucun équivalent
+- Implémenter au minimum un LWW-Register (Last-Write-Wins) sur les documents avec horodatage logique (Lamport clock), ou ajouter un flag de conflit à résoudre manuellement
+- Pas de limite de taille sur les documents — un document de plusieurs centaines de Mo est chiffré entièrement en mémoire
+- Fichier : `desktop/civium-core/src/document/mod.rs`
+
+## CORS wildcard sur le serveur MCP — Priorité moyenne
+
+- `desktop/civium-tauri/src-tauri/src/mcp.rs` ligne ~113 : le header CORS `Access-Control-Allow-Origin: *` est envoyé à tous les clients — n'importe quelle page web peut appeler le serveur MCP local si le token est connu (ou deviné)
+- Remplacer par une whitelist explicite (ex. `null` pour les fichiers locaux, ou uniquement les origines autorisées)
+- Ajouter un rate limiting sur les requêtes MCP (ex. 60 req/min par IP) — actuellement aucun
+- Absence de limite de taille sur les payloads JSON entrants (risque DoS par payload énorme)
+- Fichier : `desktop/civium-tauri/src-tauri/src/mcp.rs`
+
+## Validation des inputs onboarding (Tauri) — Priorité moyenne
+
+- `desktop/civium-tauri/src/screens/Onboarding.tsx` : seul `.trim()` est appliqué, sans aucune validation de longueur ni de format
+- Un nom de réseau de 100 000 caractères passe sans erreur et est persisté en SQLite et envoyé au RCC
+- Caractères spéciaux, emoji composés, injection SQL (transmis via Tauri command en Rust puis SQLite) non filtrés
+- Pas de validation de la clé secrète B58 (longueur attendue, alphabet Base58)
+- Ajouter : longueur max sur tous les champs texte (256 chars), regex de base pour les noms (pas de null bytes), validation B58 avant appel `identity_from_secret`
+- Fichier : `desktop/civium-tauri/src/screens/Onboarding.tsx`
 
 ## Partage de contenu entre réseaux (APC étendu) — Priorité basse
 
