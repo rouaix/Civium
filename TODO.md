@@ -54,9 +54,8 @@
 
 ---
 
-## Demandes du concepteur A traiter ensemble :
 
-### Dans desktop et website
+### Dans desktop et website — Priorité haute
 
 1 de nombreuses incohérence dans l'usage et la création de réseaux.
   - je ne dois pas pouvoir créer plusieurs réseaux dans mon application.
@@ -72,9 +71,16 @@
   - Il faut pouvoir créer des réseaux de réseaux exemple dan sun e famille, il y a un réseaux pour la famille et un réseaux pour chaque user de la famille.
 
 
-### Dans Website
+### Dans Website — Priorité haute
 
-1 On doit pouvoir créer sont propre réseaux via le site avant même d'avoir installé l'application
-2 Une fois l'application installée on doit pouvoir récupérer ses infos du site. Ensuite l'application devient maitre du réseau.
-3 Si on n'installe pas l'application on peux tout faire avec le site.
-4 si je veux créer un nouveau compte je ne peux pas puisque le site me demande ma clé scrète alors que je demande une connexion avec une nouvelle email donc nouveau user
+1 ✅ On doit pouvoir créer son propre réseau via le site avant même d'avoir installé l'application
+  - app.html : bouton "+" → "Créer un réseau" (POST /hub/network/register signé Ed25519)
+2 ✅ Une fois l'application installée on doit pouvoir récupérer ses infos du site (import clé secrète). Ensuite l'application devient maître du réseau.
+  - app.html : "Importer depuis l'application bureau" dans le setup
+3 Si on n'installe pas l'application on peut tout faire avec le site.
+  - Messagerie hub ✅ / gouvernance ❌ / agenda ❌
+4 ✅ Bug résolu : nouveau compte bloqué par demande de clé secrète
+  - app.html : écran de bienvenue avec choix "Créer une nouvelle identité" (génère keypair Ed25519 + CID blake3) ou "Importer"
+5 il faut pouvoir créer un nœud en ligne et s'y connecter en ligne.
+  - Un réseau créé via /app est hébergé sur le hub (nœud en ligne). ✅ partiel
+
