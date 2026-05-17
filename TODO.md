@@ -292,6 +292,17 @@
 - Les endpoints `/api/status` et `/hub/status` existent déjà — les brancher à un outil de monitoring externe (UptimeRobot ou équivalent) pour surveiller la disponibilité du RCC
 
 
+## Tests unitaires civium-core — Priorité haute
+
+- Sur les 40+ modules de `civium-core`, seul `wasm.rs` contient des tests (`#[cfg(test)]`) — les modules critiques `identity/`, `messaging/`, `network/`, `governance/`, `crypto/`, `node/`, `store` n'ont aucun test unitaire
+- Ajouter des tests unitaires sur les fonctions critiques en priorité :
+  - `identity/keypair.rs` : génération, sérialisation, désérialisation, signature/vérification
+  - `crypto/group_key.rs` : chiffrement/déchiffrement, clés incorrectes, données corrompues
+  - `network/network.rs` : `create`, `admit`, `remove_member`, `submit_join_request` — vérification des invariants
+  - `governance/mod.rs` : `compute_result`, `compute_result_with_delegations`, garde-fou majoritaire
+  - `messaging/mailbox.rs` : merge CRDT, déduplication, ordre des messages
+
+
 ## Tests et qualité — Priorité moyenne
 
 - Écrire des tests d'intégration entre deux nœuds réels `civium-core` (lancer deux instances, échange de messages, vérification CRDT) — actuellement seuls des tests unitaires et WASM existent
@@ -337,6 +348,193 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Watchdog du nœud P2P — CRITIQUE
+
+- Si le thread P2P (`civium-core`) crashe, l'UI Tauri n'est **pas notifiée** — le Dashboard continue d'afficher l'indicateur "En ligne" alors que le nœud est mort (`lib.rs:47` : erreurs de démarrage silencieuses, `node.rs` : boucle sort sans émettre d'événement)
+- Implémenter un watchdog : détecter la fin du task P2P (`spawn` + `JoinHandle`), émettre un événement `civium://node-crashed` vers l'UI, puis tenter un redémarrage automatique après délai exponentiel
+- Afficher une bannière d'erreur rouge dans le Dashboard si le nœud P2P est inactif, avec un bouton "Redémarrer le nœud"
+
+
+## Rate limiting P2P (protection DoS) — CRITIQUE
+
+- Ajouter un compteur de requêtes par pair dans `civium-core/src/node/` : si un pair dépasse N requêtes `CiviumRequest` par seconde, ignorer les requêtes suivantes et éventuellement le déconnecter
+- Le `HashMap<PeerId, PendingResponse>` dans `node.rs` croît sans limite de taille — ajouter un plafond et rejeter les requêtes dépassant le seuil
+- Utiliser `libp2p::swarm::ConnectionLimits` pour limiter le nombre de connexions simultanées par pair et le nombre total de connexions entrantes
+- Sans cette protection, un pair malveillant peut saturer le nœud avec 1 000 requêtes Sync par seconde → débordement mémoire et crash
+
+
+## Validation des inputs utilisateur — Priorité haute
+
+- Ajouter une validation côté Rust dans `civium-core` avant tout `Network::create()`, `submit_join_request()`, `message_send()` :
+  - Nom de réseau et nom d'affichage : 1–64 caractères, pas de caractères de contrôle
+  - Corps de message : longueur maximale configurable (suggestion : 64 Ko)
+  - CID : longueur et format Base58 validés
+- Actuellement seule une vérification `!value.trim().is_empty()` est faite côté React — un nom de 100 000 caractères passe sans erreur
+- Retourner des erreurs `CiviumError::Validation` explicites avec le champ et la contrainte violée
+
+
+## Support Linux — Priorité haute
+
+- `tauri.conf.json` déclare `"targets": "all"` mais aucun build CI ni packaging Linux n'existe (pas de AppImage, `.deb`, `.rpm`)
+- Ajouter une cible Linux dans le workflow CI Tauri (à créer) : build AppImage + `.deb` sur Ubuntu
+- Tester le nœud P2P (TCP, QUIC, WebSocket, mDNS) sur Linux avant la release publique — libp2p supporte Linux mais non validé en CI
+- Mentionner Linux comme plateforme supportée dans le README et la ROADMAP
+
+
+## Code signing des builds — Priorité haute
+
+> Sans signature, macOS affiche "développeur non vérifié" et Windows SmartScreen bloque l'installation — bloquant pour tout déploiement public.
+
+- Obtenir un certificat Apple Developer ID et configurer la signature macOS dans `.github/workflows/` + `tauri.conf.json`
+- Obtenir un certificat Authenticode (ex. Sectigo EV) et configurer la signature Windows
+- Intégrer la signature dans le workflow CI Tauri (à créer — voir section CI/CD) : build signé à chaque push sur `master`
+- Configurer la notarisation Apple (`xcrun notarytool`) pour macOS 10.15+ (obligation depuis Catalina)
+
+
+## Deep links `civium://` — Priorité haute
+
+- Déclarer le protocole `civium://` dans `desktop/civium-tauri/src-tauri/tauri.conf.json` (section `app.security.assetProtocol` ou `plugins.deep-link`) pour que l'OS puisse ouvrir l'app depuis un lien
+- Implémenter un handler dans `src-tauri/src/` qui parse le deep link à l'ouverture de l'app (`civium://pair/<b58>` → déclenche le pairing, `civium://join/<cid>` → ouvre le modal de rejoindre)
+- Gérer le cas où l'app est fermée : l'OS doit l'ouvrir, puis lui transmettre le lien (actuellement `civium://` est seulement utilisé en interne comme nom d'événement Tauri, pas comme protocole système)
+- Sans ce handler, les liens d'invitation par email et les liens de pairing QR code ne fonctionnent pas depuis un navigateur ou un client mail
+
+
+## Logs applicatifs desktop — Priorité haute
+
+- Remplacer les `eprintln!` / `println!` dispersés dans `node.rs`, `root_connect.rs` et ailleurs par des appels `tracing` structurés (`tracing` est déjà en dépendance mais peu utilisé)
+- Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
+- Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
+- Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
+## Sessions web — durée et révocation — Priorité moyenne
+
+- La session PHP après validation du magic link n'a pas de durée configurée explicitement — elle expire selon le `gc_maxlifetime` du serveur (défaut 24 min) ce qui peut déconnecter l'utilisateur de façon imprévisible pendant une longue session
+- Configurer une durée de session explicite dans `AuthController.php` (ex. 30 jours avec cookie `remember_me`, ou 8h pour une session normale)
+- Implémenter un logout global ("se déconnecter de tous les appareils") : stocker les sessions en BDD (table `sessions`) et les invalider toutes d'un coup à la demande
+
+
+## Documentation du serveur MCP — Priorité moyenne
+
+- Les 6 resources exposées par le serveur MCP (`civium://networks`, `civium://network/{cid}/members`, `messages`, `proposals`, `agenda`, `documents`) ne sont documentées que dans le code `mcp.rs`
+- Créer un fichier `docs/mcp.md` : liste des resources, format JSON retourné, exemples de requêtes `resources/list` et `resources/read`, authentification Bearer token, limitations (lecture seule, CIL appliqué)
+- Ajouter un lien vers cette doc dans le Dashboard (section MCP) pour que les utilisateurs sachent comment connecter un assistant IA à leur nœud
+
+
+## Retour visuel après copie (clipboard) — Priorité basse
+
+- Les boutons "Copier" dans le Dashboard (`navigator.clipboard.writeText()`) ne donnent aucun retour visuel — l'utilisateur ne sait pas si la copie a réussi (pas de toast, pas de changement d'icône)
+- Ajouter un feedback post-copie : icône ✓ pendant 2 s, ou mini-toast "Copié !" — applicable à tous les boutons copie : CID, secret, adresse P2P, token MCP, lien d'invitation
+
+
+## Onboarding — indicateur de progression — Priorité moyenne
+
+- Ajouter une barre de progression ou des étapes numérotées ("2 / 5") dans `Onboarding.tsx` — actuellement les 6 étapes (welcome → identity → choice → create/join → done) se succèdent sans aucun indicateur visuel d'avancement
+- Ajouter une option "J'ai déjà un compte" dès l'étape `welcome` permettant de saisir son `secret_b58` pour restaurer une identité existante (actuellement absent — voir section UX Desktop)
+
+
+## Mémoire WASM — pagination des données — Priorité moyenne
+
+- Les fonctions `wasm-bindgen` dans `civium-core/src/wasm.rs` retournent des blobs complets : `network_create` retourne tout `NetworkData` (membres inclus), `vote_compute` reçoit tous les votes en JSON — risque de saturation mémoire pour des réseaux avec des milliers de membres ou de votes
+- Ajouter une pagination côté WASM : `members_list(offset, limit)`, `votes_list(proposal_id, offset, limit)` plutôt que des retours complets
+- Afficher un avertissement dans le client web si un réseau dépasse un seuil (ex. 500 membres) et suggérer l'app desktop
+
+
+## Nœud headless — fichier de configuration — Priorité moyenne
+
+- Le CLI supporte le mode serveur headless via `civium node start` avec des flags, mais il n'y a pas de fichier de configuration persistant (`civium.toml` ou `.env`) — relancer le nœud après un redémarrage serveur nécessite de retaper tous les flags
+- Ajouter la lecture d'un fichier `civium.toml` dans le répertoire de données (ou via `--config`) : `listen_tcp`, `listen_ws`, `external_addr`, `bootstrap_peers`, `announce`, `auto_accept_connections`
+- Fournir un exemple `civium.toml.example` et un template de service systemd dans le dépôt (`deploy/civium.service`)
+
+
+## Affichage des timestamps — Priorité basse
+
+- Les timestamps sont bien stockés en UTC (secondes Unix) dans toute la base de données — ✅
+- Côté CLI, les timestamps sont affichés en secondes Unix brutes — les convertir en date/heure locale lisible (`2026-05-17 14:32:10`) dans toutes les commandes `list`
+- Côté Dashboard, vérifier que l'affichage utilise le fuseau local de l'utilisateur et non UTC (JavaScript `new Date(ts * 1000).toLocaleString()`)
+
+
+## Unicité des noms de réseau — Priorité basse
+
+- Deux réseaux indépendants peuvent avoir le même nom (ex. deux "Famille Martin" sur des nœuds différents) — le RCC indexe par `network_cid`, pas par `network_name`
+- Ajouter une recherche de noms similaires lors de l'enregistrement RCC et avertir (sans bloquer) l'admin si un réseau du même nom existe déjà : "Un réseau nommé 'X' est déjà enregistré — assurez-vous que votre réseau est bien distinct"
+
+
+## WebRTC — P2P direct navigateur-à-navigateur — Priorité moyenne
+
+- Ajouter `libp2p-webrtc` comme transport dans `civium-core/Cargo.toml` (feature `wasm`) pour permettre des connexions P2P directes entre deux clients web WASM sans passer par un nœud desktop relay
+- Actuellement les clients web ne peuvent se connecter qu'à un nœud desktop via WebSocket — deux navigateurs ne peuvent pas communiquer directement
+- Nécessite un serveur STUN/TURN public (ou self-hosted) pour la négociation ICE
+
+
+## Webhooks / intégrations tierces — Priorité moyenne
+
+- Ajouter un système de webhooks dans `civium-core` : un réseau peut enregistrer une URL externe qui reçoit un POST JSON à chaque événement (nouveau message, nouveau membre, nouvelle proposition, alerte RCC)
+- La signature HMAC du payload permet au service destinataire de vérifier l'authenticité
+- Exposer la gestion des webhooks dans le Dashboard (ajouter, tester, supprimer) et dans le CLI
+- Utile pour connecter Civium à des outils tiers : Zapier, Make (ex-Integromat), outils no-code, notifications Slack/Discord
+
+
+## Support proxy SOCKS5 / Tor — Priorité moyenne
+
+- Ajouter un champ `socks_proxy: Option<String>` dans `NodeConfig` (`civium-core/src/node/config.rs`) pour router le trafic libp2p via un proxy SOCKS5 ou Tor
+- Exposer ce paramètre dans le panneau "Paramètres du nœud" du Dashboard
+- Utile pour les utilisateurs dans des pays à censure ou souhaitant un anonymat réseau renforcé
+
+
+## API REST documentée (OpenAPI) — Priorité moyenne
+
+- Documenter les endpoints PHP existants (`/api/register`, `/api/networks`, `/api/status`, `/hub/*`) avec une spécification OpenAPI 3.0 (fichier `openapi.yaml` dans `website/`)
+- Générer une page de documentation interactive (Swagger UI ou Redoc) accessible à `/api/docs`
+- Le serveur MCP du nœud (`mcp.rs`) n'est pas une API REST standard — ajouter un endpoint REST léger (`/api/v1/`) sur le nœud Tauri pour les intégrateurs qui ne veulent pas implémenter MCP
+
+
+## Tests de fuzzing — Priorité moyenne
+
+- Créer des targets de fuzzing avec `cargo-fuzz` sur les fonctions critiques de `civium-core` :
+  - Parsing des messages CBOR (`CiviumRequest` / `CiviumResponse`)
+  - Vérification des signatures Ed25519 (`CiviumKeypair::verify`)
+  - Parsing des adresses multiaddr
+  - Déchiffrement ChaCha20-Poly1305 (input aléatoire → pas de panic)
+- Intégrer le fuzzing dans la CI (GitHub Actions) avec un budget de temps limité (ex. 60 s par target)
+
+
+## Rôles intermédiaires dans un réseau — Priorité moyenne
+
+- Ajouter un rôle `Moderator` dans `civium-core/src/network/member.rs` : peut supprimer des messages et mettre en sourdine des membres, mais ne peut pas admettre/exclure des membres ni créer des propositions
+- Ajouter un rôle `Observer` : voit les messages et les propositions, ne peut ni poster ni voter — utile pour inviter un auditeur externe ou un tuteur légal
+- Exposer le changement de rôle dans le Dashboard (actuellement seul `Admin`/`Member` via `member_set_role`)
+
+
+## Markdown dans les messages — Priorité moyenne
+
+- Ajouter `react-markdown` dans `desktop/civium-tauri/package.json` et rendre le corps des messages en Markdown (gras, italique, liens, blocs de code, listes)
+- Ajouter une toolbar de mise en forme basique dans le champ de saisie (boutons **G** *I* `` ` `` lien)
+- S'assurer que les liens externes sont ouverts dans le navigateur système (`shell.open`) et non dans la WebView Tauri (prévention des redirections malveillantes)
+- Sanitiser le Markdown avant rendu pour éviter toute injection HTML (`rehype-sanitize`)
+
+
+## Reconnexion automatique P2P — Priorité moyenne
+
+- Implémenter une boucle de reconnexion avec backoff exponentiel vers les pairs connus qui viennent de se déconnecter (actuellement libp2p utilise un timeout idle de 60 s sans logique de retry custom)
+- Persister la liste des pairs de confiance connus entre redémarrages (actuellement `MemoryStore` Kademlia = perdu à l'arrêt) dans une table `known_peers` SQLite
+- Afficher dans le Dashboard un indicateur "Reconnexion en cours..." quand le nœud tente de rejoindre un pair connu
+
+
+## Audit trail immuable — Priorité moyenne
+
+- La table `admin_actions` trace les actions admin mais reste une table SQLite modifiable — un admin avec accès direct à `civium.db` peut réécrire l'historique
+- Ajouter une chaîne de hachage (hash chain) sur les `admin_actions` : chaque entrée inclut le hash de l'entrée précédente, signé par la clé Ed25519 de l'acteur — toute modification rompt la chaîne et est détectable
+- Exposer la vérification de l'intégrité du journal dans le Dashboard : bouton "Vérifier l'audit trail" qui recompute la chaîne et signale toute rupture
+
+
+## Nettoyage et maintenance de la BDD — Priorité moyenne
+
+- Ajouter une commande Tauri `db_vacuum` : lance `PRAGMA vacuum` + `PRAGMA optimize` pour compacter `civium.db` après des suppressions importantes
+- Ajouter une commande `db_purge_messages(network_cid, before_timestamp)` : supprime les messages plus anciens que N jours (rétention configurable par réseau)
+- Afficher dans le Dashboard la taille actuelle de `civium.db` et la date du dernier compactage, avec un bouton "Optimiser la base de données"
+
+
 ## Plugin Tâches — Priorité moyenne
 
 - Créer un modèle `Task` dans `civium-core/src/` : titre, description, assigné (`assigned_to_cid`), échéance, statut (À faire / En cours / Terminé), priorité
@@ -351,6 +549,41 @@
 - Ajouter `--limit` et `--offset` (ou `--page` / `--per-page`) sur toutes les commandes `list` du CLI : `msg list`, `member list`, `governance list`, `doc list`, `agenda list`, `activity list`
 - Actuellement toutes les listes sont affichées intégralement sans limite — un réseau avec des milliers de messages génère une sortie illisible
 - Ajouter aussi un flag `--json` pour obtenir la sortie en JSON plutôt qu'en texte formaté (utile pour scripter)
+
+
+## Export iCal (calendrier externe) — Priorité moyenne
+
+- Ajouter une sérialisation des `AgendaEvent` au format iCalendar (`.ics` / RFC 5545) dans `civium-core/src/agenda/`
+- Ajouter une commande Tauri `agenda_export_ics(network_cid)` qui génère un fichier `.ics` téléchargeable
+- Ajouter un bouton "Exporter vers calendrier" dans la section Agenda du Dashboard (ouvre le fichier `.ics` → Google Calendar / Apple Calendar / Thunderbird l'importent automatiquement)
+- Ajouter une URL d'abonnement CalDAV ou webcal pour une synchronisation en continu (optionnel — backlog)
+
+
+## Multi-compte / multi-identité — Priorité moyenne
+
+- Actuellement la table `identity` impose `id = 1` — un seul compte par installation, aucun switch possible
+- Permettre plusieurs profils sur le même nœud : modifier le schéma SQLite pour supporter N identités avec une notion d'identité "active"
+- Ajouter dans le Dashboard un sélecteur de profil (icône utilisateur → "Changer de compte") et un bouton "Ajouter un compte"
+- Utile pour les cas famille (plusieurs membres sur le même ordinateur) ou test/développement
+
+
+## TTL et nettoyage des nœuds DHT morts — Priorité moyenne
+
+- Le store Kademlia utilise `MemoryStore` avec le TTL par défaut libp2p (~24h) — les nœuds offline restent dans les tables de routage jusqu'à expiration naturelle
+- Implémenter un ping périodique actif des pairs connus pour détecter rapidement les nœuds devenus injoignables et les retirer des tables de routage
+- Persister les pairs de confiance connus entre redémarrages (actuellement `MemoryStore` = perdu à l'arrêt) pour accélérer la reconnexion au DHT
+
+
+## Thème web — adaptation au système — Priorité basse
+
+- Le client web (`app.html`) impose un thème sombre fixe (`background: #0f1117`) sans respecter `prefers-color-scheme`
+- Remplacer les couleurs codées en dur par des variables CSS et ajouter une media query `@media (prefers-color-scheme: light)` pour adapter l'interface au thème OS de l'utilisateur
+
+
+## Mode observateur dans un réseau — Priorité basse
+
+- Ajouter un mode d'invitation "observateur" : la personne rejoint le réseau avec le rôle `Observer` — voit les messages et propositions, ne peut pas en créer (voir section Rôles intermédiaires)
+- Utile pour : inviter un notaire, un auditeur, un membre fondateur qui ne participe plus activement, ou un parent surveillant le réseau de son enfant
 
 
 ## Complétion shell CLI — Priorité basse
