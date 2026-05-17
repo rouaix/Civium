@@ -337,6 +337,16 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Code signing des builds — Priorité haute
+
+> Sans signature, macOS affiche "développeur non vérifié" et Windows SmartScreen bloque l'installation — bloquant pour tout déploiement public.
+
+- Obtenir un certificat Apple Developer ID et configurer la signature macOS dans `.github/workflows/` + `tauri.conf.json`
+- Obtenir un certificat Authenticode (ex. Sectigo EV) et configurer la signature Windows
+- Intégrer la signature dans le workflow CI Tauri (à créer — voir section CI/CD) : build signé à chaque push sur `master`
+- Configurer la notarisation Apple (`xcrun notarytool`) pour macOS 10.15+ (obligation depuis Catalina)
+
+
 ## Deep links `civium://` — Priorité haute
 
 - Déclarer le protocole `civium://` dans `desktop/civium-tauri/src-tauri/tauri.conf.json` (section `app.security.assetProtocol` ou `plugins.deep-link`) pour que l'OS puisse ouvrir l'app depuis un lien
@@ -351,6 +361,42 @@
 - Configurer un subscriber `tracing` avec rotation de fichiers (crate `tracing-appender`) : écriture dans `<data_dir>/civium.log` avec rotation quotidienne et rétention de 7 jours
 - Ajouter des champs de contexte sur chaque span : `network_cid`, `peer_id`, `operation` — indispensable pour déboguer des problèmes de sync en production
 - Exposer dans le Dashboard un bouton "Télécharger les logs" pour faciliter les rapports de bug
+
+
+## Rôles intermédiaires dans un réseau — Priorité moyenne
+
+- Ajouter un rôle `Moderator` dans `civium-core/src/network/member.rs` : peut supprimer des messages et mettre en sourdine des membres, mais ne peut pas admettre/exclure des membres ni créer des propositions
+- Ajouter un rôle `Observer` : voit les messages et les propositions, ne peut ni poster ni voter — utile pour inviter un auditeur externe ou un tuteur légal
+- Exposer le changement de rôle dans le Dashboard (actuellement seul `Admin`/`Member` via `member_set_role`)
+
+
+## Markdown dans les messages — Priorité moyenne
+
+- Ajouter `react-markdown` dans `desktop/civium-tauri/package.json` et rendre le corps des messages en Markdown (gras, italique, liens, blocs de code, listes)
+- Ajouter une toolbar de mise en forme basique dans le champ de saisie (boutons **G** *I* `` ` `` lien)
+- S'assurer que les liens externes sont ouverts dans le navigateur système (`shell.open`) et non dans la WebView Tauri (prévention des redirections malveillantes)
+- Sanitiser le Markdown avant rendu pour éviter toute injection HTML (`rehype-sanitize`)
+
+
+## Reconnexion automatique P2P — Priorité moyenne
+
+- Implémenter une boucle de reconnexion avec backoff exponentiel vers les pairs connus qui viennent de se déconnecter (actuellement libp2p utilise un timeout idle de 60 s sans logique de retry custom)
+- Persister la liste des pairs de confiance connus entre redémarrages (actuellement `MemoryStore` Kademlia = perdu à l'arrêt) dans une table `known_peers` SQLite
+- Afficher dans le Dashboard un indicateur "Reconnexion en cours..." quand le nœud tente de rejoindre un pair connu
+
+
+## Audit trail immuable — Priorité moyenne
+
+- La table `admin_actions` trace les actions admin mais reste une table SQLite modifiable — un admin avec accès direct à `civium.db` peut réécrire l'historique
+- Ajouter une chaîne de hachage (hash chain) sur les `admin_actions` : chaque entrée inclut le hash de l'entrée précédente, signé par la clé Ed25519 de l'acteur — toute modification rompt la chaîne et est détectable
+- Exposer la vérification de l'intégrité du journal dans le Dashboard : bouton "Vérifier l'audit trail" qui recompute la chaîne et signale toute rupture
+
+
+## Nettoyage et maintenance de la BDD — Priorité moyenne
+
+- Ajouter une commande Tauri `db_vacuum` : lance `PRAGMA vacuum` + `PRAGMA optimize` pour compacter `civium.db` après des suppressions importantes
+- Ajouter une commande `db_purge_messages(network_cid, before_timestamp)` : supprime les messages plus anciens que N jours (rétention configurable par réseau)
+- Afficher dans le Dashboard la taille actuelle de `civium.db` et la date du dernier compactage, avec un bouton "Optimiser la base de données"
 
 
 ## Plugin Tâches — Priorité moyenne
@@ -396,6 +442,12 @@
 
 - Le client web (`app.html`) impose un thème sombre fixe (`background: #0f1117`) sans respecter `prefers-color-scheme`
 - Remplacer les couleurs codées en dur par des variables CSS et ajouter une media query `@media (prefers-color-scheme: light)` pour adapter l'interface au thème OS de l'utilisateur
+
+
+## Mode observateur dans un réseau — Priorité basse
+
+- Ajouter un mode d'invitation "observateur" : la personne rejoint le réseau avec le rôle `Observer` — voit les messages et propositions, ne peut pas en créer (voir section Rôles intermédiaires)
+- Utile pour : inviter un notaire, un auditeur, un membre fondateur qui ne participe plus activement, ou un parent surveillant le réseau de son enfant
 
 
 ## Complétion shell CLI — Priorité basse
