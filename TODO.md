@@ -337,6 +337,56 @@
 - Ajouter un `sitemap.xml` pour le référencement du site de présentation
 
 
+## Plugin Tâches — Priorité moyenne
+
+- Créer un modèle `Task` dans `civium-core/src/` : titre, description, assigné (`assigned_to_cid`), échéance, statut (À faire / En cours / Terminé), priorité
+- Ajouter la table `tasks` dans `store.rs` avec les fonctions CRUD
+- Ajouter les commandes Tauri `task_create`, `task_list`, `task_update`, `task_delete`
+- Ajouter une section "Tâches" dans le Dashboard avec vue liste et vue Kanban (colonnes par statut)
+- Lier une tâche à un événement agenda ou à un message (référence croisée par ID)
+
+
+## Pagination dans le CLI — Priorité moyenne
+
+- Ajouter `--limit` et `--offset` (ou `--page` / `--per-page`) sur toutes les commandes `list` du CLI : `msg list`, `member list`, `governance list`, `doc list`, `agenda list`, `activity list`
+- Actuellement toutes les listes sont affichées intégralement sans limite — un réseau avec des milliers de messages génère une sortie illisible
+- Ajouter aussi un flag `--json` pour obtenir la sortie en JSON plutôt qu'en texte formaté (utile pour scripter)
+
+
+## Complétion shell CLI — Priorité basse
+
+- Ajouter `clap_complete` dans `civium-cli/Cargo.toml` et exposer une commande `civium completions <shell>` (bash, zsh, fish, powershell)
+- L'aide `--help` par sous-commande est déjà excellente — la complétion est le complément naturel
+
+
+## BIP39 — phrase mnémonique pour la clé — Priorité basse
+
+- Ajouter le crate `bip39` dans `civium-core` pour dériver une phrase de 24 mots depuis la clé Ed25519
+- Afficher la phrase mnémonique dans la section Identité du Dashboard en complément du `secret_b58` — plus facile à noter sur papier pour un utilisateur non-technique
+- Permettre la restauration d'une identité depuis la phrase mnémonique dans l'onboarding
+
+
+## Cache mémoire côté Tauri — Priorité basse
+
+- Actuellement chaque commande Tauri ouvre une nouvelle connexion SQLite et relit la BDD — ajouter un `AppState` avec un cache en mémoire pour les données fréquemment lues (identité, liste des réseaux, membres actifs)
+- Invalider le cache sur les événements `civium://sync-completed` et les mutations locales
+- Commencer par les données les plus lues : identité, liste des réseaux, liste des membres du réseau sélectionné
+
+
+## Télémétrie opt-in — Priorité basse
+
+- Ajouter un mécanisme de collecte de métriques anonymisées opt-in (désactivé par défaut) : version du client, nombre de réseaux, nombre de membres, OS, erreurs fréquentes
+- Envoyer périodiquement ces métriques agrégées au RCC (`POST /api/telemetry`) pour permettre de mesurer l'adoption et prioriser les bugs
+- Afficher dans le Dashboard un panneau "Contribuer à l'amélioration de Civium" avec description des données collectées et toggle opt-in
+
+
+## Notifications push web — Priorité basse
+
+- Remplacer le polling HTTP toutes les 30 s dans le client web par l'API Web Push (Service Worker + `PushManager`) pour recevoir les notifications même onglet fermé
+- Ajouter la table `web_push_subscriptions` dans les migrations PHP pour stocker les endpoints Push par utilisateur
+- Envoyer une notification push lors d'un nouveau message, invitation, ou alerte fraude
+
+
 ## Demandes du concepteur - Priorité basse
 
   ---
