@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ @title }}</title>
+  <link rel="icon" href="{{ @BASE }}/public/img/favicon.svg" type="image/svg+xml">
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+    integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+    crossorigin="anonymous"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0; min-height: 100vh;
+    }
+    .header {
+      display: flex; align-items: center; gap: 1rem;
+      padding: 0.875rem 1.5rem;
+      background: #1a1d27; border-bottom: 1px solid #2d3148;
+    }
+    .header-logo { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.1rem; }
+    .header-logo img { height: 24px; }
+    .badge {
+      font-size: 0.72rem; background: #7c3aed22; border: 1px solid #7c3aed55;
+      color: #a78bfa; padding: 0.2rem 0.6rem; border-radius: 999px;
+    }
+    .nav-links { display: flex; gap: 1rem; margin-left: auto; align-items: center; }
+    .nav-links a {
+      color: #94a3b8; text-decoration: none; font-size: 0.875rem;
+      padding: 0.4rem 0.8rem; border-radius: 6px; transition: background 0.15s;
+    }
+    .nav-links a:hover { background: #1e2235; color: #e2e8f0; }
+    .nav-links a.active { background: #1e2235; color: #a78bfa; }
+    .container { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .card {
+      background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px;
+      padding: 1.5rem; margin-bottom: 2rem;
+    }
+    .card-title { font-size: 1rem; font-weight: 600; margin-bottom: 0.5rem; color: #c7d2fe; }
+    .card-desc { font-size: 0.82rem; color: #64748b; margin-bottom: 1.25rem; }
+    .field { margin-bottom: 1.25rem; }
+    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.4rem; }
+    input[type="text"], input[type="email"], input[type="url"], input[type="color"],
+    textarea, select {
+      width: 100%; padding: 0.7rem 0.9rem;
+      background: #0f1117; border: 1px solid #2d3148; border-radius: 8px;
+      color: #e2e8f0; font-size: 0.9rem; outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="color"] { height: 42px; padding: 0.3rem 0.5rem; cursor: pointer; }
+    input:focus, textarea:focus, select:focus { border-color: #6366f1; }
+    input::placeholder, textarea::placeholder { color: #475569; }
+    textarea { resize: vertical; min-height: 80px; font-family: monospace; font-size: 0.82rem; }
+    .btn {
+      padding: 0.65rem 1.25rem; border-radius: 8px; border: none;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-primary:hover { background: #4f46e5; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .tier-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 0.75rem; margin-bottom: 1.5rem;
+    }
+    .tier-card {
+      border: 2px solid #2d3148; border-radius: 10px; padding: 1rem;
+      cursor: pointer; transition: border-color 0.15s, background 0.15s;
+      text-align: center;
+    }
+    .tier-card:hover { border-color: #6366f1; }
+    .tier-card.selected { border-color: #6366f1; background: #1e1f38; }
+    .tier-icon { font-size: 1.75rem; margin-bottom: 0.4rem; }
+    .tier-name { font-weight: 600; font-size: 0.9rem; }
+    .tier-limits { font-size: 0.75rem; color: #64748b; margin-top: 0.25rem; }
+    .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .stats { display: flex; gap: 1.5rem; margin-bottom: 1.5rem; }
+    .stat { background: #0f1117; border: 1px solid #2d3148; border-radius: 8px; padding: 0.75rem 1.25rem; }
+    .stat-val { font-size: 1.5rem; font-weight: 700; color: #a78bfa; }
+    .stat-lbl { font-size: 0.78rem; color: #64748b; }
+    .alert { padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.875rem; margin-bottom: 1rem; }
+    .alert-success { background: #14532d22; border: 1px solid #16a34a55; color: #4ade80; }
+    .alert-error { background: #7f1d1d22; border: 1px solid #dc262655; color: #f87171; }
+    .preview-bar {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.6rem 1rem; background: #0f1117;
+      border: 1px solid #2d3148; border-radius: 8px; margin-top: 0.5rem;
+    }
+    .preview-bar-logo { width: 22px; height: 22px; border-radius: 4px; object-fit: contain; }
+    .preview-bar-name { font-weight: 700; font-size: 0.95rem; }
+    .preview-bar-tag { font-size: 0.78rem; color: #64748b; }
+    .color-row { display: flex; align-items: center; gap: 0.75rem; }
+    .color-swatch { width: 36px; height: 36px; border-radius: 8px; border: 1px solid #2d3148; flex-shrink: 0; }
+    @media (max-width: 600px) { .row-2 { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body x-data="wlApp()" x-init="init()">
+
+  <div class="header">
+    <div class="header-logo">
+      <img src="{{ @BASE }}/public/img/civium_logo.svg" alt="Civium">
+      Administration Civium
+    </div>
+    <span class="badge">White-label</span>
+    <div class="nav-links">
+      <a href="{{ @BASE }}/admin">Réseaux & alertes</a>
+      <a href="{{ @BASE }}/admin/white-label" class="active">White-label</a>
+      <a href="{{ @BASE }}/admin/logout">Déconnexion</a>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- Statut ---->
+    <div x-show="msg" class="alert" :class="msgOk ? 'alert-success' : 'alert-error'" x-text="msg"></div>
+
+    <!-- Statistiques courantes -->
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-val">{{ @network_count }}</div>
+        <div class="stat-lbl">Réseaux enregistrés</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" x-text="tierLabel"></div>
+        <div class="stat-lbl">Tier actif</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" x-text="effectiveMax('networks')"></div>
+        <div class="stat-lbl">Réseaux max</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" x-text="effectiveMax('members')"></div>
+        <div class="stat-lbl">Membres max / réseau</div>
+      </div>
+    </div>
+
+    <!-- Licence -->
+    <div class="card">
+      <div class="card-title">Tier de licence</div>
+      <div class="card-desc">Détermine les limites par défaut de cette instance. Les valeurs manuelles ci-dessous remplacent les limites du tier.</div>
+
+      <div class="tier-grid">
+        <template x-for="(t, key) in tiers" :key="key">
+          <div class="tier-card" :class="{ selected: form.license_tier === key }" @click="form.license_tier = key">
+            <div class="tier-icon" x-text="t.icon"></div>
+            <div class="tier-name" x-text="t.label"></div>
+            <div class="tier-limits" x-text="t.desc"></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="row-2">
+        <div class="field">
+          <label>Réseaux max (0 = illimité)</label>
+          <input type="text" x-model="form.max_networks" placeholder="0">
+        </div>
+        <div class="field">
+          <label>Membres max par réseau (0 = illimité)</label>
+          <input type="text" x-model="form.max_members" placeholder="0">
+        </div>
+      </div>
+    </div>
+
+    <!-- Branding -->
+    <div class="card">
+      <div class="card-title">Personnalisation (branding)</div>
+      <div class="card-desc">Apparaît dans l'interface web et dans la réponse de <code>GET /api/info</code> — utilisée par les apps desktop/mobile.</div>
+
+      <div class="row-2">
+        <div class="field">
+          <label>Nom de l'application</label>
+          <input type="text" x-model="form.app_name" placeholder="Civium">
+        </div>
+        <div class="field">
+          <label>Slogan</label>
+          <input type="text" x-model="form.app_tagline" placeholder="Votre réseau souverain">
+        </div>
+      </div>
+
+      <div class="row-2">
+        <div class="field">
+          <label>Nom de l'organisation</label>
+          <input type="text" x-model="form.org_name" placeholder="Laissez vide pour Civium">
+        </div>
+        <div class="field">
+          <label>URL du logo (PNG/SVG, recommandé 48×48)</label>
+          <input type="url" x-model="form.app_logo_url" placeholder="https://…/logo.svg">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Couleur principale</label>
+        <div class="color-row">
+          <input type="color" x-model="form.primary_color" style="width:80px">
+          <div class="color-swatch" :style="`background:${form.primary_color}`"></div>
+          <span style="font-size:0.85rem;color:#94a3b8" x-text="form.primary_color"></span>
+        </div>
+      </div>
+
+      <!-- Aperçu barre de navigation -->
+      <div class="preview-bar">
+        <template x-if="form.app_logo_url">
+          <img class="preview-bar-logo" :src="form.app_logo_url" :alt="form.app_name">
+        </template>
+        <template x-if="!form.app_logo_url">
+          <div class="color-swatch" :style="`background:${form.primary_color};width:22px;height:22px`"></div>
+        </template>
+        <span class="preview-bar-name" x-text="form.app_name || 'Civium'"></span>
+        <span class="preview-bar-tag" x-text="form.app_tagline || 'Votre réseau souverain'"></span>
+      </div>
+    </div>
+
+    <!-- Contact & support -->
+    <div class="card">
+      <div class="card-title">Contact et support</div>
+      <div class="row-2">
+        <div class="field">
+          <label>Email de contact</label>
+          <input type="email" x-model="form.contact_email" placeholder="contact@…">
+        </div>
+        <div class="field">
+          <label>URL de support</label>
+          <input type="url" x-model="form.support_url" placeholder="https://…/support">
+        </div>
+      </div>
+    </div>
+
+    <!-- CSS personnalisé -->
+    <div class="card">
+      <div class="card-title">CSS personnalisé</div>
+      <div class="card-desc">Injecté dans <code>&lt;style&gt;</code> sur toutes les pages publiques. Utiliser avec parcimonie.</div>
+      <div class="field">
+        <textarea x-model="form.custom_css" placeholder="/* Votre CSS ici */"></textarea>
+      </div>
+    </div>
+
+    <button class="btn btn-primary" :disabled="saving" @click="save()">
+      <span x-show="!saving">Enregistrer les paramètres</span>
+      <span x-show="saving">Enregistrement…</span>
+    </button>
+
+  </div>
+
+  <script>
+  function wlApp() {
+    return {
+      saving: false,
+      msg: '',
+      msgOk: true,
+
+      tiers: {
+        open:        { icon: '🌐', label: 'Open', desc: 'Illimité — instance publique' },
+        famille:     { icon: '🏠', label: 'Famille', desc: 'Max 3 réseaux, 50 membres' },
+        association: { icon: '🤝', label: 'Association', desc: 'Max 20 réseaux, 500 membres' },
+        entreprise:  { icon: '🏢', label: 'Entreprise', desc: 'Limites configurables' },
+      },
+
+      tierDefaults: {
+        open:        { max_networks: 0,  max_members: 0 },
+        famille:     { max_networks: 3,  max_members: 50 },
+        association: { max_networks: 20, max_members: 500 },
+        entreprise:  { max_networks: 0,  max_members: 0 },
+      },
+
+      form: {
+        app_name:      '{{ @wl.app_name | esc }}',
+        app_tagline:   '{{ @wl.app_tagline | esc }}',
+        app_logo_url:  '{{ @wl.app_logo_url | esc }}',
+        license_tier:  '{{ @wl.license_tier | esc }}',
+        max_networks:  '{{ @wl.max_networks | esc }}',
+        max_members:   '{{ @wl.max_members | esc }}',
+        contact_email: '{{ @wl.contact_email | esc }}',
+        support_url:   '{{ @wl.support_url | esc }}',
+        primary_color: '{{ @wl.primary_color | esc }}',
+        org_name:      '{{ @wl.org_name | esc }}',
+        custom_css:    '',
+      },
+
+      init() {
+        this.form.custom_css = {{ @wl.custom_css | json_encode | raw }};
+      },
+
+      get tierLabel() {
+        return this.tiers[this.form.license_tier]?.label || this.form.license_tier;
+      },
+
+      effectiveMax(type) {
+        const key = type === 'networks' ? 'max_networks' : 'max_members';
+        const manual = parseInt(this.form[key]) || 0;
+        if (manual > 0) return manual;
+        const def = this.tierDefaults[this.form.license_tier]?.[key] || 0;
+        return def === 0 ? '∞' : def;
+      },
+
+      async save() {
+        this.saving = true;
+        this.msg = '';
+        try {
+          const r = await fetch('{{ @BASE }}/admin/white-label', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.form),
+          });
+          const data = await r.json();
+          if (r.ok) {
+            this.msg = '✅ Paramètres enregistrés avec succès.';
+            this.msgOk = true;
+          } else {
+            this.msg = '❌ Erreur : ' + (data.error || 'inconnue');
+            this.msgOk = false;
+          }
+        } catch (e) {
+          this.msg = '❌ Erreur réseau : ' + e.message;
+          this.msgOk = false;
+        }
+        this.saving = false;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
+    };
+  }
+  </script>
+
+</body>
+</html>

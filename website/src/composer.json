@@ -1,0 +1,6 @@
+{
+    "require": {
+        "bcosca/fatfree": "^3.8",
+        "paragonie/sodium_compat": "^1.24"
+    }
+}

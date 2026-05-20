@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ @title }}</title>
+  <link rel="icon" href="{{ @BASE }}/public/img/favicon.svg" type="image/svg+xml">
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+    integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+    crossorigin="anonymous"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117; color: #e2e8f0;
+      min-height: 100vh;
+    }
+    .header {
+      display: flex; align-items: center; gap: 1rem;
+      padding: 0.875rem 1.5rem;
+      background: #1a1d27; border-bottom: 1px solid #2d3148;
+    }
+    .header-logo { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.1rem; }
+    .header-logo img { height: 24px; }
+    .badge {
+      font-size: 0.72rem; background: #7c3aed22; border: 1px solid #7c3aed55;
+      color: #a78bfa; padding: 0.2rem 0.6rem; border-radius: 999px;
+    }
+    .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+    /* Cards */
+    .card {
+      background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px;
+      padding: 1.5rem; margin-bottom: 2rem;
+    }
+    .card-title { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #c7d2fe; }
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th {
+      text-align: left; padding: 0.5rem 0.75rem;
+      color: #64748b; font-weight: 500; border-bottom: 1px solid #2d3148;
+    }
+    td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #1e2235; word-break: break-all; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1e2235; }
+    .mono { font-family: monospace; font-size: 0.8rem; }
+    .empty { text-align: center; color: #475569; padding: 2rem; font-size: 0.875rem; }
+    /* Form */
+    .field { margin-bottom: 1.25rem; }
+    label { display: block; font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.4rem; }
+    input[type="text"], textarea, select {
+      width: 100%; padding: 0.7rem 0.9rem;
+      background: #0f1117; border: 1px solid #2d3148; border-radius: 8px;
+      color: #e2e8f0; font-size: 0.9rem; outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, textarea:focus, select:focus { border-color: #6366f1; }
+    input::placeholder, textarea::placeholder { color: #475569; }
+    textarea { resize: vertical; min-height: 80px; font-family: inherit; }
+    .btn {
+      padding: 0.65rem 1.25rem; border-radius: 8px; border: none;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: #b91c1c; }
+    .btn-danger:disabled { opacity: 0.5; cursor: default; }
+    /* Messages */
+    .msg { padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.875rem; margin-bottom: 1rem; }
+    .msg-err { background: #7f1d1d22; border: 1px solid #dc262655; color: #f87171; }
+    .msg-ok  { background: #14532d22; border: 1px solid #16a34a55; color: #4ade80; }
+    /* Stats */
+    .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+    .stat-card {
+      background: #1a1d27; border: 1px solid #2d3148; border-radius: 10px;
+      padding: 1rem 1.5rem; flex: 1; min-width: 160px;
+    }
+    .stat-card .num { font-size: 2rem; font-weight: 700; color: #6366f1; }
+    .stat-card .lbl { font-size: 0.8rem; color: #64748b; margin-top: 0.25rem; }
+    /* Alert type badge */
+    .alert-type {
+      display: inline-block; font-size: 0.72rem; padding: 0.2rem 0.5rem;
+      border-radius: 4px; font-weight: 600; text-transform: uppercase;
+    }
+    .type-fraude      { background: #7f1d1d33; color: #f87171; border: 1px solid #dc262644; }
+    .type-spam        { background: #4a1d2e33; color: #f9a8d4; border: 1px solid #db277744; }
+    .type-malveillant { background: #431407aa; color: #fdba74; border: 1px solid #ea580c44; }
+    .type-info        { background: #1e3a5f33; color: #93c5fd; border: 1px solid #3b82f644; }
+    .deleted-row td   { opacity: .35; text-decoration: line-through; }
+  </style>
+</head>
+<body x-data="adminApp()">
+
+  <header class="header">
+    <div class="header-logo">
+      <img src="{{ @BASE }}/public/img/civium_logo.svg" alt="Civium">
+      Civium
+    </div>
+    <span class="badge">Administration RCC</span>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:0.75rem;">
+      <a href="{{ @BASE }}/admin" style="font-size:0.8rem;color:#a78bfa;text-decoration:none;padding:0.3rem 0.75rem;border:1px solid #7c3aed55;border-radius:6px;background:#7c3aed11;">Réseaux & alertes</a>
+      <a href="{{ @BASE }}/admin/white-label" style="font-size:0.8rem;color:#64748b;text-decoration:none;padding:0.3rem 0.75rem;border:1px solid #2d3148;border-radius:6px;" onmouseover="this.style.color='#e2e8f0'" onmouseout="this.style.color='#64748b'">White-label</a>
+      <check if="{{ @via_session }}">
+        <true>
+          <a href="{{ @BASE }}/admin/logout" style="font-size:0.8rem;color:#64748b;text-decoration:none;padding:0.3rem 0.75rem;border:1px solid #2d3148;border-radius:6px;" onmouseover="this.style.color='#e2e8f0'" onmouseout="this.style.color='#64748b'">Déconnexion</a>
+        </true>
+        <false></false>
+      </check>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="num">{{ count(@networks) }}</div>
+        <div class="lbl">Réseaux enregistrés</div>
+      </div>
+      <div class="stat-card">
+        <div class="num">{{ count(@alerts) }}</div>
+        <div class="lbl">Alertes émises</div>
+      </div>
+    </div>
+
+    <!-- Émettre une alerte -->
+    <div class="card">
+      <div class="card-title">Émettre une alerte fraude</div>
+      <div class="msg msg-err" x-show="formErr" x-text="formErr" style="display:none"></div>
+      <div class="msg msg-ok"  x-show="formOk"  x-text="formOk"  style="display:none"></div>
+
+      <div class="field">
+        <label for="a_type">Type d'alerte</label>
+        <select id="a_type" x-model="form.type">
+          <option value="fraude">Fraude</option>
+          <option value="spam">Spam</option>
+          <option value="malveillant">Réseau malveillant</option>
+          <option value="info">Information</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="a_desc">Description</label>
+        <textarea id="a_desc" x-model="form.description" placeholder="Décrivez l'alerte en détail…"></textarea>
+      </div>
+      <div class="field">
+        <label for="a_nets">CIDs des réseaux concernés (un par ligne — optionnel)</label>
+        <textarea id="a_nets" x-model="form.networks_raw" rows="3"
+          placeholder="civ1abc123…&#10;civ1xyz456…"></textarea>
+      </div>
+      <div class="field">
+        <label for="a_by">Émetteur</label>
+        <input type="text" id="a_by" x-model="form.emitted_by" placeholder="RCC">
+      </div>
+      <button class="btn btn-danger" @click="sendAlert()" :disabled="sending">
+        <span x-text="sending ? 'Envoi en cours…' : 'Émettre l\'alerte'"></span>
+      </button>
+    </div>
+
+    <!-- Liste des réseaux -->
+    <div class="card" x-data="networksApp()">
+      <div class="card-title">Réseaux enregistrés ({{ count(@networks) }})</div>
+      <div x-show="msg" x-text="msg" :class="msgErr ? 'msg msg-err' : 'msg msg-ok'" style="display:none"></div>
+      <check if="{{ count(@networks) > 0 }}">
+        <true>
+          <table>
+            <thead>
+              <tr>
+                <th>Réseau</th>
+                <th>CID réseau</th>
+                <th>Admin CID</th>
+                <th>Email admin</th>
+                <th>IP</th>
+                <th>Enregistré le</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <repeat group="{{ @networks }}" value="{{ @net }}">
+                <tr :class="deleted.has('{{ @net.network_cid }}') ? 'deleted-row' : ''">
+                  <td>{{ @net.network_name }}</td>
+                  <td class="mono">{{ @net.network_cid }}</td>
+                  <td class="mono">{{ @net.admin_cid }}</td>
+                  <td>{{ @net.admin_email }}</td>
+                  <td class="mono">{{ @net.ip_address }}</td>
+                  <td>{{ @net.registered_at }}</td>
+                  <td>
+                    <button
+                      x-show="!deleted.has('{{ @net.network_cid }}')"
+                      @click="deleteNetwork('{{ @net.network_cid }}')"
+                      :disabled="deleting === '{{ @net.network_cid }}'"
+                      style="background:#dc2626;color:#fff;border:none;padding:.3rem .75rem;border-radius:6px;font-size:.8rem;cursor:pointer">
+                      <span x-text="deleting === '{{ @net.network_cid }}' ? '…' : 'Supprimer'"></span>
+                    </button>
+                    <span x-show="deleted.has('{{ @net.network_cid }}')" style="color:#64748b;font-size:.8rem">Supprimé</span>
+                  </td>
+                </tr>
+              </repeat>
+            </tbody>
+          </table>
+        </true>
+        <false>
+          <div class="empty">Aucun réseau enregistré.</div>
+        </false>
+      </check>
+    </div>
+
+    <!-- Historique des alertes -->
+    <div class="card" x-data="alertsApp()">
+      <div class="card-title">Alertes récentes ({{ count(@alerts) }})</div>
+      <div x-show="msg" x-text="msg" :class="msgErr ? 'msg msg-err' : 'msg msg-ok'" style="display:none"></div>
+      <check if="{{ count(@alerts) > 0 }}">
+        <true>
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Description</th>
+                <th>Réseaux concernés</th>
+                <th>Émis par</th>
+                <th>Date</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <repeat group="{{ @alerts }}" value="{{ @al }}">
+                <tr>
+                  <td><span class="alert-type type-{{ @al.type }}">{{ @al.type }}</span></td>
+                  <td>{{ @al.description }}</td>
+                  <td class="mono">{{ @al.network_cids }}</td>
+                  <td>{{ @al.emitted_by }}</td>
+                  <td>{{ @al.emitted_at }}</td>
+                  <td>
+                    <button
+                      x-show="!deleted.has({{ @al.id }})"
+                      @click="deleteAlert({{ @al.id }})"
+                      :disabled="deleting === {{ @al.id }}"
+                      style="background:#dc2626;color:#fff;border:none;padding:.3rem .75rem;border-radius:6px;font-size:.8rem;cursor:pointer">
+                      <span x-text="deleting === {{ @al.id }} ? '…' : 'Supprimer'"></span>
+                    </button>
+                    <span x-show="deleted.has({{ @al.id }})" style="color:#64748b;font-size:.8rem">Supprimée</span>
+                  </td>
+                </tr>
+              </repeat>
+            </tbody>
+          </table>
+        </true>
+        <false>
+          <div class="empty">Aucune alerte émise.</div>
+        </false>
+      </check>
+    </div>
+
+  </div>
+
+  <!-- Utilisateurs web -->
+  <div class="container" style="margin-top:0" x-data="webUsersApp()">
+    <h2 style="font-size:1.1rem;font-weight:700;color:#c7d2fe;margin-bottom:1.25rem;padding-bottom:.6rem;border-bottom:1px solid #2d3148">
+      Utilisateurs web
+    </h2>
+    <div class="card" style="margin-bottom:2rem">
+      <div class="card-title" x-text="'Comptes web (' + users.length + ')'">Comptes web</div>
+      <p style="font-size:.8rem;color:#64748b;margin-bottom:1rem">
+        Utilisateurs inscrits via le site web (mot de passe ou lien magique).
+        La suppression révoque l'accès au site et retire l'utilisateur de tous ses réseaux web.
+      </p>
+      <div x-show="msg" x-text="msg" :class="msgErr ? 'msg msg-err' : 'msg msg-ok'" style="margin-bottom:.75rem;display:none"></div>
+      <div x-show="loading" class="empty">Chargement…</div>
+      <div x-show="!loading && users.length === 0" class="empty">Aucun utilisateur web enregistré.</div>
+      <table x-show="!loading && users.length > 0">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Méthode</th>
+            <th>Réseaux</th>
+            <th>Inscrit le</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="u in users" :key="u.email">
+            <tr :style="deleted.has(u.email) ? 'opacity:.35;text-decoration:line-through' : ''">
+              <td x-text="u.email"></td>
+              <td>
+                <span x-show="u.has_password" style="font-size:.75rem;background:#1e3a5f33;color:#93c5fd;border:1px solid #3b82f644;padding:.15rem .5rem;border-radius:4px">Mot de passe</span>
+                <span x-show="!u.has_password" style="font-size:.75rem;background:#2d1d4a33;color:#c4b5fd;border:1px solid #7c3aed44;padding:.15rem .5rem;border-radius:4px">Lien magique</span>
+              </td>
+              <td x-text="u.network_count"></td>
+              <td x-text="u.created_at"></td>
+              <td>
+                <button
+                  x-show="!deleted.has(u.email)"
+                  @click="deleteUser(u.email)"
+                  :disabled="deleting === u.email"
+                  style="background:#dc2626;color:#fff;border:none;padding:.3rem .75rem;border-radius:6px;font-size:.8rem;cursor:pointer"
+                  :style="deleting === u.email ? 'opacity:.5;cursor:default' : ''"
+                >
+                  <span x-text="deleting === u.email ? '…' : 'Supprimer'"></span>
+                </button>
+                <span x-show="deleted.has(u.email)" style="color:#64748b;font-size:.8rem">Supprimé</span>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Réseau principal Civium (Hub) -->
+  <div class="container" style="margin-top:0" x-data="hubMainApp()">
+    <h2 style="font-size:1.1rem;font-weight:700;color:#c7d2fe;margin-bottom:1.25rem;padding-bottom:.6rem;border-bottom:1px solid #2d3148">
+      Réseau principal Civium (Hub)
+    </h2>
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-card">
+        <div class="num" x-text="stats.member_count ?? '…'"></div>
+        <div class="lbl">Membres</div>
+      </div>
+      <div class="stat-card">
+        <div class="num" x-text="stats.message_count ?? '…'"></div>
+        <div class="lbl">Messages (chiffrés)</div>
+      </div>
+      <div class="stat-card" style="flex:2;min-width:220px">
+        <div style="font-size:.85rem;color:#94a3b8;margin-bottom:.25rem">Réseau principal</div>
+        <div style="font-size:1rem;font-weight:600;color:#e2e8f0" x-text="stats.network_name || '…'"></div>
+        <div class="mono" style="font-size:.72rem;color:#475569;margin-top:.15rem" x-text="stats.network_cid || ''"></div>
+      </div>
+    </div>
+
+    <!-- Onglets -->
+    <div style="display:flex;gap:.5rem;margin-bottom:1rem;border-bottom:1px solid #2d3148;padding-bottom:.75rem">
+      <button @click="tab='membres'" :style="tab==='membres' ? 'color:#a78bfa;border-bottom:2px solid #7c3aed' : 'color:#64748b'" style="background:none;border:none;cursor:pointer;padding:.4rem .8rem;font-size:.875rem;font-weight:500">👥 Membres</button>
+      <button @click="tab='messages';loadMessages()" :style="tab==='messages' ? 'color:#a78bfa;border-bottom:2px solid #7c3aed' : 'color:#64748b'" style="background:none;border:none;cursor:pointer;padding:.4rem .8rem;font-size:.875rem;font-weight:500">💬 Messages</button>
+      <button @click="tab='rename'" :style="tab==='rename' ? 'color:#a78bfa;border-bottom:2px solid #7c3aed' : 'color:#64748b'" style="background:none;border:none;cursor:pointer;padding:.4rem .8rem;font-size:.875rem;font-weight:500">✏️ Renommer</button>
+    </div>
+
+    <div x-show="tabMsg" x-text="tabMsg" :style="tabErr ? 'background:#7f1d1d22;border:1px solid #dc262655;color:#f87171' : 'background:#14532d22;border:1px solid #16a34a55;color:#4ade80'" style="padding:.65rem 1rem;border-radius:8px;font-size:.875rem;margin-bottom:1rem;display:none"></div>
+
+    <!-- Onglet Membres -->
+    <div x-show="tab==='membres'" style="display:none">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title" x-text="'Membres (' + members.length + ')'">Membres</div>
+        <div x-show="members.length === 0" class="empty">Aucun membre.</div>
+        <table x-show="members.length > 0">
+          <thead>
+            <tr>
+              <th>Nom affiché</th>
+              <th>CID membre</th>
+              <th>Rejoint le</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="m in members" :key="m.member_cid">
+              <tr>
+                <td x-text="m.display_name || '(sans nom)'"></td>
+                <td class="mono" x-text="m.member_cid"></td>
+                <td x-text="m.joined_at"></td>
+                <td>
+                  <button
+                    @click="kick(m.member_cid)"
+                    :disabled="kicking === m.member_cid"
+                    style="background:#dc2626;color:#fff;border:none;padding:.3rem .75rem;border-radius:6px;font-size:.8rem;cursor:pointer;opacity:1"
+                    :style="kicking === m.member_cid ? 'opacity:.5;cursor:default' : ''"
+                  >
+                    <span x-text="kicking === m.member_cid ? '…' : 'Expulser'"></span>
+                  </button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Onglet Messages -->
+    <div x-show="tab==='messages'" style="display:none">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title">Messages récents (métadonnées — contenu chiffré)</div>
+        <p style="font-size:.8rem;color:#64748b;margin-bottom:1rem">Le hub ne peut pas lire le contenu des messages (chiffrés côté client). La suppression efface le message du relais — les clients qui l'ont déjà reçu le conservent localement.</p>
+        <div x-show="loadingMessages" class="empty">Chargement…</div>
+        <div x-show="!loadingMessages && messages.length === 0" class="empty">Aucun message.</div>
+        <table x-show="!loadingMessages && messages.length > 0">
+          <thead>
+            <tr>
+              <th>Expéditeur</th>
+              <th>CID expéditeur</th>
+              <th>Reçu le</th>
+              <th>ID message</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="m in messages" :key="m.message_id">
+              <tr>
+                <td x-text="m.sender_name"></td>
+                <td class="mono" x-text="m.sender_cid"></td>
+                <td x-text="m.received_at"></td>
+                <td class="mono" style="font-size:.72rem" x-text="m.message_id"></td>
+                <td>
+                  <button
+                    @click="deleteMsg(m.message_id)"
+                    :disabled="deletingMsg === m.message_id"
+                    style="background:#dc2626;color:#fff;border:none;padding:.3rem .75rem;border-radius:6px;font-size:.8rem;cursor:pointer"
+                    :style="deletingMsg === m.message_id ? 'opacity:.5;cursor:default' : ''"
+                  >
+                    <span x-text="deletingMsg === m.message_id ? '…' : 'Supprimer'"></span>
+                  </button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Onglet Renommer -->
+    <div x-show="tab==='rename'" style="display:none">
+      <div class="card" style="margin-bottom:0">
+        <div class="card-title">Renommer le réseau principal</div>
+        <div class="field">
+          <label>Nouveau nom</label>
+          <input type="text" x-model="newName" placeholder="Ex : Civium Public" maxlength="128">
+        </div>
+        <button
+          @click="rename()"
+          :disabled="renaming || !newName.trim()"
+          style="background:#7c3aed;color:#fff;border:none;padding:.65rem 1.25rem;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer"
+          :style="(renaming || !newName.trim()) ? 'opacity:.5;cursor:default' : ''"
+        >
+          <span x-text="renaming ? 'Enregistrement…' : 'Renommer'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hub PHP -->
+  <div class="container" style="margin-top:0">
+    <div class="card" x-data="hubApp()">
+      <div class="card-title">Hub PHP — identité</div>
+      <p style="font-size:.85rem;color:#94a3b8;margin-bottom:1rem">
+        Clé publique du hub (base58, 44 caractères) utilisée pour la vérification des signatures.
+        Cliquez sur « Régénérer » si la clé affichée est incorrecte (moins de 44 caractères) ou après un déploiement initial.
+      </p>
+      <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+        <code x-text="pubkey || '(chargement…)'" style="background:#0f1117;padding:.4rem .8rem;border-radius:6px;font-size:.8rem;color:#a5b4fc;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
+        <button @click="reset()" :disabled="loading" style="background:#7c3aed;color:#fff;border:none;padding:.5rem 1.1rem;border-radius:6px;cursor:pointer;white-space:nowrap">
+          <span x-text="loading ? 'En cours…' : 'Régénérer'"></span>
+        </button>
+      </div>
+      <p x-show="msg" x-text="msg" style="margin-top:.75rem;font-size:.85rem;color:#4ade80"></p>
+      <p x-show="err" x-text="err" style="margin-top:.75rem;font-size:.85rem;color:#f87171"></p>
+    </div>
+  </div>
+
+<script>
+const ADMIN_TOKEN = '{{ @admin_token }}';
+const BASE        = '{{ @BASE }}';
+
+window.adminApp = function () {
+  return {
+    form: {
+      type: 'fraude',
+      description: '',
+      networks_raw: '',
+      emitted_by: 'RCC',
+    },
+    sending: false,
+    formErr: '',
+    formOk: '',
+
+    async sendAlert() {
+      this.formErr = '';
+      this.formOk  = '';
+
+      if (!this.form.description.trim()) {
+        this.formErr = 'La description est requise.';
+        return;
+      }
+
+      this.sending = true;
+      try {
+        const networks = this.form.networks_raw
+          .split('\n')
+          .map(s => s.trim())
+          .filter(Boolean);
+
+        const res = await fetch(BASE + '/admin/alerte?token=' + encodeURIComponent(ADMIN_TOKEN), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Admin-Token': ADMIN_TOKEN,
+          },
+          body: JSON.stringify({
+            type:               this.form.type,
+            description:        this.form.description.trim(),
+            networks_concerned: networks,
+            emitted_by:         this.form.emitted_by.trim() || 'RCC',
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          this.formErr = data.error || 'Erreur lors de l\'envoi.';
+        } else {
+          this.formOk            = 'Alerte enregistrée. Les emails ont été envoyés aux administrateurs des réseaux concernés.';
+          this.form.description  = '';
+          this.form.networks_raw = '';
+          setTimeout(() => location.reload(), 2500);
+        }
+      } catch (e) {
+        this.formErr = 'Erreur réseau — réessayez.';
+        console.error(e);
+      } finally {
+        this.sending = false;
+      }
+    },
+  };
+};
+
+window.hubMainApp = function () {
+  return {
+    tab:      'membres',
+    stats:    {},
+    members:  [],
+    messages: [],
+    loadingMessages: false,
+    kicking:    null,
+    deletingMsg: null,
+    renaming:   false,
+    newName:    '',
+    tabMsg:     '',
+    tabErr:     false,
+
+    async init() {
+      await this.loadStats();
+      await this.loadMembers();
+    },
+
+    async loadStats() {
+      try {
+        const r = await fetch(BASE + '/admin/hub/main', { headers: { 'X-Admin-Token': ADMIN_TOKEN } });
+        if (r.ok) this.stats = await r.json();
+      } catch {}
+    },
+
+    async loadMembers() {
+      try {
+        const r = await fetch(BASE + '/admin/hub/members', { headers: { 'X-Admin-Token': ADMIN_TOKEN } });
+        if (r.ok) this.members = await r.json();
+      } catch {}
+    },
+
+    async loadMessages() {
+      if (this.loadingMessages) return;
+      this.loadingMessages = true;
+      try {
+        const r = await fetch(BASE + '/admin/hub/messages', { headers: { 'X-Admin-Token': ADMIN_TOKEN } });
+        if (r.ok) this.messages = await r.json();
+      } catch {} finally { this.loadingMessages = false; }
+    },
+
+    async kick(memberCid) {
+      if (!confirm('Expulser ce membre du réseau principal ?')) return;
+      this.kicking = memberCid;
+      this.tabMsg  = ''; this.tabErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/hub/kick', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ member_cid: memberCid }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.members = this.members.filter(m => m.member_cid !== memberCid);
+          this.stats.member_count = Math.max(0, (this.stats.member_count || 0) - 1);
+          this.tabMsg = 'Membre expulsé.'; this.tabErr = false;
+        } else {
+          this.tabMsg = d.error || 'Erreur.'; this.tabErr = true;
+        }
+      } catch { this.tabMsg = 'Erreur réseau.'; this.tabErr = true; }
+      finally { this.kicking = null; }
+    },
+
+    async deleteMsg(messageId) {
+      if (!confirm('Supprimer ce message du relais ?')) return;
+      this.deletingMsg = messageId;
+      this.tabMsg = ''; this.tabErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/hub/message', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ message_id: messageId }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.messages = this.messages.filter(m => m.message_id !== messageId);
+          this.stats.message_count = Math.max(0, (this.stats.message_count || 0) - 1);
+          this.tabMsg = 'Message supprimé.'; this.tabErr = false;
+        } else {
+          this.tabMsg = d.error || 'Erreur.'; this.tabErr = true;
+        }
+      } catch { this.tabMsg = 'Erreur réseau.'; this.tabErr = true; }
+      finally { this.deletingMsg = null; }
+    },
+
+    async rename() {
+      const name = this.newName.trim();
+      if (!name) return;
+      this.renaming = true;
+      this.tabMsg = ''; this.tabErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/hub/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ name }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.stats.network_name = d.name;
+          this.newName = '';
+          this.tabMsg = 'Réseau renommé en « ' + d.name + ' ».'; this.tabErr = false;
+        } else {
+          this.tabMsg = d.error || 'Erreur.'; this.tabErr = true;
+        }
+      } catch { this.tabMsg = 'Erreur réseau.'; this.tabErr = true; }
+      finally { this.renaming = false; }
+    },
+  };
+};
+
+window.networksApp = function () {
+  return {
+    deleted: new Set(),
+    deleting: null,
+    msg: '',
+    msgErr: false,
+
+    async deleteNetwork(cid) {
+      if (!confirm('Supprimer définitivement ce réseau du RCC ?')) return;
+      this.deleting = cid;
+      this.msg = ''; this.msgErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/network', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ network_cid: cid }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.deleted.add(cid);
+          this.msg = 'Réseau supprimé.'; this.msgErr = false;
+        } else {
+          this.msg = d.error || 'Erreur.'; this.msgErr = true;
+        }
+      } catch { this.msg = 'Erreur réseau.'; this.msgErr = true; }
+      finally { this.deleting = null; }
+    },
+  };
+};
+
+window.alertsApp = function () {
+  return {
+    deleted: new Set(),
+    deleting: null,
+    msg: '',
+    msgErr: false,
+
+    async deleteAlert(id) {
+      if (!confirm('Supprimer cette alerte ?')) return;
+      this.deleting = id;
+      this.msg = ''; this.msgErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/alert', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ id }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.deleted.add(id);
+          this.msg = 'Alerte supprimée.'; this.msgErr = false;
+        } else {
+          this.msg = d.error || 'Erreur.'; this.msgErr = true;
+        }
+      } catch { this.msg = 'Erreur réseau.'; this.msgErr = true; }
+      finally { this.deleting = null; }
+    },
+  };
+};
+
+window.webUsersApp = function () {
+  return {
+    users:   [],
+    loading: true,
+    deleted: new Set(),
+    deleting: null,
+    msg: '',
+    msgErr: false,
+
+    async init() {
+      try {
+        const r = await fetch(BASE + '/admin/web-users', { headers: { 'X-Admin-Token': ADMIN_TOKEN } });
+        if (r.ok) this.users = await r.json();
+      } catch {}
+      finally { this.loading = false; }
+    },
+
+    async deleteUser(email) {
+      if (!confirm('Supprimer cet utilisateur et le retirer de tous ses réseaux web ?')) return;
+      this.deleting = email;
+      this.msg = ''; this.msgErr = false;
+      try {
+        const r = await fetch(BASE + '/admin/web-user', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+          body: JSON.stringify({ email }),
+        });
+        const d = await r.json();
+        if (r.ok) {
+          this.deleted.add(email);
+          this.msg = 'Utilisateur supprimé.'; this.msgErr = false;
+        } else {
+          this.msg = d.error || 'Erreur.'; this.msgErr = true;
+        }
+      } catch { this.msg = 'Erreur réseau.'; this.msgErr = true; }
+      finally { this.deleting = null; }
+    },
+  };
+};
+
+window.hubApp = function () {
+  return {
+    pubkey:  null,
+    loading: false,
+    msg:     '',
+    err:     '',
+    async init() {
+      try {
+        const r = await fetch(BASE + '/hub/status');
+        const d = await r.json();
+        this.pubkey = d.hub_pubkey || '(aucune — sodium manquant)';
+      } catch { this.pubkey = '(erreur de chargement)'; }
+    },
+    async reset() {
+      this.loading = true; this.msg = ''; this.err = '';
+      try {
+        const r = await fetch(BASE + '/admin/hub/reset-identity?token=' + encodeURIComponent(ADMIN_TOKEN), {
+          method: 'POST',
+          headers: { 'X-Admin-Token': ADMIN_TOKEN },
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          this.err = d.error || 'Erreur ' + r.status;
+        } else {
+          this.pubkey = d.hub_pubkey || '(sodium manquant — déployez vendor/paragonie)';
+          this.msg = 'Identité régénérée avec succès.';
+        }
+      } catch { this.err = 'Erreur réseau.'; }
+      finally { this.loading = false; }
+    },
+  };
+};
+</script>
+
+</body>
+</html>

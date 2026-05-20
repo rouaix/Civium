@@ -1,0 +1,43 @@
+<section class="page-section">
+  <div class="page-header">
+    <h1>Feuille de route</h1>
+    <p>Civium se construit de bas en haut, protocole de base d'abord, écosystème ensuite.</p>
+  </div>
+
+  <repeat group="{{ @phases }}" value="{{ @phase }}">
+  <div class="roadmap-item">
+    <div class="roadmap-item__timeline">
+      <check if="{{ @phase.is_first }}">
+        <true>
+          <div class="roadmap-dot roadmap-dot--active">★</div>
+        </true>
+        <false>
+          <div class="roadmap-dot roadmap-dot--inactive">{{ @phase.number }}</div>
+        </false>
+      </check>
+      <check if="{{ !@phase.is_last }}">
+        <true><div class="roadmap-line"></div></true>
+      </check>
+    </div>
+    <div class="roadmap-item__content">
+      <div class="roadmap-item__meta">
+        <span class="roadmap-item__label">{{ @phase.label }}</span>
+        <check if="{{ @phase.is_first }}">
+          <true><span class="status-badge status-badge--active">{{ @phase.status }}</span></true>
+          <false><span class="status-badge status-badge--inactive">{{ @phase.status }}</span></false>
+        </check>
+      </div>
+      <h2>{{ @phase.title }}</h2>
+      <ul>
+        <repeat group="{{ @phase.items }}" value="{{ @item }}">
+          <li>{{ @item }}</li>
+        </repeat>
+      </ul>
+    </div>
+  </div>
+  </repeat>
+
+  <div class="text-center" style="margin-top:2.5rem">
+    <a href="https://github.com/rouaix/Civium" target="_blank" class="text-link">Suivi détaillé sur GitHub →</a>
+  </div>
+</section>

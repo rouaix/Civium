@@ -1,0 +1,11 @@
+src/vendor/
+src/data/
+src/app/config.local.ini
+src/app/config.prod.ini
+src/tmp/
+src/error_log
+src/www/wasm/*.wasm
+*.log
+.env
+setup.php
+data/

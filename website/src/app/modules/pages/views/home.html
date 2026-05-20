@@ -1,0 +1,157 @@
+<!-- Hero -->
+<section class="hero">
+  <img src="{{ @BASE }}/public/img/civium_logo.svg" alt="Civium" class="hero__logo">
+  <div class="hero__badge">Protocole open-source en développement</div>
+  <h1>Des réseaux souverains,<br>connectés par choix.</h1>
+  <p class="hero__desc">
+    Civium remplace les réseaux sociaux sans céder vos données, sans algorithme, sans dépendance. Chaque communauté garde le contrôle total.
+  </p>
+  <div x-data="waitlist()">
+    <div class="waitlist">
+      <input
+        x-model="email"
+        type="email"
+        placeholder="votre@email.fr"
+        class="waitlist__input"
+        :disabled="sent"
+      >
+      <button
+        @click="submit()"
+        class="btn btn-primary"
+        :disabled="sent || loading"
+      >
+        <span x-show="!sent && !loading">Rejoindre la liste d'attente</span>
+        <span x-show="loading" style="display:none">Envoi…</span>
+        <span x-show="sent" style="display:none">Inscrit ✓</span>
+      </button>
+    </div>
+    <p x-show="error" x-text="error" style="display:none;color:#e74c3c;margin-top:.5rem;font-size:.9rem"></p>
+    <p class="waitlist__note">Pas de spam. Notification à la sortie de la version bêta uniquement.</p>
+  </div>
+</section>
+
+<!-- Problème → Solution -->
+<section class="section--alt">
+  <div class="section__inner">
+    <h2 class="section-title">Le problème que Civium résout</h2>
+    <div class="card-grid card-grid--3">
+      <div class="card">
+        <div class="card__icon">🔒</div>
+        <h3 class="card__title">Les plateformes centralisées</h3>
+        <p class="card__desc">Réseaux sociaux, messageries, outils collaboratifs riches en fonctionnalités, mais vos données leur appartiennent. Si la plateforme change de politique, votre communauté disparaît avec elle.</p>
+      </div>
+      <div class="card">
+        <div class="card__icon">🏝️</div>
+        <h3 class="card__title">Les outils auto-hébergés</h3>
+        <p class="card__desc">Nextcloud, Mattermost, Discourse souverains, mais cloisonnés. Chaque outil est une île. Pas d'interopérabilité, pas de gouvernance collective.</p>
+      </div>
+      <div class="card card--dark">
+        <div class="card__icon">⚡</div>
+        <h3 class="card__title">Civium la troisième voie</h3>
+        <p class="card__desc">Toutes les fonctionnalités des plateformes centralisées, avec la souveraineté des outils auto-hébergés, et l'interopérabilité que ni l'un ni l'autre ne propose.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Le contrôle -->
+<section class="section">
+  <div class="section__inner">
+    <h2 class="section-title section-title--tight">Le contrôle, c'est quoi concrètement ?</h2>
+    <p class="section-subtitle">Les plateformes vous offrent des outils en échange de vos données. Civium vous offre les mêmes outils sans cette contrepartie.</p>
+    <div class="feature-grid">
+      <div class="feature-item">
+        <span class="feature-item__icon">🗄️</span>
+        <div>
+          <h3>Vos données sur votre nœud</h3>
+          <p>Personne n'y a accès sans votre permission explicite.</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="feature-item__icon">📋</span>
+        <div>
+          <h3>Vos règles</h3>
+          <p>Chaque communauté définit sa gouvernance, ses cercles de confiance, ses connexions.</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="feature-item__icon">🔑</span>
+        <div>
+          <h3>Votre identité</h3>
+          <p>Un identifiant cryptographique qui vous appartient, portable entre tous les réseaux.</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="feature-item__icon">🧩</span>
+        <div>
+          <h3>Votre écosystème</h3>
+          <p>Vous choisissez vos plugins, vous ne subissez pas les fonctionnalités imposées.</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="feature-item__icon">🛡️</span>
+        <div>
+          <h3>Votre indépendance</h3>
+          <p>Si Civium disparaît demain, votre nœud continue de fonctionner.</p>
+        </div>
+      </div>
+      <div class="feature-item">
+        <span class="feature-item__icon">🔗</span>
+        <div>
+          <h3>Vos connexions</h3>
+          <p>Chaque lien entre réseaux est explicite, contractualisé et révocable.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Cas d'usage aperçu -->
+<section class="section--alt">
+  <div class="section__inner">
+    <h2 class="section-title">Pour qui ?</h2>
+    <div class="card-grid card-grid--4">
+      <a href="{{ @BASE }}/cas-d-usage#famille" class="card card--sm card--link">
+        <div class="card__icon--sm">👨‍👩‍👧‍👦</div>
+        <h3 class="card__title--sm">Famille</h3>
+        <p class="card__desc">Album photo, agenda, documents, messagerie en local, sans Google ni WhatsApp.</p>
+      </a>
+      <a href="{{ @BASE }}/cas-d-usage#association" class="card card--sm card--link">
+        <div class="card__icon--sm">🤝</div>
+        <h3 class="card__title--sm">Association</h3>
+        <p class="card__desc">Membres, votes, agenda, comptabilité, appels à projets, gouvernance réelle.</p>
+      </a>
+      <a href="{{ @BASE }}/cas-d-usage#quartier" class="card card--sm card--link">
+        <div class="card__icon--sm">🏘️</div>
+        <h3 class="card__title--sm">Quartier</h3>
+        <p class="card__desc">Annuaire de voisinage, troc, événements, concertation citoyenne.</p>
+      </a>
+      <a href="{{ @BASE }}/cas-d-usage#entreprise" class="card card--sm card--link">
+        <div class="card__icon--sm">🏢</div>
+        <h3 class="card__title--sm">Entreprise</h3>
+        <p class="card__desc">Projets, documents, RH, communication interne, chaque accès audité.</p>
+      </a>
+    </div>
+    <div class="text-center" style="margin-top:2rem">
+      <a href="{{ @BASE }}/cas-d-usage" class="text-link">Voir tous les cas d'usage →</a>
+    </div>
+  </div>
+</section>
+
+<!-- CTA final -->
+<section class="cta-section">
+  <h2>Suivre le projet</h2>
+  <p>Civium est en développement actif. Inscrivez-vous pour être notifié à la sortie de la version bêta, ou contribuez directement sur GitHub.</p>
+  <div class="btn-group">
+    <a href="#"
+       @click.prevent="document.querySelector('.waitlist__input').focus(); window.scrollTo({top:0,behavior:'smooth'})"
+       class="btn btn-primary">
+      Rejoindre la liste d'attente
+    </a>
+    <a href="https://github.com/rouaix/Civium" target="_blank" class="btn btn-outline">
+      Voir sur GitHub
+    </a>
+  </div>
+</section>
+
+<script src="{{ @BASE }}/public/js/home.js"></script>

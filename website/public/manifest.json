@@ -1,0 +1,32 @@
+{
+  "name": "Civium",
+  "short_name": "Civium",
+  "description": "Votre réseau souverain — messagerie, gouvernance et annuaire décentralisés.",
+  "start_url": "/civium/app",
+  "display": "standalone",
+  "background_color": "#0f1117",
+  "theme_color": "#6366f1",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/civium/public/img/civium_logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/civium/public/img/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ],
+  "categories": ["social", "productivity", "communication"],
+  "shortcuts": [
+    {
+      "name": "Ouvrir l'application",
+      "short_name": "App",
+      "url": "/civium/app",
+      "icons": [{ "src": "/civium/public/img/favicon.svg", "sizes": "any" }]
+    }
+  ]
+}

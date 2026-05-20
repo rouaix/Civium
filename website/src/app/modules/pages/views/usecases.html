@@ -1,0 +1,29 @@
+<section class="page-section">
+  <div class="page-header">
+    <h1>Cas d'usage</h1>
+    <p>Civium s'adapte à toute communauté qui veut garder le contrôle de ses outils numériques.</p>
+  </div>
+
+  <repeat group="{{ @cases }}" value="{{ @case }}">
+  <div id="{{ @case.id }}" class="usecase">
+    <div class="usecase__header">
+      <span class="usecase__emoji">{{ @case.emoji | raw }}</span>
+      <div class="usecase__info">
+        <h2>{{ @case.title }}</h2>
+        <p>{{ @case.subtitle }}</p>
+      </div>
+    </div>
+    <p class="usecase__desc">{{ @case.desc }}</p>
+    <ul class="usecase__features">
+      <repeat group="{{ @case.features }}" value="{{ @feature }}">
+        <li>{{ @feature }}</li>
+      </repeat>
+    </ul>
+  </div>
+  </repeat>
+
+  <div class="info-box">
+    <p>Civium peut aussi servir une institution, une école, un hôpital ou une collectivité territoriale, toute structure qui veut une infrastructure numérique souveraine.</p>
+    <a href="{{ @BASE }}/comment-ca-marche" class="text-link">Comprendre le protocole →</a>
+  </div>
+</section>

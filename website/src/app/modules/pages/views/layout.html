@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="fr" data-base="{{ @BASE }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ @title }}</title>
+  <meta name="description" content="Civium est un protocole de réseaux souverains. Chaque communauté garde le contrôle total de ses données, de ses règles et de ses connexions.">
+  <meta property="og:title" content="{{ @title }}">
+  <meta property="og:description" content="Des réseaux souverains, connectés par choix. L'alternative aux plateformes centralisées.">
+  <meta property="og:image" content="{{ @BASE }}/public/img/og.png">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="{{ @BASE }}/public/img/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ @BASE }}/public/css/style.css">
+  <script defer
+    src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+    integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+    crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <nav class="nav" x-data="{ open: false }">
+    <div class="nav__inner">
+      <a href="{{ @BASE }}/" class="nav__logo">
+        <img src="{{ @BASE }}/public/img/civium_logo.svg" alt="Civium">
+        Civium
+      </a>
+      <div class="nav__links">
+        <a href="{{ @BASE }}/comment-ca-marche">Comment ça marche</a>
+        <a href="{{ @BASE }}/cas-d-usage">Cas d'usage</a>
+        <a href="{{ @BASE }}/feuille-de-route">Feuille de route</a>
+        <a href="https://github.com/rouaix/Civium" target="_blank">GitHub</a>
+      </div>
+      <button class="nav__toggle" @click="open = !open" aria-label="Menu">
+        <svg x-show="!open" width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        <svg x-show="open"  width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <main>
+    {{ @content | raw }}
+  </main>
+
+  <footer>
+    <div class="footer__inner">
+      <div>© 2026 Civium : Protocole ouvert, données souveraines.</div>
+      <div class="footer__links">
+        <a href="https://github.com/rouaix/Civium" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
