@@ -315,6 +315,14 @@ export default function Dashboard() {
   // Settings panel
   const [showSettings, setShowSettings] = useState(false);
   const [identity, setIdentity] = useState<{ cid_short: string; cid_full: string; secret_b58: string } | null>(null);
+
+  // Multi-compte
+  type IdentityItem = { id: number; cid_short: string; cid_full: string; display_name: string; active: boolean; created_at: number };
+  const [identityList, setIdentityList] = useState<IdentityItem[]>([]);
+  const [showAccountSwitcher, setShowAccountSwitcher] = useState(false);
+  const [addAccountSecret, setAddAccountSecret] = useState("");
+  const [addAccountError, setAddAccountError] = useState("");
+  const [addingAccount, setAddingAccount] = useState(false);
   const [secretVisible, setSecretVisible] = useState(false);
   const [lastBackup, setLastBackup] = useState<string | null>(null);
   const [backingUp, setBackingUp] = useState(false);
@@ -452,6 +460,7 @@ export default function Dashboard() {
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
     tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_show")
       .then(setIdentity).catch(() => {});
+    tauriInvoke<IdentityItem[]>("identity_list").then(setIdentityList).catch(() => {});
     tauriInvoke<string>("profile_email_get")
       .then((e) => { setProfileEmail(e); setProfileEmailEdit(e); }).catch(() => {});
     refreshOutboxCounts();
@@ -2092,15 +2101,22 @@ export default function Dashboard() {
         <div className="px-4 py-3 border-b border-civium-700">
           <p className="text-xs font-semibold text-civium-400 uppercase tracking-wider mb-2">Mon nœud</p>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <button
+              className="flex items-center gap-2 flex-1 min-w-0 text-left hover:bg-civium-700 rounded-lg px-1 py-0.5 transition-colors"
+              title="Changer de compte"
+              onClick={() => setShowAccountSwitcher((v) => !v)}
+            >
               <span
                 aria-label={nodeStatus.running ? "Nœud en ligne" : "Nœud hors ligne"}
                 className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`}
               />
-              <span className="text-xs text-civium-100 font-mono truncate max-w-[110px]">
+              <span className="text-xs text-civium-100 font-mono truncate max-w-[100px]">
                 {identity ? identity.cid_short : "…"}
               </span>
-            </div>
+              {identityList.length > 1 && (
+                <span className="text-xs text-civium-400 ml-auto flex-shrink-0">▾</span>
+              )}
+            </button>
             <button
               onClick={() => {
                 const next = !showSettings;
@@ -2112,7 +2128,7 @@ export default function Dashboard() {
                   tauriInvoke<string | null>("db_backup_last").then((ts) => setLastBackup(ts));
                 }
               }}
-              className={`text-xs px-2 py-1 rounded-lg transition-colors ${
+              className={`text-xs px-2 py-1 rounded-lg transition-colors ml-1 ${
                 showSettings ? "bg-civium-600 text-white" : "text-gray-400 hover:bg-civium-700"
               }`}
               title="Paramètres du nœud"
@@ -2120,6 +2136,97 @@ export default function Dashboard() {
               ⚙
             </button>
           </div>
+
+          {/* Compte switcher */}
+          {showAccountSwitcher && (
+            <div className="mt-2 bg-civium-800 rounded-xl p-2 space-y-1">
+              {identityList.map((acc) => (
+                <div key={acc.id} className="flex items-center gap-2">
+                  <button
+                    className={`flex-1 text-left px-2 py-1 rounded-lg text-xs transition-colors ${
+                      acc.active ? "bg-civium-600 text-white" : "text-civium-200 hover:bg-civium-700"
+                    }`}
+                    disabled={acc.active}
+                    onClick={async () => {
+                      try {
+                        const newId = await tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_switch", { id: acc.id });
+                        setIdentity(newId);
+                        setIdentityList((list) => list.map((a) => ({ ...a, active: a.id === acc.id })));
+                        setShowAccountSwitcher(false);
+                        setNetworks([]);
+                        tauriInvoke<NetworkInfo[]>("network_list").then(setNetworks);
+                      } catch (e: unknown) {
+                        showToast((e as Error).message ?? String(e), "error");
+                      }
+                    }}
+                  >
+                    <span className="font-mono">{acc.display_name || acc.cid_short}</span>
+                    {acc.active && <span className="ml-1 text-green-300">✓</span>}
+                  </button>
+                  {!acc.active && (
+                    <button
+                      className="text-red-400 hover:text-red-300 text-xs px-1"
+                      title="Supprimer ce compte"
+                      onClick={async () => {
+                        if (!confirm(`Supprimer le compte ${acc.cid_short} ?`)) return;
+                        try {
+                          await tauriInvoke("identity_delete_account", { id: acc.id });
+                          setIdentityList((list) => list.filter((a) => a.id !== acc.id));
+                        } catch (e: unknown) {
+                          showToast((e as Error).message ?? String(e), "error");
+                        }
+                      }}
+                    >✕</button>
+                  )}
+                </div>
+              ))}
+
+              {/* Ajouter un compte */}
+              <div className="pt-1 border-t border-civium-700">
+                {!addingAccount ? (
+                  <button
+                    className="w-full text-left text-xs text-civium-400 hover:text-civium-200 px-2 py-1 rounded-lg hover:bg-civium-700 transition-colors"
+                    onClick={() => setAddingAccount(true)}
+                  >
+                    + Ajouter un compte
+                  </button>
+                ) : (
+                  <div className="space-y-1">
+                    <input
+                      type="text"
+                      className="w-full text-xs bg-civium-900 border border-civium-600 rounded-lg px-2 py-1 text-civium-100 placeholder-civium-500 focus:outline-none focus:border-civium-400"
+                      placeholder="Clé secrète (secret_b58)…"
+                      value={addAccountSecret}
+                      onChange={(e) => setAddAccountSecret(e.target.value)}
+                      autoFocus
+                    />
+                    {addAccountError && <p className="text-xs text-red-400 px-1">{addAccountError}</p>}
+                    <div className="flex gap-1">
+                      <button
+                        className="flex-1 text-xs bg-civium-600 hover:bg-civium-500 text-white rounded-lg px-2 py-1 transition-colors"
+                        onClick={async () => {
+                          setAddAccountError("");
+                          try {
+                            const item = await tauriInvoke<IdentityItem>("identity_add_from_secret", { secretB58: addAccountSecret.trim() });
+                            setIdentityList((list) => [...list, item]);
+                            setAddAccountSecret("");
+                            setAddingAccount(false);
+                          } catch (e: unknown) {
+                            setAddAccountError((e as Error).message ?? String(e));
+                          }
+                        }}
+                        disabled={!addAccountSecret.trim()}
+                      >Importer</button>
+                      <button
+                        className="text-xs text-civium-400 hover:text-civium-200 px-2 py-1"
+                        onClick={() => { setAddingAccount(false); setAddAccountSecret(""); setAddAccountError(""); }}
+                      >Annuler</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Mes réseaux header */}

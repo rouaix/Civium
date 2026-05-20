@@ -27,6 +27,16 @@ pub struct IdentityInfo {
 }
 
 #[derive(Serialize)]
+pub struct IdentityListItem {
+    pub id: i64,
+    pub cid_short: String,
+    pub cid_full: String,
+    pub display_name: String,
+    pub active: bool,
+    pub created_at: u64,
+}
+
+#[derive(Serialize)]
 pub struct NetworkInfo {
     pub cid_short: String,
     pub cid_full: String,
@@ -127,7 +137,7 @@ pub fn identity_show(app: AppHandle) -> Result<IdentityInfo, String> {
 pub fn identity_restore_from_secret(app: AppHandle, secret_b58: String) -> Result<IdentityInfo, String> {
     let conn = open(&app)?;
     if store::identity_exists(&conn) {
-        return Err("Une identité existe déjà sur cet appareil. Supprimez-la d'abord.".into());
+        return Err("Une identité existe déjà sur cet appareil. Utilisez « Ajouter un compte » pour importer un second profil.".into());
     }
     let keypair = CiviumKeypair::from_secret_b58(&secret_b58).map_err(|e| e.to_string())?;
     let cid = keypair.cid();
@@ -137,6 +147,72 @@ pub fn identity_restore_from_secret(app: AppHandle, secret_b58: String) -> Resul
         cid_full: cid.full().to_string(),
         secret_b58: keypair.secret_b58(),
     })
+}
+
+/// List all stored identities (for the account switcher UI).
+#[tauri::command]
+pub fn identity_list(app: AppHandle) -> Result<Vec<IdentityListItem>, String> {
+    let conn = open(&app)?;
+    let records = store::list_identities(&conn).map_err(|e| e.to_string())?;
+    Ok(records.into_iter().map(|r| IdentityListItem {
+        id:           r.id,
+        cid_short:    r.cid_short,
+        cid_full:     r.cid_full,
+        display_name: r.display_name,
+        active:       r.active,
+        created_at:   r.created_at,
+    }).collect())
+}
+
+/// Add a second identity from a secret key (does NOT switch to it).
+#[tauri::command]
+pub fn identity_add_from_secret(app: AppHandle, secret_b58: String) -> Result<IdentityListItem, String> {
+    let conn = open(&app)?;
+    let keypair = CiviumKeypair::from_secret_b58(&secret_b58).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    // Prevent duplicates.
+    let records = store::list_identities(&conn).map_err(|e| e.to_string())?;
+    if records.iter().any(|r| r.cid_full == cid.full()) {
+        return Err("Ce compte est déjà enregistré sur cet appareil.".into());
+    }
+    let id = store::add_identity(&conn, &keypair).map_err(|e| e.to_string())?;
+    Ok(IdentityListItem {
+        id,
+        cid_short:    cid.short().to_string(),
+        cid_full:     cid.full().to_string(),
+        display_name: String::new(),
+        active:       false,
+        created_at:   std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+    })
+}
+
+/// Switch the active identity. Returns the new active identity info.
+#[tauri::command]
+pub fn identity_switch(app: AppHandle, id: i64) -> Result<IdentityInfo, String> {
+    let conn = open(&app)?;
+    store::switch_active_identity(&conn, id).map_err(|e| e.to_string())?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    Ok(IdentityInfo {
+        cid_short:  cid.short().to_string(),
+        cid_full:   cid.full().to_string(),
+        secret_b58: keypair.secret_b58(),
+    })
+}
+
+/// Delete an account (fails if it is the last one).
+#[tauri::command]
+pub fn identity_delete_account(app: AppHandle, id: i64) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::delete_account(&conn, id).map_err(|e| e.to_string())
+}
+
+/// Set display name for an identity.
+#[tauri::command]
+pub fn identity_set_display_name(app: AppHandle, id: i64, name: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::set_identity_display_name(&conn, id, &name).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3042,7 +3118,9 @@ pub struct DocumentInfo {
     pub title: String,
     pub body: String,
     pub version: u32,
+    pub lamport_clock: u64,
     pub created_by: String,
+    pub last_edited_by: String,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -3058,7 +3136,9 @@ fn doc_to_info(doc: Document, group_key: &GroupKey) -> DocumentInfo {
         title: doc.title,
         body,
         version: doc.version,
+        lamport_clock: doc.lamport_clock,
         created_by: doc.created_by,
+        last_edited_by: doc.last_edited_by,
         created_at: doc.created_at,
         updated_at: doc.updated_at,
     }
@@ -3101,7 +3181,7 @@ pub fn document_list(app: AppHandle, network_cid_short: String) -> Result<Vec<Do
     Ok(docs.into_iter().map(|d| doc_to_info(d, &group_key)).collect())
 }
 
-/// Update the title and/or body of an existing document.
+/// Update the title and/or body of an existing document (LWW — Lamport clock incremented).
 #[tauri::command]
 pub fn document_update(
     app: AppHandle,
@@ -3111,17 +3191,18 @@ pub fn document_update(
     body: String,
 ) -> Result<DocumentInfo, String> {
     let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
     let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
-    let mut doc = store::get_document(&conn, &network_cid_short, &doc_id)
+    let existing = store::get_document(&conn, &network_cid_short, &doc_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("document '{doc_id}' introuvable"))?;
     let (nonce_b58, body_ciphertext) = group_key.encrypt(body.as_bytes()).map_err(|e| e.to_string())?;
-    doc.title = title;
-    doc.nonce_b58 = nonce_b58;
-    doc.body_ciphertext = body_ciphertext;
-    doc.version += 1;
-    doc.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let doc = existing.update(
+        title, nonce_b58, body_ciphertext,
+        keypair.cid().short().to_string(),
+        0, // remote_clock — local edit, no remote clock to merge
+    );
     store::save_document(&conn, &doc).map_err(|e| e.to_string())?;
     Ok(doc_to_info(doc, &group_key))
 }

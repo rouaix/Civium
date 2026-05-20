@@ -202,13 +202,28 @@ CREATE TABLE IF NOT EXISTS muted_members (
 );
 ";
 
-// Add new migrations here as MIGRATION_005, MIGRATION_006, etc.
+const MIGRATION_005: &str = "
+CREATE TABLE IF NOT EXISTS identities (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    secret_b58   TEXT    NOT NULL,
+    cid_short    TEXT    NOT NULL,
+    cid_full     TEXT    NOT NULL,
+    display_name TEXT    NOT NULL DEFAULT '',
+    active       INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+INSERT OR IGNORE INTO identities (secret_b58, cid_short, cid_full, active)
+SELECT secret_b58, cid_short, cid_full, 1 FROM identity WHERE id = 1;
+";
+
+// Add new migrations here as MIGRATION_006, MIGRATION_007, etc.
 // Each migration runs exactly once per database, in order.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_initial", MIGRATION_001),
     ("002_dismissed_alerts", MIGRATION_002),
     ("003_invitations", MIGRATION_003),
     ("004_muted_members", MIGRATION_004),
+    ("005_multi_identity", MIGRATION_005),
 ];
 
 fn apply_migrations(conn: &Connection) -> Result<()> {
@@ -322,32 +337,134 @@ pub fn open_db(data_dir: &Path) -> Result<Connection> {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone)]
+pub struct IdentityRecord {
+    pub id: i64,
+    pub cid_short: String,
+    pub cid_full: String,
+    pub secret_b58: String,
+    pub display_name: String,
+    pub active: bool,
+    pub created_at: u64,
+}
+
 pub fn identity_exists(conn: &Connection) -> bool {
+    // Check new multi-identity table first, fall back to legacy table.
+    let in_new = conn.query_row(
+        "SELECT COUNT(*) FROM identities", [], |r| r.get::<_, i64>(0)
+    ).unwrap_or(0) > 0;
+    if in_new { return true; }
     conn.query_row("SELECT COUNT(*) FROM identity", [], |r| r.get::<_, i64>(0))
-        .unwrap_or(0)
-        > 0
+        .unwrap_or(0) > 0
 }
 
 pub fn save_identity(conn: &Connection, keypair: &CiviumKeypair) -> Result<()> {
     let cid = keypair.cid();
+    // Legacy table (kept for older tooling / CLI compatibility).
     conn.execute(
         "INSERT OR REPLACE INTO identity (id, secret_b58, cid_short, cid_full)
          VALUES (1, ?1, ?2, ?3)",
+        params![keypair.secret_b58(), cid.short(), cid.full()],
+    )?;
+    // New multi-identity table: insert as the active account if none exists yet.
+    conn.execute(
+        "INSERT OR IGNORE INTO identities (secret_b58, cid_short, cid_full, active)
+         VALUES (?1, ?2, ?3, 1)",
         params![keypair.secret_b58(), cid.short(), cid.full()],
     )?;
     Ok(())
 }
 
 pub fn load_identity(conn: &Connection) -> Result<CiviumKeypair> {
-    let secret: String = conn
-        .query_row("SELECT secret_b58 FROM identity WHERE id = 1", [], |r| r.get(0))
-        .context("no identity found")?;
+    let secret = load_secret_b58(conn)?;
     CiviumKeypair::from_secret_b58(&secret).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 pub fn load_secret_b58(conn: &Connection) -> Result<String> {
+    // Prefer the new identities table (active account).
+    if let Ok(s) = conn.query_row(
+        "SELECT secret_b58 FROM identities WHERE active = 1 LIMIT 1", [], |r| r.get::<_, String>(0)
+    ) {
+        return Ok(s);
+    }
+    // Fall back to legacy table for installations that haven't run migration 005 yet.
     conn.query_row("SELECT secret_b58 FROM identity WHERE id = 1", [], |r| r.get(0))
         .context("no identity found")
+}
+
+pub fn list_identities(conn: &Connection) -> Result<Vec<IdentityRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, cid_short, cid_full, secret_b58, display_name, active, created_at
+         FROM identities ORDER BY active DESC, id ASC"
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(IdentityRecord {
+            id:           r.get(0)?,
+            cid_short:    r.get(1)?,
+            cid_full:     r.get(2)?,
+            secret_b58:   r.get(3)?,
+            display_name: r.get(4)?,
+            active:       r.get::<_, i64>(5)? != 0,
+            created_at:   r.get::<_, i64>(6)? as u64,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().context("list_identities")
+}
+
+pub fn add_identity(conn: &Connection, keypair: &CiviumKeypair) -> Result<i64> {
+    let cid = keypair.cid();
+    conn.execute(
+        "INSERT INTO identities (secret_b58, cid_short, cid_full, active) VALUES (?1, ?2, ?3, 0)",
+        params![keypair.secret_b58(), cid.short(), cid.full()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn switch_active_identity(conn: &Connection, id: i64) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM identities WHERE id = ?1", params![id], |r| r.get(0)
+    ).context("switch_active_identity: id not found")?;
+    if exists == 0 { return Err(anyhow::anyhow!("Compte introuvable (id={id})")); }
+    conn.execute("UPDATE identities SET active = 0", [])?;
+    conn.execute("UPDATE identities SET active = 1 WHERE id = ?1", params![id])?;
+    // Keep legacy table in sync.
+    let secret: String = conn.query_row(
+        "SELECT secret_b58 FROM identities WHERE id = ?1", params![id], |r| r.get(0)
+    )?;
+    let kp = CiviumKeypair::from_secret_b58(&secret).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let cid = kp.cid();
+    conn.execute(
+        "INSERT OR REPLACE INTO identity (id, secret_b58, cid_short, cid_full) VALUES (1, ?1, ?2, ?3)",
+        params![secret, cid.short(), cid.full()],
+    )?;
+    Ok(())
+}
+
+pub fn delete_account(conn: &Connection, id: i64) -> Result<()> {
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM identities", [], |r| r.get(0))?;
+    if total <= 1 {
+        return Err(anyhow::anyhow!("Impossible de supprimer le dernier compte."));
+    }
+    let was_active: i64 = conn.query_row(
+        "SELECT active FROM identities WHERE id = ?1", params![id], |r| r.get(0)
+    ).unwrap_or(0);
+    conn.execute("DELETE FROM identities WHERE id = ?1", params![id])?;
+    if was_active != 0 {
+        // Activate the first remaining account.
+        conn.execute(
+            "UPDATE identities SET active = 1 WHERE id = (SELECT id FROM identities ORDER BY id ASC LIMIT 1)",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn set_identity_display_name(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE identities SET display_name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
+    Ok(())
 }
 
 pub fn dismiss_alert(conn: &Connection, alert_type: &str, emitted_at: u64) -> Result<()> {

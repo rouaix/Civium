@@ -68,14 +68,12 @@
 - ~~Côté PHP : ajouter une commande admin pour supprimer un message signalé sur le hub~~ **Fait** : `DELETE /admin/hub/message` dans AdminController + bouton "Supprimer" dans admin.html.
 
 
-## Pièces jointes dans les messages — Priorité haute
+## ~~Pièces jointes dans les messages~~ — **Fait**
 
-> Item déjà listé dans la section Desktop. Détail technique pour l'implémentation :
-
-- Ajouter `MessageKind::File { filename, mime_type, size_bytes, chunks: Vec<EncryptedChunk> }` dans `civium-core/src/messaging/message.rs` (actuellement seuls Thread, Direct, E2E existent)
-- Implémenter le chunking et chiffrement des binaires avec la clé de groupe (cercles 0-2) ou la paire de clés (cercle 3)
-- Définir une taille maximale de pièce jointe (suggestion : 50 Mo) et la faire respecter côté Tauri et PHP
-- Ajouter l'UI d'envoi de fichier dans le Dashboard (bouton trombone, preview image, lecteur audio/vidéo inline)
+- ~~`MessageKind::File { filename, mime_type, size_bytes, chunks }`~~ : défini dans `civium-core/src/messaging/message.rs`.
+- ~~Chunking + chiffrement~~ : `message_send_file` / `message_send_file_path` + `GroupKey::encrypt_chunk` (base64 O(n)).
+- ~~Taille max~~ : 50 Mo via IPC, 500 Mo via temp path. Validé côté Tauri.
+- ~~UI Dashboard~~ : bouton 📎, preview image inline, lecteur audio/vidéo, PDF iframe, téléchargement.
 
 
 ## Export des données utilisateur — Priorité haute
@@ -127,11 +125,12 @@
 - ~~Ajouter un service worker pour le fonctionnement hors-ligne du client web~~ **Fait** : `website/src/www/sw.js` — cache-first pour assets statiques, network-first pour `/civium/api/`, enregistré dans `app.html`.
 
 
-## NAT traversal — Circuit Relay — Priorité haute
+## ~~NAT traversal — Circuit Relay~~ — **Partiellement fait**
 
-- Deux nœuds derrière NAT sans IP publique ne peuvent pas se connecter directement — `libp2p-circuit-relay` et `libp2p-autonat` sont absents des features de `civium-core/Cargo.toml`
-- Ajouter les features `circuit-relay` et `autonat` dans `civium-core` pour permettre le relay via un nœud tiers (ex. le nœud bootstrap Civium) quand la connexion directe échoue
-- Documenter le workaround actuel (Cloudflare Tunnel via `external_addr`) dans la CONTRIBUTING.md en attendant l'implémentation native
+- ~~AutoNAT~~ : `libp2p::autonat` activé dans `CiviumBehaviour` — détection du type de NAT.
+- ~~`relay` et `autonat` dans Cargo.toml~~ : features présentes.
+- ~~Documenter workaround Cloudflare Tunnel~~ : **Fait** dans `CONTRIBUTING.md`.
+- **Circuit relay natif** : différé — incompatible avec `with_websocket()` dans libp2p 0.55 (voir commentaire dans `behaviour.rs`). À activer quand libp2p ≥ 0.56 résoudra le conflit.
 
 ## Support Linux — Priorité haute
 
@@ -241,12 +240,12 @@
 - Ajouter une URL d'abonnement CalDAV ou webcal pour une synchronisation en continu (optionnel — backlog)
 
 
-## Multi-compte / multi-identité — Priorité haute
+## ~~Multi-compte / multi-identité~~ — **Fait**
 
-- Actuellement la table `identity` impose `id = 1` — un seul compte par installation, aucun switch possible
-- Permettre plusieurs profils sur le même nœud : modifier le schéma SQLite pour supporter N identités avec une notion d'identité "active"
-- Ajouter dans le Dashboard un sélecteur de profil (icône utilisateur → "Changer de compte") et un bouton "Ajouter un compte"
-- Utile pour les cas famille (plusieurs membres sur le même ordinateur) ou test/développement
+- ~~Migration 005~~ : nouvelle table `identities` (id AUTOINCREMENT, active, display_name) ; ligne existante migrée automatiquement depuis la table `identity`.
+- ~~Store~~ : `list_identities`, `add_identity`, `switch_active_identity`, `delete_account`, `set_identity_display_name`.
+- ~~Commandes Tauri~~ : `identity_list`, `identity_add_from_secret`, `identity_switch`, `identity_delete_account`, `identity_set_display_name`.
+- ~~Dashboard~~ : sélecteur de compte dans la sidebar (▾ à côté du CID), switch immédiat + rechargement des réseaux, formulaire "Ajouter un compte" (import par secret_b58), suppression des comptes inactifs.
 
 
 ## Mode observateur dans un réseau — Priorité basse
@@ -323,13 +322,12 @@
 - Fichier : `desktop/civium-ffi/src/lib.rs`
 
 
-## Documents — absence de CRDT — Priorité haute
+## ~~Documents — absence de CRDT~~ — **Fait (LWW)**
 
-- `desktop/civium-core/src/document/mod.rs` : le champ `version: u32` est un simple compteur, pas un CRDT — si deux membres éditent le même document hors-ligne, la resynchronisation écrase silencieusement l'une des versions
-- Le module de messagerie utilise un Mailbox G-Set CRDT (`civium-core/src/messaging/mailbox.rs`) mais les documents n'ont aucun équivalent
-- Implémenter au minimum un LWW-Register (Last-Write-Wins) sur les documents avec horodatage logique (Lamport clock), ou ajouter un flag de conflit à résoudre manuellement
-- Pas de limite de taille sur les documents — un document de plusieurs centaines de Mo est chiffré entièrement en mémoire
-- Fichier : `desktop/civium-core/src/document/mod.rs`
+- ~~LWW-Register~~ : champ `lamport_clock: u64` ajouté à `Document` ; méthode `Document::merge()` (clock plus élevé gagne, tiebreak par id lexicographique) ; `Document::update()` incrémente le clock.
+- ~~`last_edited_by`~~ : nouveau champ exposé dans `DocumentInfo`.
+- `document_update` utilise maintenant `doc.update(...)` au lieu de mutation directe.
+- Limite de taille : non encore implémentée (document complet en mémoire).
 
 
 ## Dashboard — chargement mémoire non borné — Priorité haute
