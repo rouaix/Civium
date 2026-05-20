@@ -7,6 +7,8 @@ export default {
         civium: {
           50:  "#f0f4ff",
           100: "#e0e9ff",
+          300: "#93a8f4",
+          400: "#6b85f0",
           500: "#4f6ef7",
           600: "#3a56e8",
           700: "#2d44c9",
@@ -15,5 +17,5 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };

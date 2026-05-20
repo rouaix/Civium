@@ -1,0 +1,41 @@
+name: PHP CI
+
+on:
+  push:
+    paths:
+      - 'website/**'
+      - '.github/workflows/php.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer, phpstan, php-cs-fixer
+          coverage: none
+
+      - name: Install Composer deps
+        working-directory: website
+        run: composer install --no-progress --no-interaction --prefer-dist
+        continue-on-error: true
+
+      - name: PHP syntax check
+        run: find website/src -name "*.php" -exec php -l {} \; | grep -v "^No syntax errors"
+        continue-on-error: true
+
+      - name: PHP CS Fixer (dry run)
+        run: php-cs-fixer fix website/src --dry-run --diff --rules=@PSR12
+        continue-on-error: true
+
+      - name: PHPStan analysis
+        run: phpstan analyse website/src --level=5
+        continue-on-error: true

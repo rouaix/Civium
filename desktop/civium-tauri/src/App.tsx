@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { tauriInvoke, isTauriContext } from "./tauri";
 import Onboarding from "./screens/Onboarding";
 import Dashboard from "./screens/Dashboard";
+import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 
 type AppState = "loading" | "onboarding" | "dashboard";
 
@@ -26,6 +27,20 @@ function NoTauri() {
   );
 }
 
+function handleDeepLink(urls: string[]) {
+  for (const raw of urls) {
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== "civium:") continue;
+      const action = url.hostname;
+      const param = url.pathname.replace(/^\//, "");
+      window.dispatchEvent(new CustomEvent("civium:deep-link", { detail: { action, param } }));
+    } catch {
+      // ignore malformed URLs
+    }
+  }
+}
+
 export default function App() {
   const [state, setState] = useState<AppState>("loading");
   const tauri = isTauriContext();
@@ -35,6 +50,9 @@ export default function App() {
     tauriInvoke<boolean>("identity_exists")
       .then((exists) => setState(exists ? "dashboard" : "onboarding"))
       .catch(() => setState("onboarding"));
+
+    // Handle deep links — both those that launched the app and future ones.
+    onOpenUrl(handleDeepLink).catch(() => {});
   }, [tauri]);
 
   if (!tauri) return <NoTauri />;

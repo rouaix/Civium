@@ -134,7 +134,11 @@ enum NetworkCmd {
         private: bool,
     },
     /// List networks stored locally.
-    List,
+    List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show details of a network.
     Info {
         /// Network CID short (e.g. civ1AbCdEfGh).
@@ -201,6 +205,15 @@ enum MemberCmd {
         /// Also show members of active connected networks (if their APC permits).
         #[arg(long, default_value = "false")]
         connected: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of entries to show (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
     /// Admit a pending member (admin only).
     Admit {
@@ -303,6 +316,15 @@ enum MsgCmd {
         /// Show only direct messages with this member CID short.
         #[arg(long)]
         with: Option<String>,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of messages to show (0 = all).
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
 }
 
@@ -400,6 +422,15 @@ enum GovernanceCmd {
         /// Network CID short.
         #[arg(long)]
         network: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of proposals to show (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
     /// Cast a vote on a proposal.
     Vote {
@@ -641,6 +672,15 @@ enum AgendaCmd {
     List {
         #[arg(long)]
         network: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of events to show (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
     /// Delete an event by ID prefix.
     Delete {
@@ -662,6 +702,15 @@ enum ActivityCmd {
         /// Show only unread notifications.
         #[arg(long)]
         unread: bool,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of events to show (0 = all).
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
 }
 
@@ -683,6 +732,15 @@ enum DocCmd {
     List {
         #[arg(long)]
         network: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Maximum number of documents to show (0 = all).
+        #[arg(long, default_value = "0")]
+        limit: usize,
+        /// Page index (0-based, used with --limit).
+        #[arg(long, default_value = "0")]
+        page: usize,
     },
     /// Show the decrypted body of a document.
     Show {
@@ -884,15 +942,27 @@ fn run_network(cmd: NetworkCmd, data: &PathBuf) -> Result<()> {
             }
         }
 
-        NetworkCmd::List => {
+        NetworkCmd::List { json } => {
             let cids = store::list_network_cids(data);
-            if cids.is_empty() {
-                println!("No networks found. Create one with `network create --name <name>`.");
-                return Ok(());
-            }
-            for cid_short in cids {
-                if let Ok(n) = store::load_network(data, &cid_short) {
-                    println!("{} — {} ({} members)", n.cid_short(), n.name(), n.data.members.len());
+            if json {
+                let list: Vec<serde_json::Value> = cids.iter()
+                    .filter_map(|c| store::load_network(data, c).ok())
+                    .map(|n| serde_json::json!({
+                        "cid_short": n.cid_short(),
+                        "name": n.name(),
+                        "member_count": n.data.members.len(),
+                    }))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                if cids.is_empty() {
+                    println!("No networks found. Create one with `network create --name <name>`.");
+                    return Ok(());
+                }
+                for cid_short in cids {
+                    if let Ok(n) = store::load_network(data, &cid_short) {
+                        println!("{} — {} ({} members)", n.cid_short(), n.name(), n.data.members.len());
+                    }
                 }
             }
         }
@@ -1028,13 +1098,40 @@ fn run_member(cmd: MemberCmd, data: &PathBuf) -> Result<()> {
             println!("Ask an admin to run: civium member admit {} {}", network.cid_short(), member_cid.short());
         }
 
-        MemberCmd::List { network_cid, connected } => {
+        MemberCmd::List { network_cid, connected, json, limit, page } => {
             let network = load_network_fuzzy(data, &network_cid)?;
+            let all_members: Vec<_> = network.data.members.iter().collect();
+            let paginated: Vec<_> = paginate(&all_members, limit, page);
+            if json {
+                let members: Vec<serde_json::Value> = paginated.iter().map(|m| serde_json::json!({
+                    "cid_short": m.cid_short,
+                    "display_name": m.display_name,
+                    "circle": m.circle as u8,
+                    "role": format!("{}", m.role),
+                    "is_minor": m.is_minor,
+                })).collect();
+                let pending: Vec<serde_json::Value> = network.data.pending.iter().map(|p| serde_json::json!({
+                    "cid_short": p.cid_short,
+                    "display_name": p.display_name,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "network": network.name(),
+                    "total": all_members.len(),
+                    "page": page,
+                    "limit": limit,
+                    "members": members,
+                    "pending": pending,
+                }))?);
+                return Ok(());
+            }
             println!("=== {} ===", network.name());
             println!();
-            println!("Members ({}):", network.data.members.len());
-            for m in &network.data.members {
+            println!("Members ({}/{}):", paginated.len(), all_members.len());
+            for m in &paginated {
                 println!("  {} — {} ({}) [{}]", m.display_name, m.cid_short, m.circle, m.role);
+            }
+            if limit > 0 && all_members.len() > limit {
+                println!("  … page {page} of {} (use --page/--limit for more)", (all_members.len() + limit - 1) / limit);
             }
             if !network.data.pending.is_empty() {
                 println!();
@@ -1894,7 +1991,7 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                         .iter()
                         .find(|m| m.cid_short.starts_with(peer.as_str()))
                         .map(|m| m.cid_short.clone())
-                        .unwrap();
+                        .ok_or_else(|| anyhow::anyhow!("membre '{}' introuvable dans '{}'", peer, net.name()))?;
                     let author_cid_short = net.data.members.iter()
                         .find(|m| m.cid_full == author_cid.full())
                         .map(|m| m.cid_short.clone())
@@ -1915,18 +2012,22 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             // Grab the id before the save (last message is what we just posted)
-            let msg_id = mailbox.messages.last().unwrap().id.clone();
+            let msg_id = mailbox.messages.last()
+                .ok_or_else(|| anyhow::anyhow!("message introuvable après envoi"))?
+                .id.clone();
             store::save_mailbox(data, net.cid_short(), &mailbox)?;
 
             let label = match kind {
                 MessageKind::Thread => "thread".to_string(),
                 MessageKind::Direct { to_cid_short } => format!("DM → {to_cid_short}"),
                 MessageKind::E2E { to_cid_full } => format!("E2E → {}", &to_cid_full[..12.min(to_cid_full.len())]),
+                MessageKind::File { filename, .. } => format!("fichier → {filename}"),
+                MessageKind::CalendarEvent { title, .. } => format!("événement → {title}"),
             };
             println!("Message sent ({label}) — id: {}", &msg_id[..8.min(msg_id.len())]);
         }
 
-        MsgCmd::List { network, with } => {
+        MsgCmd::List { network, with, json, limit, page } => {
             let keypair = store::load_identity(data)
                 .map_err(|_| anyhow::anyhow!("no identity found — run `identity init` first"))?;
             let local_cid = keypair.cid();
@@ -1937,19 +2038,42 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
 
             let mailbox = store::load_mailbox(data, net.cid_short())?;
 
+            let all_messages: Vec<_> = match &with {
+                Some(peer) => mailbox.direct_messages(local_cid.short(), peer).collect(),
+                None => mailbox.thread_messages().collect(),
+            };
+            let messages_to_show = paginate(&all_messages.iter().collect::<Vec<_>>(), limit, page);
+
+            if json {
+                let mut out = Vec::new();
+                for msg in &messages_to_show {
+                    let body = mailbox.decrypt_body(msg, &group_key)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let author_name = net.data.members.iter()
+                        .find(|m| m.cid_short == msg.author_cid_short)
+                        .map(|m| m.display_name.as_str())
+                        .unwrap_or(&msg.author_cid_short);
+                    out.push(serde_json::json!({
+                        "id": msg.id,
+                        "author_cid_short": msg.author_cid_short,
+                        "author_name": author_name,
+                        "body": body,
+                        "sent_at": msg.sent_at,
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "total": all_messages.len(),
+                    "page": page,
+                    "limit": limit,
+                    "messages": out,
+                }))?);
+                return Ok(());
+            }
+
             if mailbox.messages.is_empty() {
                 println!("No messages in '{}'.", net.name());
                 return Ok(());
             }
-
-            let messages_to_show: Vec<_> = match &with {
-                Some(peer) => {
-                    mailbox
-                        .direct_messages(local_cid.short(), peer)
-                        .collect()
-                }
-                None => mailbox.thread_messages().collect(),
-            };
 
             if messages_to_show.is_empty() {
                 if let Some(peer) = &with {
@@ -1961,8 +2085,8 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
             }
 
             let header = match &with {
-                Some(peer) => format!("=== DM: {} ↔ {} ===", local_cid.short(), peer),
-                None => format!("=== {} — thread ===", net.name()),
+                Some(peer) => format!("=== DM: {} ↔ {} ({}/{}) ===", local_cid.short(), peer, messages_to_show.len(), all_messages.len()),
+                None => format!("=== {} — thread ({}/{}) ===", net.name(), messages_to_show.len(), all_messages.len()),
             };
             println!("{header}");
             println!();
@@ -1979,6 +2103,9 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                     .map(|m| m.display_name.as_str())
                     .unwrap_or(&msg.author_cid_short);
                 println!("[{}] {} : {}", fmt_ts(msg.sent_at), author_name, body);
+            }
+            if limit > 0 && all_messages.len() > limit {
+                println!("\n… page {page} of {} (use --page/--limit for more)", (all_messages.len() + limit - 1) / limit);
             }
         }
     }
@@ -2028,20 +2155,45 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
             }
         }
 
-        GovernanceCmd::List { network } => {
+        GovernanceCmd::List { network, json, limit, page } => {
             let net = load_network_fuzzy(data, &network)?;
-            let proposals = store::list_proposals(data, net.cid_short())?;
-            if proposals.is_empty() {
+            let all_proposals = store::list_proposals(data, net.cid_short())?;
+            let proposals_refs: Vec<_> = all_proposals.iter().collect();
+            let proposals = paginate(&proposals_refs, limit, page);
+            if json {
+                let out: Vec<serde_json::Value> = proposals.iter().map(|p| serde_json::json!({
+                    "id": p.id,
+                    "title": p.title,
+                    "description": p.description,
+                    "options": p.options,
+                    "status": format!("{}", p.status),
+                    "created_by": p.created_by,
+                    "created_at": p.created_at,
+                    "closes_at": p.closes_at,
+                    "quorum_percent": p.quorum_percent,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "total": all_proposals.len(),
+                    "page": page,
+                    "limit": limit,
+                    "proposals": out,
+                }))?);
+                return Ok(());
+            }
+            if all_proposals.is_empty() {
                 println!("No proposals for '{}'.", net.name());
                 return Ok(());
             }
-            println!("=== Proposals: {} ===", net.name());
+            println!("=== Proposals: {} ({}/{}) ===", net.name(), proposals.len(), all_proposals.len());
             println!();
             for p in &proposals {
                 println!("  [{}] {} — {} ({})", p.id, p.title, p.status, p.options.join(" / "));
                 if !p.description.is_empty() {
                     println!("       {}", p.description);
                 }
+            }
+            if limit > 0 && all_proposals.len() > limit {
+                println!("\n… page {page} of {} (use --page/--limit for more)", (all_proposals.len() + limit - 1) / limit);
             }
         }
 
@@ -2103,7 +2255,8 @@ fn run_governance(cmd: GovernanceCmd, data: &PathBuf) -> Result<()> {
             }
             let delegate_cid_short = net.data.members.iter()
                 .find(|m| m.cid_short.starts_with(&to))
-                .map(|m| m.cid_short.clone()).unwrap();
+                .map(|m| m.cid_short.clone())
+                .ok_or_else(|| anyhow::anyhow!("membre '{}' introuvable", to))?;
 
             let now = unix_now_cli();
             let delegation = VoteDelegation {
@@ -2617,16 +2770,39 @@ fn run_agenda(cmd: AgendaCmd, data: &PathBuf) -> Result<()> {
             if let Some(l) = &event.location { println!("  Location  : {l}"); }
         }
 
-        AgendaCmd::List { network } => {
+        AgendaCmd::List { network, json, limit, page } => {
             let net = load_network_fuzzy(data, &network)?;
-            let events = store::list_agenda_events(data, net.cid_short())?;
-            if events.is_empty() {
+            let all_events = store::list_agenda_events(data, net.cid_short())?;
+            let events_refs: Vec<_> = all_events.iter().collect();
+            let events = paginate(&events_refs, limit, page);
+            if json {
+                let out: Vec<serde_json::Value> = events.iter().map(|e| serde_json::json!({
+                    "id": e.id,
+                    "title": e.title,
+                    "description": e.description,
+                    "start_at": e.start_at,
+                    "end_at": e.end_at,
+                    "location": e.location,
+                    "created_by": e.created_by,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "total": all_events.len(),
+                    "page": page,
+                    "limit": limit,
+                    "events": out,
+                }))?);
+                return Ok(());
+            }
+            if all_events.is_empty() {
                 println!("No events in '{}'.", net.name());
             } else {
                 println!("{:<36} {:<12} {}", "ID", "START", "TITLE");
                 println!("{}", "-".repeat(70));
                 for e in &events {
                     println!("{:<36} {:<12} {}", &e.id[..36.min(e.id.len())], e.start_at, e.title);
+                }
+                if limit > 0 && all_events.len() > limit {
+                    println!("\n… page {page} of {} (use --page/--limit for more)", (all_events.len() + limit - 1) / limit);
                 }
             }
         }
@@ -2649,28 +2825,55 @@ fn run_agenda(cmd: AgendaCmd, data: &PathBuf) -> Result<()> {
 
 fn run_activity(cmd: ActivityCmd, data: &PathBuf) -> Result<()> {
     match cmd {
-        ActivityCmd::List { network, unread } => {
+        ActivityCmd::List { network, unread, json, limit, page } => {
             let net = load_network_fuzzy(data, &network)?;
             if unread {
                 let notifs = store::list_notifications(data, net.cid_short())?;
-                let unread: Vec<_> = notifs.into_iter().filter(|n| !n.read).collect();
-                if unread.is_empty() {
+                let unread_items: Vec<_> = notifs.into_iter().filter(|n| !n.read).collect();
+                let page_items = if limit > 0 {
+                    let start = page * limit;
+                    unread_items[start..(start + limit).min(unread_items.len())].to_vec()
+                } else {
+                    unread_items.clone()
+                };
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "total": unread_items.len(), "page": page, "limit": limit,
+                        "notifications": page_items.iter().map(|n| serde_json::json!({ "id": n.id, "source_event_id": n.source_event_id })).collect::<Vec<_>>()
+                    }))?);
+                    return Ok(());
+                }
+                if unread_items.is_empty() {
                     println!("Aucune notification non lue dans '{}'.", net.name());
                 } else {
-                    println!("{} notification(s) non lue(s) :", unread.len());
-                    for n in &unread {
+                    println!("{} notification(s) non lue(s) ({}/{}):", page_items.len(), page_items.len(), unread_items.len());
+                    for n in &page_items {
                         println!("  [{}] event:{}", n.id, n.source_event_id);
                     }
                 }
             } else {
-                let events = store::list_activity(data, net.cid_short())?;
-                if events.is_empty() {
+                let all_events = store::list_activity(data, net.cid_short())?;
+                let events_refs: Vec<_> = all_events.iter().collect();
+                let events = paginate(&events_refs, limit, page);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "total": all_events.len(), "page": page, "limit": limit,
+                        "events": events.iter().map(|e| serde_json::json!({
+                            "id": e.id, "kind": e.kind.to_string(), "actor": e.actor_cid_short, "summary": e.summary, "occurred_at": e.occurred_at
+                        })).collect::<Vec<_>>()
+                    }))?);
+                    return Ok(());
+                }
+                if all_events.is_empty() {
                     println!("Aucun événement dans '{}'.", net.name());
                 } else {
                     println!("{:<12} {:<22} {}", "KIND", "ACTOR", "RÉSUMÉ");
                     println!("{}", "-".repeat(70));
                     for e in &events {
                         println!("{:<12} {:<22} {}", e.kind.to_string(), &e.actor_cid_short[..e.actor_cid_short.len().min(20)], e.summary);
+                    }
+                    if limit > 0 && all_events.len() > limit {
+                        println!("\n… page {page} of {} (use --page/--limit for more)", (all_events.len() + limit - 1) / limit);
                     }
                 }
             }
@@ -2706,16 +2909,31 @@ fn run_doc(cmd: DocCmd, data: &PathBuf) -> Result<()> {
             println!("  Version : {}", doc.version);
         }
 
-        DocCmd::List { network } => {
+        DocCmd::List { network, json, limit, page } => {
             let net = load_network_fuzzy(data, &network)?;
-            let docs = store::list_documents(data, net.cid_short())?;
-            if docs.is_empty() {
+            let all_docs = store::list_documents(data, net.cid_short())?;
+            let docs_refs: Vec<_> = all_docs.iter().collect();
+            let docs = paginate(&docs_refs, limit, page);
+            if json {
+                let out: Vec<serde_json::Value> = docs.iter().map(|d| serde_json::json!({
+                    "id": d.id, "title": d.title, "version": d.version,
+                    "created_by": d.created_by, "updated_at": d.updated_at,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "total": all_docs.len(), "page": page, "limit": limit, "documents": out,
+                }))?);
+                return Ok(());
+            }
+            if all_docs.is_empty() {
                 println!("Aucun document dans '{}'.", net.name());
             } else {
                 println!("{:<18} {:>3}  {}", "ID", "V.", "TITRE");
                 println!("{}", "-".repeat(60));
                 for d in &docs {
                     println!("{:<18} {:>3}  {}", &d.id[..d.id.len().min(16)], d.version, d.title);
+                }
+                if limit > 0 && all_docs.len() > limit {
+                    println!("\n… page {page} of {} (use --page/--limit for more)", (all_docs.len() + limit - 1) / limit);
                 }
             }
         }
@@ -2858,6 +3076,16 @@ fn run_pair(cmd: PairCmd, data: &PathBuf) -> Result<()> {
 }
 
 /// Load a network by CID prefix — accepts short form or full CID.
+/// Slice a list for pagination. `limit=0` means no limit (return all).
+fn paginate<'a, T>(items: &'a [&'a T], limit: usize, page: usize) -> Vec<&'a T> {
+    if limit == 0 {
+        return items.to_vec();
+    }
+    let start = page * limit;
+    if start >= items.len() { return vec![]; }
+    items[start..(start + limit).min(items.len())].to_vec()
+}
+
 fn load_network_fuzzy(data: &PathBuf, cid: &str) -> Result<Network> {
     // Direct match first
     if let Ok(n) = store::load_network(data, cid) {

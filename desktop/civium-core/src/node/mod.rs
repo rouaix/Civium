@@ -9,14 +9,14 @@ use behaviour::CiviumBehaviour;
 use crate::{Cid, CiviumError, CiviumKeypair};
 use futures::StreamExt;
 use libp2p::{
-    identify, kad, mdns,
+    autonat, identify, kad, mdns,
     request_response::{self, InboundRequestId, OutboundRequestId, ResponseChannel},
     noise, tcp, yamux,
     Multiaddr, PeerId, SwarmBuilder,
     swarm::{SwarmEvent, dial_opts::DialOpts},
 };
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn, debug};
 
@@ -63,6 +63,14 @@ pub enum NodeEvent {
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
+/// Per-peer request rate limiter: max N requests per WINDOW_SECS.
+const RATE_LIMIT_MAX: u32 = 30;
+const RATE_LIMIT_WINDOW_SECS: u64 = 1;
+/// Max buffered inbound responses waiting for app reply (DoS protection).
+const MAX_PENDING_RESPONSES: usize = 500;
+/// Evict stale rate_counters entries older than this many seconds.
+const RATE_COUNTER_EVICT_SECS: u64 = 300;
+
 pub struct CiviumNode {
     swarm:                   libp2p::Swarm<CiviumBehaviour>,
     cid:                     Cid,
@@ -73,6 +81,8 @@ pub struct CiviumNode {
     /// Pending response channels, keyed by inbound request ID.
     pending_responses:       HashMap<InboundRequestId, ResponseChannel<CiviumResponse>>,
     auto_accept_connections: bool,
+    /// Rate limiter: (request count, window start) per peer.
+    rate_counters:           HashMap<PeerId, (u32, Instant)>,
 }
 
 /// Handle held by the application — send commands, receive events.
@@ -91,12 +101,8 @@ impl CiviumNode {
         let peer_id = libp2p_keypair.public().to_peer_id();
         let local_pub_key = libp2p_keypair.public().clone();
 
-        let behaviour = CiviumBehaviour::new(peer_id, local_pub_key)
-            .map_err(|e| CiviumError::Node(e.to_string()))?;
-
-        // libp2p 0.55: with_websocket() is only available on TcpPhase (before with_quic()).
-        // TCP + QUIC + WS as a three-transport combo is not supported by the builder API.
-        // QUIC is kept in NodeConfig for future use; for now we use TCP + WebSocket.
+        // Build swarm: TCP + WebSocket (+ QUIC when available).
+        // Circuit relay is deferred — see behaviour.rs comment for rationale.
         let mut swarm = SwarmBuilder::with_existing_identity(libp2p_keypair)
             .with_tokio()
             .with_tcp(
@@ -108,7 +114,10 @@ impl CiviumNode {
             .with_websocket(noise::Config::new, yamux::Config::default)
             .await
             .map_err(|e| CiviumError::Node(e.to_string()))?
-            .with_behaviour(|_| behaviour)
+            .with_behaviour(|_key| {
+                CiviumBehaviour::new(peer_id, local_pub_key)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+            })
             .map_err(|e| CiviumError::Node(e.to_string()))?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
             .build();
@@ -155,12 +164,34 @@ impl CiviumNode {
             event_tx:                evt_tx,
             pending_responses:       HashMap::new(),
             auto_accept_connections: config.auto_accept_connections,
+            rate_counters:           HashMap::new(),
         };
 
         Ok((node, handle))
     }
 
     pub fn cid(&self) -> &Cid { &self.cid }
+
+    /// Returns true if the peer is within its rate limit, false if it should be dropped.
+    fn check_rate_limit(&mut self, peer: &PeerId) -> bool {
+        let now = Instant::now();
+
+        // Evict stale counters to prevent unbounded growth of rate_counters.
+        self.rate_counters.retain(|_, (_, ts)| {
+            now.duration_since(*ts).as_secs() < RATE_COUNTER_EVICT_SECS
+        });
+
+        let entry = self.rate_counters.entry(*peer).or_insert((0, now));
+        if now.duration_since(entry.1).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+            *entry = (1, now);
+            true
+        } else if entry.0 < RATE_LIMIT_MAX {
+            entry.0 += 1;
+            true
+        } else {
+            false
+        }
+    }
 
     /// Build an auto-accept response for an incoming `ConnectRequest`.
     ///
@@ -314,6 +345,16 @@ impl CiviumNode {
             ) => {
                 debug!(%peer, "inbound Civium request");
 
+                // Rate limit: drop requests from peers that exceed the threshold.
+                if !self.check_rate_limit(&peer) {
+                    warn!(%peer, "rate limit exceeded — dropping inbound request");
+                    let _ = self.swarm.behaviour_mut().request_response
+                        .send_response(channel, CiviumResponse::Error {
+                            message: "rate limit exceeded".to_string(),
+                        });
+                    return;
+                }
+
                 // BroadcastAlert — verified inline, no app roundtrip.
                 if let CiviumRequest::BroadcastAlert { ref payload_json, ref signature_b58 } = request {
                     let response = match crate::rcc::verify_rcc_alert(payload_json, signature_b58) {
@@ -336,24 +377,38 @@ impl CiviumNode {
                         let _ = self.swarm.behaviour_mut().request_response
                             .send_response(channel, response);
                     } else {
-                        match serde_json::from_str::<crate::connection::SignedRequest>(signed_request_json) {
-                            Ok(signed_request) => {
-                                self.pending_responses.insert(request_id, channel);
-                                let _ = self.event_tx.send(NodeEvent::InboundConnectRequest {
-                                    from: peer,
-                                    request_id,
-                                    signed_request,
-                                }).await;
-                            }
-                            Err(e) => {
-                                warn!(%peer, "invalid ConnectRequest payload: {e}");
-                                let _ = self.swarm.behaviour_mut().request_response
-                                    .send_response(channel, CiviumResponse::ConnectRejected {
-                                        reason: format!("invalid request payload: {e}"),
-                                    });
+                        if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
+                            warn!(%peer, "pending_responses cap reached — rejecting ConnectRequest");
+                            let _ = self.swarm.behaviour_mut().request_response
+                                .send_response(channel, CiviumResponse::Error {
+                                    message: "server busy".to_string(),
+                                });
+                        } else {
+                            match serde_json::from_str::<crate::connection::SignedRequest>(signed_request_json) {
+                                Ok(signed_request) => {
+                                    self.pending_responses.insert(request_id, channel);
+                                    let _ = self.event_tx.send(NodeEvent::InboundConnectRequest {
+                                        from: peer,
+                                        request_id,
+                                        signed_request,
+                                    }).await;
+                                }
+                                Err(e) => {
+                                    warn!(%peer, "invalid ConnectRequest payload: {e}");
+                                    let _ = self.swarm.behaviour_mut().request_response
+                                        .send_response(channel, CiviumResponse::ConnectRejected {
+                                            reason: format!("invalid request payload: {e}"),
+                                        });
+                                }
                             }
                         }
                     }
+                } else if self.pending_responses.len() >= MAX_PENDING_RESPONSES {
+                    warn!(%peer, "pending_responses cap reached — dropping inbound request");
+                    let _ = self.swarm.behaviour_mut().request_response
+                        .send_response(channel, CiviumResponse::Error {
+                            message: "server busy".to_string(),
+                        });
                 } else {
                     self.pending_responses.insert(request_id, channel);
                     let _ = self.event_tx.send(NodeEvent::InboundRequest {
@@ -381,6 +436,13 @@ impl CiviumNode {
                 request_response::Event::OutboundFailure { peer, error, .. }
             ) => {
                 warn!(%peer, ?error, "request failed");
+            }
+
+            // ── AutoNAT: log NAT status changes ──────────────────────────────
+            behaviour::CiviumBehaviourEvent::Autonat(
+                autonat::Event::StatusChanged { new, .. }
+            ) => {
+                info!(?new, "autonat: NAT status changed");
             }
 
             _ => {}

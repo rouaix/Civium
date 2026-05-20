@@ -104,6 +104,21 @@ export interface MessageDisplay {
   is_direct: boolean;
   to_cid_short: string | null;
   is_e2e: boolean;
+  is_file: boolean;
+  filename: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  is_calendar_event: boolean;
+  event_title: string | null;
+  event_start: number | null;
+  event_end: number | null;
+  event_location: string | null;
+}
+
+export interface MessageListPage {
+  messages: MessageDisplay[];
+  oldest_rowid: number | null;
+  has_more: boolean;
 }
 
 export interface ProposalInfo {
@@ -305,4 +320,27 @@ export interface FraudAlertInfo {
   network_cids: string[];
   emitted_at: number;
   emitted_by: string;
+}
+
+export interface ConnectionInfo {
+  peer_cid_short: string;
+  peer_cid_full: string;
+  peer_name: string;
+  state: string;
+  initiated_at: number;
+  updated_at: number;
+  expose_directory_to_peer: boolean;
+  peer_exposes_directory: boolean;
+  apc_nonce: string | null;
+}
+
+export interface InvitationInfo {
+  network_cid_short: string;
+  nonce_b58: string;
+  inviter_cid_short: string;
+  created_at: number;
+  expires_at: number;
+  link: string;
+  revoked: boolean;
+  is_expired: boolean;
 }

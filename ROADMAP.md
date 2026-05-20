@@ -468,6 +468,7 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 - [x] Programme de certification des plugins (niveaux Minimal / RSC / Certifié) — `CertificationLevel` dans `civium-core/src/plugin/mod.rs`
 - [ ] Audit de sécurité externe
+- [x] Support Linux — workflow CI Tauri inclut `ubuntu-latest` (AppImage + .deb uploadés comme artifacts CI) ; libp2p TCP/QUIC/WebSocket/mDNS supporté sur Linux
 - [x] SDK Civium (intégrateurs tiers) — crate `civium-sdk` avec `CiviumClient`, `ClientConfig`, types identity/network/messaging/governance
 - [x] Documentation développeur complète — rustdoc complet sur `civium-sdk`, `civium-core::error`, modules network/messaging/governance ; exemples dans `lib.rs`
 - [x] Documentation utilisateur v0.1 — site web PHP F3 (`home.html`, `how.html`, `usecases.html`) + `README.md` mis à jour avec statut v0.1 et critères MVP
@@ -479,7 +480,6 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 - [x] Annuaire des réseaux publics (`GET /hub/network/public`) — modal "Rejoindre" avec onglets Annuaire/Invitation sur Desktop + web
 - [x] Lien d'invitation email Desktop : option A (URL web `?join=CID`) + option B (deep link P2P desktop)
 - [x] Auto-join depuis URL web (`/app?join=CID&jname=NOM`) — rejoindre un réseau en un clic depuis un email
-- [ ] Audit de sécurité externe
 - [ ] Gouvernance du projet Civium lui-même (association ou fondation)
 
 ---
@@ -493,4 +493,4 @@ Suivi du développement, phase par phase. Chaque tâche cochée = code mergé su
 
 ---
 
-*Dernière mise à jour : 2026-05-17 (Phase 5 — hub gouvernance/agenda web ✅, réseau principal hub ✅, annuaire public ✅, liens invitation web ✅)*
+*Dernière mise à jour : 2026-05-20 (Phase 5 — support Linux CI ✅, autonat NAT traversal ✅, sandbox WASM CilExecutor ✅)*

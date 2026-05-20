@@ -39,4 +39,10 @@ pub enum CiviumError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("validation error: {field} — {constraint}")]
+    Validation { field: String, constraint: String },
+
+    #[error("rate limited: {0}")]
+    RateLimited(String),
 }

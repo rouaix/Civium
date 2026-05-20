@@ -32,7 +32,7 @@ pub use connection::{
 pub use crypto::GroupKey;
 pub use error::CiviumError;
 pub use identity::{Cid, CiviumKeypair};
-pub use messaging::{Mailbox, Message, MessageKind};
+pub use messaging::{Mailbox, Message, MessageKind, EncryptedChunk};
 pub use directory::{DirectoryEntry, EntryKind, FederatedDirectory, RrmEntry, TrustedRrm};
 pub use activity::{ActivityEvent, ActivityKind, Notification};
 pub use agenda::AgendaEvent;

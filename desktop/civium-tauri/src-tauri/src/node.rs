@@ -31,6 +31,8 @@ pub struct AppState {
     pub mcp_port: Mutex<Option<u16>>,
     /// RCC fraud alerts received via P2P and verified with the RCC public key.
     pub active_alerts: Mutex<Vec<civium_core::FraudAlert>>,
+    /// Keeps the non-blocking tracing writer alive for the process lifetime.
+    pub log_guard: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -44,7 +46,7 @@ pub async fn start_node(app_handle: AppHandle, keypair: CiviumKeypair, data_dir:
     let (node, handle) = match CiviumNode::new(keypair, config).await {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("[civium] P2P node start failed: {e}");
+            tracing::error!("P2P node start failed: {e}");
             return;
         }
     };
@@ -89,7 +91,7 @@ async fn run_event_loop(
     while let Some(event) = handle.events.recv().await {
         match event {
             NodeEvent::Listening { addr } => {
-                eprintln!("[civium] Listening on {addr}");
+                tracing::info!("Listening on {addr}");
                 app_handle
                     .state::<AppState>()
                     .listen_addrs
@@ -161,9 +163,9 @@ async fn run_event_loop(
                                 if let Err(e) =
                                     store::merge_sync_data(&conn2, &cid_short, members, messages)
                                 {
-                                    eprintln!("[civium] Sync merge error: {e}");
+                                    tracing::warn!("Sync merge error for {cid_short}: {e}");
                                 } else {
-                                    eprintln!("[civium] Synced network {cid_short}");
+                                    tracing::info!("Synced network {cid_short}");
                                     let _ = store::clear_outbox(&conn2, &cid_short);
                                     let _ = app_handle.emit("civium://sync-completed", &cid_short);
                                     let _ = app_handle.emit("civium://outbox-cleared", &cid_short);
@@ -176,7 +178,7 @@ async fn run_event_loop(
             }
 
             NodeEvent::FraudAlertReceived { alert } => {
-                eprintln!("[civium] RCC fraud alert received: {} — {}", alert.alert_type, alert.description);
+                tracing::warn!("RCC fraud alert received: {} — {}", alert.alert_type, alert.description);
                 app_handle
                     .state::<AppState>()
                     .active_alerts
@@ -188,7 +190,7 @@ async fn run_event_loop(
 
             NodeEvent::InboundConnectRequest { from, request_id, signed_request } => {
                 // Forward to the application: store as Validating and emit an event.
-                eprintln!("[civium] Incoming APC from {} ({})", signed_request.payload.from_name, from);
+                tracing::info!("Incoming APC from {} ({})", signed_request.payload.from_name, from);
                 if let Ok(conn) = store::open_db(&data_dir) {
                     if let Ok(net) = store::find_network_by_full_cid(&conn, &signed_request.payload.to_cid_full) {
                         use std::time::{SystemTime, UNIX_EPOCH};

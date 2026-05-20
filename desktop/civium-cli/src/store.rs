@@ -307,12 +307,16 @@ pub fn save_mailbox(data_dir: &Path, network_cid_short: &str, mailbox: &Mailbox)
 }
 
 pub fn load_mailbox(data_dir: &Path, network_cid_short: &str) -> Result<Mailbox> {
+    load_mailbox_page(data_dir, network_cid_short, 200, 0)
+}
+
+pub fn load_mailbox_page(data_dir: &Path, network_cid_short: &str, limit: u32, offset: u32) -> Result<Mailbox> {
     let conn = open_db(data_dir)?;
     let mut stmt = conn.prepare(
         "SELECT message_json, in_outbox FROM messages
-         WHERE network_cid = ?1 ORDER BY rowid",
+         WHERE network_cid = ?1 ORDER BY rowid DESC LIMIT ?2 OFFSET ?3",
     )?;
-    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut rows = stmt.query(params![network_cid_short, limit, offset])?;
     let mut messages: Vec<Message> = Vec::new();
     let mut outbox: Vec<Message> = Vec::new();
     while let Some(row) = rows.next()? {
@@ -345,7 +349,7 @@ pub fn save_proposal(data_dir: &Path, network_cid_short: &str, proposal: &Propos
 pub fn list_proposals(data_dir: &Path, network_cid_short: &str) -> Result<Vec<Proposal>> {
     let conn = open_db(data_dir)?;
     let mut stmt = conn.prepare(
-        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid",
+        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid DESC LIMIT 200",
     )?;
     let mut rows = stmt.query(params![network_cid_short])?;
     let mut proposals = Vec::new();
