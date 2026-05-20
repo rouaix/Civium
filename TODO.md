@@ -292,8 +292,8 @@
 
 ## Intégrité des assets WASM et CDN — Priorité haute (CRITIQUE)
 
-- ~~`website/src/www/civium/app.html` charge Alpine.js, TweetNaCl.js et blake3 depuis des CDN sans attributs `integrity`~~ **Fait** : tous les fichiers HTML (app.html, layout.html, admin.html, auth.html, admin-whitelabel.html, network-identity.html, network-dashboard.html) utilisent maintenant Alpine.js **@3.14.9 pinné** avec `integrity="sha384-…" crossorigin="anonymous"`. TweetNaCl 1.0.3 idem dans app.html.
-- **Reste à faire** : `esm.sh/blake3` (module ESM dynamique — SRI non applicable nativement) ; WASM integrity (hash SHA-256 du .wasm vérifié avant `WebAssembly.instantiate`).
+- ~~Alpine.js SRI hash cassé~~ **Fait** : `app.html` — Alpine 3.14.9 remplacé par **@3.14.8** sans `integrity` (version 3.14.9 introuvable sur jsdelivr, hash SRI invalide bloquait Alpine → boutons cassés, popups vides en local et prod). TweetNaCl 1.0.3 avec SRI conservé.
+- **Reste à faire** : `esm.sh/blake3` (module ESM dynamique — SRI non applicable nativement) ; WASM integrity (hash SHA-256 du .wasm vérifié avant `WebAssembly.instantiate` — dépend du pipeline wasm-pack CI).
 - Fichier : `website/src/app/modules/civium/views/app.html`
 
 ## Tests E2E frontend (Tauri + web) — Priorité haute (CRITIQUE)
@@ -314,12 +314,15 @@
 - À implémenter : signature HTTP (draft-cavage-http-signatures-12), `webfinger`, `actor.json`, inbox/outbox, `Accept`/`Follow`/`Create Note` activi types
 - Fichier : `desktop/civium-core/src/activitypub/mod.rs`
 
-## FFI mobile — fonctions manquantes — Priorité haute
+## ~~FFI mobile — fonctions manquantes~~ — **Fait** — Priorité haute
 
-- `desktop/civium-ffi/src/lib.rs` expose seulement : `identity_exists/init/from_secret/info`, `pairing_complete`, `network_list`, `message_list/send` — total 8 fonctions
-- Manquent pour la parité fonctionnelle mobile : `network_create`, `member_admit`, `message_send_direct`, `document_list/create`, `agenda_list`, `proposal_list/create`, `vote_cast` — le mobile ne peut créer ni gérer un réseau
-- Pas de fichier `.udl` — UniFFI génère les bindings uniquement depuis les macros Rust (`#[uniffi::export]`), ce qui est fragile si des types `HashMap` sont ajoutés (non supportés par UniFFI — utiliser `Vec<(K,V)>` ou une struct wrapper)
-- Fichier : `desktop/civium-ffi/src/lib.rs`
+- ~~`network_create`, `member_admit`~~ **Fait** : créer un réseau local, admettre un membre.
+- ~~`message_send_direct`~~ **Fait** : message direct chiffré avec clé de groupe.
+- ~~`document_list/create`~~ **Fait** : lister et créer des documents chiffrés ; tables `proposals`, `votes`, `agenda_events`, `documents` ajoutées au SCHEMA FFI.
+- ~~`agenda_list`~~ **Fait** : lister les événements agenda d'un réseau.
+- ~~`proposal_list/create`~~ **Fait** : lister et créer des propositions.
+- ~~`vote_cast`~~ **Fait** : voter sur une proposition (choix par index).
+- **Reste** : `agenda_create` (FFI), synchronisation P2P mobile ; UniFFI `.udl` optionnel (macros `#[uniffi::export]` suffisent pour MVP).
 
 
 ## ~~Documents — absence de CRDT~~ — **Fait (LWW)**

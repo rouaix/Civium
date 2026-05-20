@@ -3,7 +3,7 @@
 //! a database that was seeded by the desktop app.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, CiviumKeypair, Message};
+use civium_core::{network::Network, AgendaEvent, CiviumKeypair, Document, Message, Proposal, Vote};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -24,6 +24,30 @@ CREATE TABLE IF NOT EXISTS messages (
     message_json    TEXT    NOT NULL,
     in_outbox       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (network_cid, message_id)
+);
+CREATE TABLE IF NOT EXISTS proposals (
+    network_cid     TEXT NOT NULL,
+    proposal_id     TEXT NOT NULL,
+    proposal_json   TEXT NOT NULL,
+    PRIMARY KEY (network_cid, proposal_id)
+);
+CREATE TABLE IF NOT EXISTS votes (
+    proposal_id     TEXT NOT NULL,
+    voter_cid_short TEXT NOT NULL,
+    vote_json       TEXT NOT NULL,
+    PRIMARY KEY (proposal_id, voter_cid_short)
+);
+CREATE TABLE IF NOT EXISTS agenda_events (
+    network_cid TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    PRIMARY KEY (network_cid, event_id)
+);
+CREATE TABLE IF NOT EXISTS documents (
+    network_cid TEXT NOT NULL,
+    doc_id      TEXT NOT NULL,
+    doc_json    TEXT NOT NULL,
+    PRIMARY KEY (network_cid, doc_id)
 );
 ";
 
@@ -118,4 +142,94 @@ pub fn save_message(conn: &Connection, network_cid_short: &str, msg: &Message) -
         params![network_cid_short, msg.id, json],
     )?;
     Ok(())
+}
+
+// ── Proposals ─────────────────────────────────────────────────────────────────
+
+pub fn save_proposal(conn: &Connection, network_cid_short: &str, proposal: &Proposal) -> Result<()> {
+    let json = serde_json::to_string(proposal)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO proposals (network_cid, proposal_id, proposal_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, proposal.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn load_proposals(conn: &Connection, network_cid_short: &str) -> Result<Vec<Proposal>> {
+    let mut stmt = conn.prepare(
+        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut proposals = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let p: Proposal = serde_json::from_str(&json)?;
+        proposals.push(p);
+    }
+    Ok(proposals)
+}
+
+// ── Votes ─────────────────────────────────────────────────────────────────────
+
+pub fn save_vote(conn: &Connection, vote: &Vote) -> Result<()> {
+    let json = serde_json::to_string(vote)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO votes (proposal_id, voter_cid_short, vote_json)
+         VALUES (?1, ?2, ?3)",
+        params![vote.proposal_id, vote.voter_cid_short, json],
+    )?;
+    Ok(())
+}
+
+// ── Agenda events ─────────────────────────────────────────────────────────────
+
+pub fn save_agenda_event(conn: &Connection, network_cid_short: &str, event: &AgendaEvent) -> Result<()> {
+    let json = serde_json::to_string(event)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO agenda_events (network_cid, event_id, event_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, event.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn load_agenda_events(conn: &Connection, network_cid_short: &str) -> Result<Vec<AgendaEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let e: AgendaEvent = serde_json::from_str(&json)?;
+        events.push(e);
+    }
+    Ok(events)
+}
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+
+pub fn save_document(conn: &Connection, network_cid_short: &str, doc: &Document) -> Result<()> {
+    let json = serde_json::to_string(doc)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO documents (network_cid, doc_id, doc_json)
+         VALUES (?1, ?2, ?3)",
+        params![network_cid_short, doc.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn load_documents(conn: &Connection, network_cid_short: &str) -> Result<Vec<Document>> {
+    let mut stmt = conn.prepare(
+        "SELECT doc_json FROM documents WHERE network_cid = ?1 ORDER BY rowid",
+    )?;
+    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut docs = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let d: Document = serde_json::from_str(&json)?;
+        docs.push(d);
+    }
+    Ok(docs)
 }
