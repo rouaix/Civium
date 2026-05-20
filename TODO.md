@@ -304,15 +304,12 @@
 - Couvrir en priorité : onboarding complet, admission d'un membre, cycle de vote, envoi/réception message, connexion web (magic link)
 
 
-## ActivityPub — implémentation manquante — Priorité haute (CRITIQUE)
+## ~~ActivityPub — implémentation manquante~~ — **Fait côté PHP/RCC**
 
-- `desktop/civium-core/src/activitypub/mod.rs` ne contient que 38 lignes de structures de données (`ApStatus`, `ApFollower`, `ApPost`) — zéro logique implémentée
-- Il n'existe pas d'endpoint `GET /.well-known/webfinger` : Mastodon/PeerTube ne peuvent pas découvrir le réseau
-- Pas d'inbox ni d'outbox : impossible de recevoir ou d'envoyer des activités vers d'autres serveurs
-- **CRITIQUE sécurité** : aucune vérification de signature HTTP sur les activités entrantes — un acteur malveillant peut usurper l'identité d'un serveur Mastodon en POSTant directement sur l'inbox
-- Les tables SQLite `ap_followers` et `ap_posts` existent (`store.rs` lignes 131-145) mais ne sont jamais peuplées ni lues
-- À implémenter : signature HTTP (draft-cavage-http-signatures-12), `webfinger`, `actor.json`, inbox/outbox, `Accept`/`Follow`/`Create Note` activi types
-- Fichier : `desktop/civium-core/src/activitypub/mod.rs`
+- ~~webfinger, actor, followers, following, outbox, inbox~~ **Fait** : `website/src/app/modules/activitypub/controllers/ActivityPubController.php` implémente tous les endpoints.
+- ~~Signature HTTP~~ **Fait** : `website/src/models/HttpSignature.php` — sign(), verify() (RSA-SHA256), deliver() ; inbox() vérifie la signature avant d'accepter une activité.
+- ~~Follow / Unfollow / Create~~ **Fait** : handleFollow/handleUnfollow dans inbox() ; `ap_actors`, `ap_followers`, `ap_outbox` créés dans migration 002.
+- **Reste** : redirection serveur `/.well-known/webfinger` → `/civium/.well-known/webfinger` (à configurer dans le vhost Apache/Nginx) ; tables Rust `ap_followers`/`ap_posts` inutilisées (non bloquant — desktop passe par le RCC).
 
 ## ~~FFI mobile — fonctions manquantes~~ — **Fait** — Priorité haute
 
@@ -343,7 +340,7 @@
 ## Agenda — fonctionnalités manquantes — Priorité moyenne
 
 - `desktop/civium-core/src/agenda/mod.rs` : le champ `recurrence: Option<String>` existe mais est toujours `None` à la création — les événements récurrents ne sont pas implémentés
-- Pas de validation des timestamps : `start_at > end_at` ou événement dans le passé ne génèrent aucune erreur
+- ~~Pas de validation des timestamps~~ **Fait** : `agenda_create` et `agenda_update` rejettent `start_at == 0` et `end_at < start_at`.
 - Pas de gestion des conflits de plage horaire, pas d'invitation de membres à un événement (pas de champ `attendees`), pas de rappels/notifications
 - Les événements ne sont pas synchronisés via CRDT inter-réseaux — locaux uniquement
 

@@ -2929,6 +2929,14 @@ pub fn agenda_create(
     end_at: Option<u64>,
     location: Option<String>,
 ) -> Result<AgendaEventInfo, String> {
+    if start_at == 0 {
+        return Err("start_at ne peut pas être zéro".into());
+    }
+    if let Some(end) = end_at {
+        if end < start_at {
+            return Err("end_at doit être postérieur à start_at".into());
+        }
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let created_by = keypair.cid().short().to_string();
@@ -2978,6 +2986,14 @@ pub fn agenda_update(
     end_at: Option<u64>,
     location: Option<String>,
 ) -> Result<AgendaEventInfo, String> {
+    if start_at == 0 {
+        return Err("start_at ne peut pas être zéro".into());
+    }
+    if let Some(end) = end_at {
+        if end < start_at {
+            return Err("end_at doit être postérieur à start_at".into());
+        }
+    }
     let conn = open(&app)?;
     let mut event = store::get_agenda_event(&conn, &network_cid_short, &event_id)
         .map_err(|e| e.to_string())?
