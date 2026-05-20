@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { writeFile as fsWriteFile } from "@tauri-apps/plugin-fs";
+import { tempDir } from "@tauri-apps/api/path";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { open as shellOpen } from "@tauri-apps/plugin-shell";
+import ReactMarkdown from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
 import { tauriInvoke } from "../tauri";
 import type {
   NetworkInfo,
@@ -7,6 +14,7 @@ import type {
   PendingMemberInfo,
   NodeStatus,
   MessageDisplay,
+  MessageListPage,
   PluginInfo,
   ProposalInfo,
   VoteResultInfo,
@@ -31,6 +39,8 @@ import type {
   ApPostResult,
   FraudAlertInfo,
   NodeSettingsInfo,
+  InvitationInfo,
+  ConnectionInfo,
 } from "../types";
 
 function formatTime(ts: number): string {
@@ -40,17 +50,82 @@ function formatTime(ts: number): string {
   });
 }
 
+function BackupExportWidget({ cidShort, onToast }: { cidShort: string; onToast: (msg: string, kind?: "error" | "ok") => void }) {
+  const [pwd, setPwd] = useState("");
+  const [pwd2, setPwd2] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function doExport() {
+    if (pwd.length < 8) { onToast("Le mot de passe doit faire au moins 8 caractères."); return; }
+    if (pwd !== pwd2) { onToast("Les mots de passe ne correspondent pas."); return; }
+    setBusy(true);
+    try {
+      const b64 = await tauriInvoke<string>("identity_backup_export", { password: pwd });
+      const blob = new Blob([b64], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `civium-backup-${cidShort}.civium-backup`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setPwd(""); setPwd2("");
+      onToast("Sauvegarde exportée avec succès.", "ok");
+    } catch (e) { onToast(String(e)); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input type="password" placeholder="Mot de passe de protection"
+          className="flex-1 text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-civium-400"
+          value={pwd} onChange={e => setPwd(e.target.value)} />
+        <input type="password" placeholder="Confirmer"
+          className="flex-1 text-xs border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-civium-400"
+          value={pwd2} onChange={e => setPwd2(e.target.value)} />
+      </div>
+      <button
+        className="text-xs px-3 py-1.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg hover:bg-amber-100 transition-colors disabled:opacity-50"
+        onClick={doExport} disabled={busy || !pwd || !pwd2}
+      >{busy ? "Chiffrement…" : "Télécharger la sauvegarde chiffrée (.civium-backup)"}</button>
+      <p className="text-xs text-gray-400">Stockez ce fichier hors de cet appareil. Chiffré avec Argon2id + ChaCha20-Poly1305.</p>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [networks, setNetworks] = useState<NetworkInfo[]>([]);
+  // Toast notifications
+  const [toasts, setToasts] = useState<{ id: number; msg: string; kind: "error" | "ok" }[]>([]);
+  const [updateAvailable, setUpdateAvailable] = useState<{ version: string } | null>(null);
+  const toastId = useRef(0);
+  function showToast(msg: string, kind: "error" | "ok" = "error") {
+    const id = ++toastId.current;
+    setToasts((t) => [...t, { id, msg, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
+  }
+
   const [selected, setSelected] = useState<NetworkInfo | null>(null);
   const [members, setMembers] = useState<MemberInfo[]>([]);
   const [pending, setPending] = useState<PendingMemberInfo[]>([]);
   const [messages, setMessages] = useState<MessageDisplay[]>([]);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [oldestRowid, setOldestRowid] = useState<number | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [msgBody, setMsgBody] = useState("");
   const [sending, setSending] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [loadingInvite, setLoadingInvite] = useState(false);
+  const [invitations, setInvitations] = useState<InvitationInfo[]>([]);
+  const [revokingNonce, setRevokingNonce] = useState<string | null>(null);
+  const [mutedMembers, setMutedMembers] = useState<Set<string>>(new Set());
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [acceptingConn, setAcceptingConn] = useState<string | null>(null);
+  const [actingConn, setActingConn] = useState<string | null>(null);
   const [admitting, setAdmitting] = useState<string | null>(null);
+  const [admitCircle, setAdmitCircle] = useState<Record<string, number>>({}); // cid → circle
+  const [changingCircle, setChangingCircle] = useState<string | null>(null);
+  const [deletingMessage, setDeletingMessage] = useState<string | null>(null);
   const [nodeStatus, setNodeStatus] = useState<NodeStatus>({
     running: false,
     listen_addrs: [],
@@ -73,10 +148,44 @@ export default function Dashboard() {
   const [delegatingTo, setDelegatingTo] = useState<Record<string, string>>({}); // proposalId|"global" → cid
   const [savingDelegation, setSavingDelegation] = useState<string | null>(null);
 
+  // Delegation (avancé — masqué par défaut)
+  const [showDelegationPanel, setShowDelegationPanel] = useState(false);
+
+  // File attachment state
+  const [sendingFile, setSendingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileDataCache, setFileDataCache] = useState<Record<string, string>>({});
+  const [loadingFile, setLoadingFile] = useState<string | null>(null);
+  const [showWebcam, setShowWebcam] = useState(false);
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
+  const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
+  const [webcamMode, setWebcamMode] = useState<"photo" | "video">("photo");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
+  const webcamVideoRef = useRef<HTMLVideoElement>(null);
+  const webcamCanvasRef = useRef<HTMLCanvasElement>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+  const webcamWantedRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<BlobPart[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Lightbox
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+
   // Garde-fou state
   const [adminActions, setAdminActions] = useState<AdminActionInfo[]>([]);
   const [contesting, setContesting] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
+  // Pagination for long lists (50 items per page)
+  const PAGE_SIZE = 50;
+  const [membersPage, setMembersPage] = useState(0);
+  const [agendaPage, setAgendaPage] = useState(0);
+  const [docsPage, setDocsPage] = useState(0);
+  const [dirPage, setDirPage] = useState(0);
 
   // Directory state
   const [dirEntries, setDirEntries] = useState<DirectoryEntryInfo[]>([]);
@@ -161,8 +270,13 @@ export default function Dashboard() {
 
   // RCC state
   const [rccStatuses, setRccStatuses] = useState<Record<string, RccStatusInfo>>({});
-  const [rccEmail, setRccEmail] = useState("");
   const [rccRegistering, setRccRegistering] = useState(false);
+
+  // Profile email (contact pour RCC)
+  const [profileEmail, setProfileEmail] = useState("");
+  const [profileEmailEdit, setProfileEmailEdit] = useState("");
+  const [profileEmailEditing, setProfileEmailEditing] = useState(false);
+  const [profileEmailSaving, setProfileEmailSaving] = useState(false);
 
   // ActivityPub state
   const [apFollowers, setApFollowers] = useState<ApFollowerInfo[]>([]);
@@ -202,16 +316,18 @@ export default function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
   const [identity, setIdentity] = useState<{ cid_short: string; cid_full: string; secret_b58: string } | null>(null);
   const [secretVisible, setSecretVisible] = useState(false);
+  const [lastBackup, setLastBackup] = useState<string | null>(null);
+  const [backingUp, setBackingUp] = useState(false);
 
   // Active view within selected network
-  type ActiveView = 'messages' | 'membres' | 'gouvernance' | 'agenda' | 'documents' | 'activite' | 'notifications' | 'annuaire' | 'rrm' | 'extensions';
+  type ActiveView = 'messages' | 'membres' | 'gouvernance' | 'agenda' | 'documents' | 'activite' | 'notifications' | 'annuaire' | 'rrm' | 'extensions' | 'connexions';
   const [activeView, setActiveView] = useState<ActiveView>('messages');
 
   // Create network form
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createName, setCreateName] = useState("");
-  const [createAdminEmail, setCreateAdminEmail] = useState("");
-  const [createIsPublic, setCreateIsPublic] = useState(false);
+  const [createIsPublic, setCreateIsPublic] = useState(true);
+  const [createNetworkType, setCreateNetworkType] = useState<'standard' | 'annuaire' | 'rrm'>('standard');
   const [creating, setCreating] = useState(false);
 
   // Email invite
@@ -232,20 +348,79 @@ export default function Dashboard() {
   const [activeAlerts, setActiveAlerts] = useState<FraudAlertInfo[]>([]);
   const [rootConnected, setRootConnected] = useState<string | null>(null);
 
+  // DB error state
+  const [dbError, setDbError] = useState<string | null>(null);
+  const [dbRestored, setDbRestored] = useState(false);
+
+  // Node watchdog state
+  const [nodeCrashed, setNodeCrashed] = useState(false);
+
+  // Backup reminder banner
+  const [backupDismissed, setBackupDismissed] = useState<boolean>(
+    () => localStorage.getItem("civium.backup_warned") === "1"
+  );
+  function dismissBackupWarning() {
+    localStorage.setItem("civium.backup_warned", "1");
+    setBackupDismissed(true);
+  }
+
   // Global activity feed (home screen)
   const [globalFeed, setGlobalFeed] = useState<ActivityEventInfo[]>([]);
 
+  // Clipboard copy feedback: stores the key of the last copied item for 2 s.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const copyToClipboard = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
+  };
+
   // Keep refs so event listeners always read the latest value.
   const selectedRef = useRef<NetworkInfo | null>(null);
+  const networksRef = useRef<NetworkInfo[]>([]);
   useEffect(() => {
     selectedRef.current = selected;
   }, [selected]);
+  useEffect(() => {
+    networksRef.current = networks;
+  }, [networks]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when messages change.
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Stop webcam whenever the modal closes (or component unmounts)
+  useEffect(() => {
+    if (showWebcam) return; // only act on close
+    const video = webcamVideoRef.current;
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+      video.load();
+    }
+    webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
+    webcamStreamRef.current = null;
+  }, [showWebcam]);
+
+  // Safety: also stop on unmount
+  useEffect(() => {
+    return () => {
+      webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  // Auto-load all file messages when messages change
+  useEffect(() => {
+    if (!selected) return;
+    for (const msg of messages) {
+      if (msg.is_file && !fileDataCache[msg.id]) {
+        handleGetFileData(selected.cid_short, msg.id);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, selected?.cid_short]);
 
   const refreshOutboxCounts = useCallback(() => {
     tauriInvoke<OutboxCountInfo[]>("outbox_count_all")
@@ -277,6 +452,8 @@ export default function Dashboard() {
     tauriInvoke<PairedDeviceInfo[]>("pair_list").then(setPairedDevices).catch(() => {});
     tauriInvoke<{ cid_short: string; cid_full: string; secret_b58: string }>("identity_show")
       .then(setIdentity).catch(() => {});
+    tauriInvoke<string>("profile_email_get")
+      .then((e) => { setProfileEmail(e); setProfileEmailEdit(e); }).catch(() => {});
     refreshOutboxCounts();
     refreshRccStatuses();
     refreshGlobalFeed();
@@ -297,11 +474,37 @@ export default function Dashboard() {
   }, []);
 
   const refreshMessages = useCallback((cid: string) => {
-    tauriInvoke<MessageDisplay[]>("message_list", { networkCid: cid }).then(setMessages);
+    tauriInvoke<MessageListPage>("message_list_paged", { networkCid: cid, limit: 50 }).then((page) => {
+      setMessages(page.messages);
+      setHasMoreMessages(page.has_more);
+      setOldestRowid(page.oldest_rowid);
+    });
   }, []);
 
+  const loadOlderMessages = useCallback(async (cid: string) => {
+    if (!oldestRowid || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    try {
+      const page = await tauriInvoke<MessageListPage>("message_list_paged", {
+        networkCid: cid, limit: 50, beforeRowid: oldestRowid,
+      });
+      setMessages((prev) => [...page.messages, ...prev]);
+      setHasMoreMessages(page.has_more);
+      setOldestRowid(page.oldest_rowid);
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [oldestRowid, loadingOlderMessages]);
+
   const refreshProposals = useCallback((cid: string) => {
-    tauriInvoke<ProposalInfo[]>("proposal_list", { networkCid: cid }).then(setProposals);
+    tauriInvoke<ProposalInfo[]>("proposal_list", { networkCid: cid }).then((props) => {
+      setProposals(props);
+      props.forEach((p) => {
+        tauriInvoke<VoteResultInfo>("vote_results", { networkCid: cid, proposalId: p.id })
+          .then((r) => setVoteResults((prev) => ({ ...prev, [p.id]: r })))
+          .catch(() => {});
+      });
+    });
   }, []);
 
   const refreshAdminActions = useCallback((cid: string) => {
@@ -400,25 +603,10 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!selected) return;
+    // Load essentials: network info, members, and messages (default tab).
     refreshNetwork(selected.cid_short);
     refreshMessages(selected.cid_short);
-    refreshProposals(selected.cid_short);
-    refreshAdminActions(selected.cid_short);
-    refreshDelegations(selected.cid_short);
-    if (selected.is_directory) {
-      refreshDirEntries(selected.cid_short);
-      refreshFederations(selected.cid_short);
-    }
-    if (selected.is_rrm) {
-      refreshRrmEntries(selected.cid_short);
-    }
-    if (!selected.is_directory && !selected.is_rrm) {
-      refreshTrustedRrms(selected.cid_short);
-    }
-    refreshAgendaEvents(selected.cid_short);
-    refreshDocuments(selected.cid_short);
-    refreshActivity(selected.cid_short);
-    refreshAp(selected.cid_short);
+    // Other tabs load lazily via the activeView effect below.
     // Charger la config hub pour ce réseau
     tauriInvoke<{ hub_url: string; enabled: boolean; last_sync_ts: number } | null>("hub_config_get", {
       networkCid: selected.cid_short,
@@ -428,7 +616,14 @@ export default function Dashboard() {
       setHubMsg(null);
     }).catch(() => {});
     setInviteLink(null);
+    setInvitations([]);
+    tauriInvoke<InvitationInfo[]>("invitation_list", { networkCid: selected.cid_short })
+      .then(setInvitations).catch(() => {});
+    tauriInvoke<string[]>("member_muted_list", { networkCid: selected.cid_short })
+      .then((cids) => setMutedMembers(new Set(cids))).catch(() => {});
     setMessages([]);
+    setHasMoreMessages(false);
+    setOldestRowid(null);
     setProposals([]);
     setVoteResults({});
     setShowProposalForm(false);
@@ -436,6 +631,10 @@ export default function Dashboard() {
     setMyDelegations([]);
     setDirEntries([]);
     setDirSearchResults(null);
+    setMembersPage(0);
+    setAgendaPage(0);
+    setDocsPage(0);
+    setDirPage(0);
     setDirSearchQuery("");
     setShowPublishForm(false);
     setFederations([]);
@@ -458,6 +657,48 @@ export default function Dashboard() {
     setUnreadCount(0);
   }, [selected?.cid_short]);
 
+  // Lazy-load tab-specific data when the active view changes.
+  useEffect(() => {
+    if (!selected) return;
+    const cid = selected.cid_short;
+    switch (activeView) {
+      case 'gouvernance':
+        refreshProposals(cid);
+        refreshAdminActions(cid);
+        refreshDelegations(cid);
+        break;
+      case 'agenda':
+        refreshAgendaEvents(cid);
+        break;
+      case 'documents':
+        refreshDocuments(cid);
+        break;
+      case 'activite':
+      case 'notifications':
+        refreshActivity(cid);
+        break;
+      case 'annuaire':
+        refreshDirEntries(cid);
+        refreshFederations(cid);
+        break;
+      case 'rrm':
+        refreshRrmEntries(cid);
+        refreshTrustedRrms(cid);
+        break;
+      case 'connexions':
+        tauriInvoke<ConnectionInfo[]>("connection_list", { networkCid: cid })
+          .then(setConnections).catch(() => {});
+        break;
+      case 'extensions':
+        refreshAp(cid);
+        break;
+    }
+  }, [selected?.cid_short, activeView,
+    refreshProposals, refreshAdminActions, refreshDelegations,
+    refreshAgendaEvents, refreshDocuments, refreshActivity,
+    refreshDirEntries, refreshFederations,
+    refreshRrmEntries, refreshTrustedRrms, refreshAp]);
+
   // Charger les paramètres du nœud une seule fois.
   useEffect(() => {
     tauriInvoke<NodeSettingsInfo>("node_settings_get")
@@ -477,7 +718,11 @@ export default function Dashboard() {
     const pollStatus = () => {
       tauriInvoke<NodeStatus>("node_status")
         .then((s) => {
-          if (mounted) setNodeStatus(s);
+          if (mounted) {
+            setNodeStatus(s);
+            // Clear the crash banner once the node is back online.
+            if (s.running) setNodeCrashed(false);
+          }
         })
         .catch(() => {});
     };
@@ -486,6 +731,11 @@ export default function Dashboard() {
 
     // Load MCP status once on mount
     tauriInvoke<McpStatus>("mcp_status").then(setMcpStatus).catch(() => {});
+
+    // Check for updates once on mount
+    checkUpdate().then((update) => {
+      if (update?.available && mounted) setUpdateAvailable({ version: update.version });
+    }).catch(() => {});
 
     tauriInvoke<FraudAlertInfo[]>("get_active_alerts").then((a) => {
       if (mounted) setActiveAlerts(a);
@@ -504,7 +754,7 @@ export default function Dashboard() {
     let unlistenRcc: UnlistenFn | null = null;
     let unlistenAlert: UnlistenFn | null = null;
 
-    listen<string>("civium://sync-completed", (event) => {
+    listen<string>("civium://sync-completed", async (event) => {
       const cid = event.payload;
       tauriInvoke<NetworkInfo[]>("network_list").then((nets) => {
         if (mounted) setNetworks(nets);
@@ -512,6 +762,14 @@ export default function Dashboard() {
       if (selectedRef.current?.cid_short === cid) {
         refreshNetwork(cid);
         refreshMessages(cid);
+      } else {
+        // Notify user of new messages in a background network
+        let perm = await isPermissionGranted();
+        if (!perm) { const res = await requestPermission(); perm = res === "granted"; }
+        if (perm) {
+          const net = networksRef.current?.find((n) => n.cid_short === cid);
+          if (net) sendNotification({ title: "Nouveau message", body: `Nouveau(x) message(s) dans « ${net.name} »` });
+        }
       }
       refreshOutboxCounts();
       refreshGlobalFeed();
@@ -541,8 +799,13 @@ export default function Dashboard() {
       unlistenRcc = fn;
     });
 
-    listen<FraudAlertInfo>("civium://fraud-alert", (event) => {
-      if (mounted) setActiveAlerts((prev) => [...prev, event.payload]);
+    listen<FraudAlertInfo>("civium://fraud-alert", async (event) => {
+      if (mounted) {
+        setActiveAlerts((prev) => [...prev, event.payload]);
+        let perm = await isPermissionGranted();
+        if (!perm) { const res = await requestPermission(); perm = res === "granted"; }
+        if (perm) sendNotification({ title: "Alerte Civium", body: event.payload.description });
+      }
     }).then((fn) => {
       unlistenAlert = fn;
     });
@@ -554,6 +817,41 @@ export default function Dashboard() {
       unlistenRoot = fn;
     });
 
+    let unlistenDbError: UnlistenFn | null = null;
+    listen<string>("civium://db-error", (event) => {
+      if (mounted) setDbError(event.payload);
+    }).then((fn) => {
+      unlistenDbError = fn;
+    });
+
+    let unlistenNodeCrashed: UnlistenFn | null = null;
+    listen("civium://node-crashed", () => {
+      if (mounted) setNodeCrashed(true);
+    }).then((fn) => {
+      unlistenNodeCrashed = fn;
+    });
+
+    let unlistenDbRestored: UnlistenFn | null = null;
+    listen("civium://db-restored", () => {
+      if (mounted) setDbRestored(true);
+    }).then((fn) => {
+      unlistenDbRestored = fn;
+    });
+
+    // Deep link handler: civium://join/<b58> ou civium://pair/<b58>
+    function handleDeepLinkEvent(e: Event) {
+      if (!mounted) return;
+      const { action, param } = (e as CustomEvent<{ action: string; param: string }>).detail;
+      if (action === "join" && param) {
+        setJoinInviteLink(param);
+        setShowJoinForm(true);
+      } else if (action === "pair" && param) {
+        setPairLink(param);
+        setShowPairCompleteForm(true);
+      }
+    }
+    window.addEventListener("civium:deep-link", handleDeepLinkEvent);
+
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -564,6 +862,10 @@ export default function Dashboard() {
       unlistenRcc?.();
       unlistenAlert?.();
       unlistenRoot?.();
+      unlistenDbError?.();
+      unlistenDbRestored?.();
+      unlistenNodeCrashed?.();
+      window.removeEventListener("civium:deep-link", handleDeepLinkEvent);
     };
   }, [refreshNetwork, refreshMessages, refreshOutboxCounts, refreshRccStatuses, refreshGlobalFeed]);
 
@@ -576,6 +878,9 @@ export default function Dashboard() {
         expiresIn: 0,
       });
       setInviteLink(link);
+      // Recharger la liste des invitations
+      tauriInvoke<InvitationInfo[]>("invitation_list", { networkCid: selected.cid_short })
+        .then(setInvitations).catch(() => {});
     } finally {
       setLoadingInvite(false);
     }
@@ -593,7 +898,7 @@ export default function Dashboard() {
       refreshNetwork(selected.cid_short);
       refreshActivity(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setAdmitting(null);
     }
@@ -608,7 +913,24 @@ export default function Dashboard() {
       });
       refreshNetwork(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
+    }
+  }
+
+  async function handleChangeCircle(memberCid: string, circle: number) {
+    if (!selected) return;
+    setChangingCircle(memberCid);
+    try {
+      await tauriInvoke("member_change_circle", {
+        networkCid: selected.cid_short,
+        memberCid,
+        circle,
+      });
+      refreshNetwork(selected.cid_short);
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setChangingCircle(null);
     }
   }
 
@@ -637,7 +959,7 @@ export default function Dashboard() {
       refreshDelegations(selected.cid_short);
       setDelegatingTo((prev) => ({ ...prev, [key]: "" }));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSavingDelegation(null);
     }
@@ -652,7 +974,7 @@ export default function Dashboard() {
       });
       refreshDelegations(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -676,7 +998,7 @@ export default function Dashboard() {
         refreshProposals(selected.cid_short);
       }
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setContesting(null);
     }
@@ -690,7 +1012,7 @@ export default function Dashboard() {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      if (opts.length < 2) { alert("Au moins 2 options requises."); return; }
+      if (opts.length < 2) { showToast("Au moins 2 options requises."); return; }
       await tauriInvoke("proposal_create", {
         networkCid: selected.cid_short,
         title: propTitle.trim(),
@@ -707,7 +1029,7 @@ export default function Dashboard() {
       refreshProposals(selected.cid_short);
       refreshActivity(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setCreatingProposal(false);
     }
@@ -729,7 +1051,7 @@ export default function Dashboard() {
       setVoteResults((prev) => ({ ...prev, [proposalId]: result }));
       refreshActivity(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setVoting(null);
     }
@@ -762,7 +1084,7 @@ export default function Dashboard() {
       setFedPeerAddr("");
       setShowFedForm(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSavingFed(false);
     }
@@ -777,7 +1099,7 @@ export default function Dashboard() {
       });
       setFederations((prev) => prev.filter((f) => f.peer_cid_short !== peerCid));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -790,8 +1112,9 @@ export default function Dashboard() {
         includeFederated,
       });
       setDirSearchResults(results);
+      setDirPage(0);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -816,7 +1139,7 @@ export default function Dashboard() {
       setPubTags("");
       setShowPublishForm(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setPublishing(false);
     }
@@ -832,7 +1155,7 @@ export default function Dashboard() {
       setDirEntries((prev) => prev.filter((e) => e.id !== entryId));
       setDirSearchResults((prev) => prev ? prev.filter((e) => e.id !== entryId) : null);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -854,7 +1177,7 @@ export default function Dashboard() {
       setReportEvidence("");
       setShowReportForm(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setReporting(false);
     }
@@ -866,7 +1189,7 @@ export default function Dashboard() {
       await tauriInvoke("rrm_remove", { rrmCid: selected.cid_short, entryId });
       setRrmEntries((prev) => prev.filter((e) => e.id !== entryId));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -884,7 +1207,7 @@ export default function Dashboard() {
       setTrustRrmName("");
       setShowTrustForm(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSavingTrust(false);
     }
@@ -896,7 +1219,7 @@ export default function Dashboard() {
       await tauriInvoke("network_untrust_rrm", { networkCid: selected.cid_short, rrmCid });
       setTrustedRrms((prev) => prev.filter((t) => t.rrm_cid_short !== rrmCid));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -914,7 +1237,7 @@ export default function Dashboard() {
         setGuardians((prev) => { const n = { ...prev }; delete n[memberCid]; return n; });
       }
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSettingMinor(null);
     }
@@ -927,7 +1250,7 @@ export default function Dashboard() {
       await tauriInvoke("member_set_role", { networkCid: selected.cid_short, memberCid, role });
       refreshNetwork(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSettingRole(null);
     }
@@ -942,7 +1265,7 @@ export default function Dashboard() {
       setExpandedMember(null);
       refreshNetwork(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setRemovingMember(null);
     }
@@ -971,7 +1294,7 @@ export default function Dashboard() {
       setGuardians((prev) => ({ ...prev, [minorCid]: [...(prev[minorCid] ?? []), link] }));
       setNewGuardianCid("");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSavingGuardian(false);
     }
@@ -990,7 +1313,7 @@ export default function Dashboard() {
         [minorCid]: (prev[minorCid] ?? []).filter((l) => l.guardian_cid_short !== guardianCid),
       }));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1009,7 +1332,7 @@ export default function Dashboard() {
       setDmBody((prev) => ({ ...prev, [toCidShort]: "" }));
       refreshOutboxCounts();
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSendingDm(null);
     }
@@ -1026,7 +1349,7 @@ export default function Dashboard() {
       const updated = await tauriInvoke<PluginInfo[]>("plugin_list");
       setPlugins(updated);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setTogglingPlugin(null);
     }
@@ -1063,7 +1386,7 @@ export default function Dashboard() {
       setShowAgendaForm(false);
       refreshAgendaEvents(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setCreatingEvent(false);
     }
@@ -1078,7 +1401,7 @@ export default function Dashboard() {
       });
       refreshAgendaEvents(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1097,7 +1420,7 @@ export default function Dashboard() {
       refreshDocuments(selected.cid_short);
       refreshActivity(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setCreatingDoc(false);
     }
@@ -1113,7 +1436,7 @@ export default function Dashboard() {
       setExpandedDocId(null);
       refreshDocuments(selected.cid_short);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1124,7 +1447,7 @@ export default function Dashboard() {
       setMcpStatus(status);
       setShowMcpToken(true);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1134,7 +1457,7 @@ export default function Dashboard() {
       setMcpStatus({ running: false, port: null, token: null, url: null });
       setShowMcpToken(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1145,7 +1468,7 @@ export default function Dashboard() {
       setPairingSession(session);
       setPairLabel("");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1161,7 +1484,7 @@ export default function Dashboard() {
       setPairCompleteLabel("");
       setShowPairCompleteForm(false);
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1212,26 +1535,25 @@ export default function Dashboard() {
       });
       const s = await tauriInvoke<NodeSettingsInfo>("node_settings_get");
       setNodeSettings(s);
-      alert("Paramètres enregistrés. Redémarrez l'application pour les appliquer.");
+      showToast("Paramètres enregistrés. Redémarrez l'application pour les appliquer.", "ok");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setNodeSaving(false);
     }
   }
 
   async function handleRccRegister() {
-    if (!selected || !rccEmail.trim()) return;
+    if (!selected || !profileEmail.trim()) return;
     setRccRegistering(true);
     try {
       const info = await tauriInvoke<RccStatusInfo>("rcc_register", {
         networkCid: selected.cid_short,
-        adminEmail: rccEmail.trim(),
+        adminEmail: profileEmail.trim(),
       });
       setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
-      setRccEmail("");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setRccRegistering(false);
     }
@@ -1247,7 +1569,7 @@ export default function Dashboard() {
       });
       setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setRccRegistering(false);
     }
@@ -1258,7 +1580,7 @@ export default function Dashboard() {
       await tauriInvoke("pair_revoke", { deviceId });
       refreshPairedDevices();
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     }
   }
 
@@ -1275,7 +1597,7 @@ export default function Dashboard() {
       refreshActivity(selected.cid_short);
       refreshOutboxCounts();
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setSending(false);
     }
@@ -1285,6 +1607,281 @@ export default function Dashboard() {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
+    }
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !selected) return;
+    // Audio/video always go through the temp-file path to avoid large IPC payloads.
+    // Other files use IPC only if ≤ 500 KB.
+    const isMedia = file.type.startsWith("video/") || file.type.startsWith("audio/");
+    const MAX_IPC = 524_288;      // 500 Ko — seuil IPC pour les non-média
+    const MAX_TOTAL = 524_288_000; // 500 Mo — limite absolue
+    if (file.size > MAX_TOTAL) {
+      showToast("Fichier trop volumineux (max 500 Mo)");
+      return;
+    }
+    setSendingFile(true);
+    try {
+      let msg: MessageDisplay;
+      if (!isMedia && file.size <= MAX_IPC) {
+        // Petits fichiers (≤ 5 Mo) : envoi direct en base64 via IPC
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        // Chunked encoding to avoid slow character-by-character concatenation
+        const CHUNK = 0x8000;
+        let binary = "";
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+        }
+        msg = await tauriInvoke<MessageDisplay>("message_send_file", {
+          networkCid: selected.cid_short,
+          filename: file.name,
+          mimeType: file.type || "application/octet-stream",
+          dataBase64: btoa(binary),
+        });
+      } else {
+        // Gros fichiers (> 5 Mo) : écriture sur disque, envoi via chemin
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        const tmpDir = await tempDir();
+        const tmpPath = `${tmpDir}civium_upload_${Date.now()}_${file.name}`;
+        await fsWriteFile(tmpPath, bytes);
+        msg = await tauriInvoke<MessageDisplay>("message_send_file_path", {
+          networkCid: selected.cid_short,
+          tempPath: tmpPath,
+          filename: file.name,
+          mimeType: file.type || "application/octet-stream",
+        });
+      }
+      setMessages((prev) => [...prev, msg]);
+      refreshActivity(selected.cid_short);
+    } catch (err) {
+      showToast("Erreur lors de l'envoi du fichier : " + String(err));
+    } finally {
+      setSendingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleGetFileData(networkCid: string, messageId: string): Promise<void> {
+    if (fileDataCache[messageId] || loadingFile === messageId) return;
+    setLoadingFile(messageId);
+    try {
+      const res = await tauriInvoke<{ filename: string; mime_type: string; data_b64: string }>(
+        "message_get_file", { networkCid, messageId }
+      );
+      setFileDataCache((prev) => ({ ...prev, [messageId]: res.data_b64 }));
+    } catch (e) {
+      showToast("Erreur chargement fichier : " + String(e));
+    } finally {
+      setLoadingFile(null);
+    }
+  }
+
+  function handleDownloadFile(msg: MessageDisplay) {
+    const data = fileDataCache[msg.id];
+    if (!data) { return; }
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: msg.mime_type || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = msg.filename || "fichier";
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+
+  async function openWebcam() {
+    webcamWantedRef.current = true;
+    setShowWebcam(true);
+    setCapturedPhoto(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      // Race: user closed modal while getUserMedia was pending → stop immediately
+      if (!webcamWantedRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      webcamStreamRef.current = stream;
+      setWebcamStream(stream);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          // Guard: user may have closed the modal between getUserMedia and this rAF
+          if (!webcamWantedRef.current) {
+            stream.getTracks().forEach((t) => t.stop());
+            webcamStreamRef.current = null;
+            return;
+          }
+          if (webcamVideoRef.current) {
+            webcamVideoRef.current.srcObject = stream;
+            webcamVideoRef.current.play().catch(() => {});
+          }
+        });
+      });
+    } catch {
+      webcamWantedRef.current = false;
+      setShowWebcam(false);
+      showToast("Impossible d'accéder à la caméra. Vérifiez les permissions.");
+    }
+  }
+
+  function stopRecording() {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }
+
+  function closeWebcam() {
+    webcamWantedRef.current = false;
+    stopRecording();
+    mediaRecorderRef.current = null;
+    recordedChunksRef.current = [];
+    const stream = webcamStreamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      webcamStreamRef.current = null;
+    }
+    const video = webcamVideoRef.current;
+    if (video) {
+      video.pause();
+      video.srcObject = null;
+    }
+    if (recordedUrl) { URL.revokeObjectURL(recordedUrl); }
+    setShowWebcam(false);
+    setWebcamStream(null);
+    setCapturedPhoto(null);
+    setRecordedBlob(null);
+    setRecordedUrl(null);
+    setRecordingSeconds(0);
+  }
+
+  function capturePhoto() {
+    if (!webcamVideoRef.current || !webcamCanvasRef.current) return;
+    const video = webcamVideoRef.current;
+    const canvas = webcamCanvasRef.current;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    webcamWantedRef.current = false;
+    video.srcObject = null;
+    webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
+    webcamStreamRef.current = null;
+    setWebcamStream(null);
+    setCapturedPhoto(canvas.toDataURL("image/jpeg", 0.9));
+  }
+
+  async function sendCapturedPhoto() {
+    if (!capturedPhoto || !selected) return;
+    const base64 = capturedPhoto.split(",")[1];
+    setSendingFile(true);
+    try {
+      const msg = await tauriInvoke<MessageDisplay>("message_send_file", {
+        networkCid: selected.cid_short,
+        filename: `photo_${Date.now()}.jpg`,
+        mimeType: "image/jpeg",
+        dataBase64: base64,
+      });
+      setMessages((prev) => [...prev, msg]);
+      closeWebcam();
+      refreshActivity(selected.cid_short);
+      refreshGlobalFeed();
+    } catch (e) {
+      showToast("Erreur envoi photo : " + String(e));
+    } finally {
+      setSendingFile(false);
+    }
+  }
+
+  function startRecording() {
+    const stream = webcamStreamRef.current;
+    if (!stream) return;
+    recordedChunksRef.current = [];
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : "video/webm";
+    const recorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorderRef.current = recorder;
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+      const url = URL.createObjectURL(blob);
+      // Stop camera tracks first
+      webcamWantedRef.current = false;
+      webcamStreamRef.current?.getTracks().forEach((t) => t.stop());
+      webcamStreamRef.current = null;
+      if (webcamVideoRef.current) {
+        webcamVideoRef.current.srcObject = null;
+      }
+      setWebcamStream(null);
+      // Let React re-render with recordedBlob/recordedUrl — the <video src={recordedUrl}> handles playback
+      setRecordedBlob(blob);
+      setRecordedUrl(url);
+    };
+    recorder.start(200); // collect data every 200ms
+    setIsRecording(true);
+    setRecordingSeconds(0);
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingSeconds((s) => s + 1);
+    }, 1000);
+  }
+
+  async function sendRecordedVideo() {
+    if (!recordedBlob || !selected) return;
+    const MAX_TOTAL = 524_288_000; // 500 Mo
+    const MAX_IPC   = 5_242_880;  // 5 Mo — above this use the temp-file path
+    if (recordedBlob.size > MAX_TOTAL) {
+      showToast("Vidéo trop volumineuse (max 500 Mo).");
+      return;
+    }
+    setSendingFile(true);
+    try {
+      const filename = `video_${Date.now()}.webm`;
+      let msg: MessageDisplay;
+      if (recordedBlob.size <= MAX_IPC) {
+        // Small recording: encode to base64 in-process (native FileReader)
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve((reader.result as string).split(",")[1]);
+          reader.onerror = reject;
+          reader.readAsDataURL(recordedBlob!);
+        });
+        msg = await tauriInvoke<MessageDisplay>("message_send_file", {
+          networkCid: selected.cid_short,
+          filename,
+          mimeType: "video/webm",
+          dataBase64: base64,
+        });
+      } else {
+        // Large recording: write to disk, let Rust read it (avoids large IPC payload)
+        const bytes = new Uint8Array(await recordedBlob.arrayBuffer());
+        const tmpDir = await tempDir();
+        const tmpPath = `${tmpDir}civium_upload_${Date.now()}_${filename}`;
+        await fsWriteFile(tmpPath, bytes);
+        msg = await tauriInvoke<MessageDisplay>("message_send_file_path", {
+          networkCid: selected.cid_short,
+          tempPath: tmpPath,
+          filename,
+          mimeType: "video/webm",
+        });
+      }
+      setMessages((prev) => [...prev, msg]);
+      closeWebcam();
+      refreshActivity(selected.cid_short);
+      refreshGlobalFeed();
+    } catch (e) {
+      showToast("Erreur envoi vidéo : " + String(e));
+    } finally {
+      setSendingFile(false);
     }
   }
 
@@ -1311,7 +1908,7 @@ export default function Dashboard() {
       setShowJoinForm(false);
       setActiveView("messages");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setJoiningPublic(null);
     }
@@ -1344,7 +1941,7 @@ export default function Dashboard() {
       setJoinPeerAddr("");
       setJoinDisplayName("");
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setJoining(false);
     }
@@ -1355,13 +1952,20 @@ export default function Dashboard() {
     setCreating(true);
     try {
       const name = createName.trim();
-      const net = await tauriInvoke<NetworkInfo>("network_create", { name, displayName: name, privacy: !createIsPublic });
+      let net: NetworkInfo;
+      if (createNetworkType === 'annuaire') {
+        net = await tauriInvoke<NetworkInfo>("directory_create", { name, displayName: name });
+      } else if (createNetworkType === 'rrm') {
+        net = await tauriInvoke<NetworkInfo>("rrm_create", { name, displayName: name });
+      } else {
+        net = await tauriInvoke<NetworkInfo>("network_create", { name, displayName: name, privacy: !createIsPublic });
+      }
       const createdCid = net.cid_short;
-      // Auto-register to RCC if email provided
-      if (createAdminEmail.trim()) {
+      // Auto-register to RCC avec l'email de profil (réseaux standard uniquement)
+      if (createNetworkType === 'standard' && profileEmail.trim()) {
         tauriInvoke("rcc_register", {
           networkCid: createdCid,
-          adminEmail: createAdminEmail.trim(),
+          adminEmail: profileEmail.trim(),
         }).catch(() => {});
       }
       const nets = await tauriInvoke<NetworkInfo[]>("network_list");
@@ -1370,13 +1974,13 @@ export default function Dashboard() {
       if (created) {
         selectedRef.current = created;
         setSelected(created);
-        setActiveView('messages');
+        setActiveView(createNetworkType === 'annuaire' ? 'annuaire' : createNetworkType === 'rrm' ? 'rrm' : 'messages');
       }
       setShowCreateForm(false);
       setCreateName("");
-      setCreateAdminEmail("");
+      setCreateNetworkType('standard');
     } catch (e) {
-      alert(String(e));
+      showToast(String(e));
     } finally {
       setCreating(false);
     }
@@ -1389,34 +1993,110 @@ export default function Dashboard() {
   const hasAgenda = enabledPluginIds.some((id) => id.includes("agenda"));
   const hasDocuments = enabledPluginIds.some((id) => id.includes("document"));
 
-  const globalNavItem = (view: ActiveView, icon: string, label: string, badge?: number) => (
-    <button
-      key={view}
-      onClick={() => { setActiveView(view); setShowSettings(false); setShowCreateForm(false); setShowJoinForm(false); }}
-      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${
-        activeView === view && !showSettings && !showCreateForm && !showJoinForm
-          ? "bg-civium-500 text-white"
-          : "text-civium-200 hover:bg-civium-700"
-      }`}
-    >
-      <span>{icon}</span>
-      <span className="flex-1">{label}</span>
-      {badge !== undefined && badge > 0 && (
-        <span className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center">{badge}</span>
-      )}
-    </button>
-  );
+  const globalNavItem = (view: ActiveView, icon: string, label: string, badge?: number) => {
+    const isActive = activeView === view && !showSettings && !showCreateForm && !showJoinForm;
+    return (
+      <button
+        key={view}
+        role="tab"
+        aria-selected={isActive}
+        aria-controls={`panel-${view}`}
+        onClick={() => { setActiveView(view); setShowSettings(false); setShowCreateForm(false); setShowJoinForm(false); }}
+        className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-2 ${
+          isActive ? "bg-civium-500 text-white" : "text-civium-200 hover:bg-civium-700"
+        }`}
+      >
+        <span aria-hidden="true">{icon}</span>
+        <span className="flex-1">{label}</span>
+        {badge !== undefined && badge > 0 && (
+          <span
+            aria-label={`${badge} non lus`}
+            className="text-xs bg-red-500 text-white rounded-full px-1.5 py-0.5 min-w-[1.2rem] text-center"
+          >{badge}</span>
+        )}
+      </button>
+    );
+  };
+
+  // DB corruption screen — shown before everything else
+  if (dbError) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-red-50 p-6" role="alert" aria-live="assertive">
+        <div className="bg-white rounded-2xl shadow-lg max-w-lg w-full p-8 space-y-6">
+          <div className="text-center">
+            <div className="text-5xl mb-4">⚠️</div>
+            <h1 className="text-2xl font-bold text-red-700">Base de données corrompue</h1>
+            {dbRestored ? (
+              <p className="text-sm text-green-700 mt-2 font-medium">
+                Une sauvegarde a été restaurée automatiquement. Veuillez relancer l'application.
+              </p>
+            ) : (
+              <p className="text-sm text-gray-600 mt-2">
+                Civium n'a pas pu ouvrir la base de données locale et aucune sauvegarde n'a pu être restaurée automatiquement.
+              </p>
+            )}
+          </div>
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-xs font-mono text-red-700 break-all">{dbError}</p>
+          </div>
+          <div className="space-y-3 text-sm text-gray-600">
+            <p className="font-semibold">Options :</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Relancez l'application — si une sauvegarde a été restaurée, elle sera utilisée au prochain démarrage.</li>
+              <li>Copiez manuellement un fichier <code className="font-mono text-xs bg-gray-100 px-1 rounded">civium-*.db</code> depuis le dossier <code className="font-mono text-xs bg-gray-100 px-1 rounded">.backups/</code> vers <code className="font-mono text-xs bg-gray-100 px-1 rounded">civium.db</code>.</li>
+              <li>Si aucune sauvegarde n'existe, vous devrez réinitialiser l'application (perte de données). Supprimez <code className="font-mono text-xs bg-gray-100 px-1 rounded">civium.db</code> pour redémarrer depuis zéro.</li>
+            </ul>
+          </div>
+          <button
+            onClick={() => setDbError(null)}
+            className="w-full py-3 bg-gray-200 hover:bg-gray-300 rounded-xl text-sm font-medium transition-colors"
+          >
+            Réessayer (ignorer et continuer)
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-gray-50">
+      {/* Toast notifications */}
+      <div
+        aria-live="polite"
+        aria-atomic="false"
+        className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm"
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            role="alert"
+            className={`flex items-start gap-3 px-4 py-3 rounded-xl shadow-lg text-sm
+              ${t.kind === "error"
+                ? "bg-red-700 text-white"
+                : "bg-green-600 text-white"
+              }`}
+          >
+            <span className="flex-1">{t.msg}</span>
+            <button
+              onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}
+              aria-label="Fermer"
+              className="shrink-0 opacity-70 hover:opacity-100 transition-opacity"
+            >✕</button>
+          </div>
+        ))}
+      </div>
+
       {/* Sidebar */}
-      <aside className="w-64 bg-civium-900 text-white flex flex-col">
+      <aside aria-label="Navigation" className="w-64 bg-civium-900 text-white flex flex-col">
         {/* Mon nœud */}
         <div className="px-4 py-3 border-b border-civium-700">
           <p className="text-xs font-semibold text-civium-400 uppercase tracking-wider mb-2">Mon nœud</p>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`} />
+              <span
+                aria-label={nodeStatus.running ? "Nœud en ligne" : "Nœud hors ligne"}
+                className={`w-2 h-2 rounded-full flex-shrink-0 ${nodeStatus.running ? "bg-green-400" : "bg-gray-500"}`}
+              />
               <span className="text-xs text-civium-100 font-mono truncate max-w-[110px]">
                 {identity ? identity.cid_short : "…"}
               </span>
@@ -1428,9 +2108,12 @@ export default function Dashboard() {
                 setActiveView('messages');
                 setShowCreateForm(false);
                 setShowJoinForm(false);
+                if (next) {
+                  tauriInvoke<string | null>("db_backup_last").then((ts) => setLastBackup(ts));
+                }
               }}
               className={`text-xs px-2 py-1 rounded-lg transition-colors ${
-                showSettings ? "bg-civium-600 text-white" : "text-civium-300 hover:bg-civium-700"
+                showSettings ? "bg-civium-600 text-white" : "text-gray-400 hover:bg-civium-700"
               }`}
               title="Paramètres du nœud"
             >
@@ -1445,15 +2128,17 @@ export default function Dashboard() {
           <div className="flex gap-1">
             <button
               onClick={() => { setShowJoinForm((v) => !v); setShowCreateForm(false); setShowSettings(false); }}
-              className="text-civium-300 hover:text-white hover:bg-civium-700 rounded-lg w-6 h-6 flex items-center justify-center text-xs transition-colors"
+              className={`text-xs px-2 py-1 rounded-lg transition-colors ${
+                showJoinForm ? "bg-civium-600 text-white" : "text-gray-400 hover:bg-civium-700"
+              }`}
               title="Rejoindre un réseau existant"
             >
-              ↩
+              ←
             </button>
             {networks.length === 0 && (
               <button
                 onClick={() => { setShowCreateForm((v) => !v); setShowJoinForm(false); setShowSettings(false); setActiveView('messages'); }}
-                className="text-civium-300 hover:text-white hover:bg-civium-700 rounded-lg w-6 h-6 flex items-center justify-center text-base transition-colors"
+                className={`text-xs px-2 py-1 rounded-lg transition-colors ${showCreateForm ? "bg-civium-600 text-white" : "text-gray-400 hover:bg-civium-700"}`}
                 title="Créer votre réseau"
               >
                 +
@@ -1463,7 +2148,7 @@ export default function Dashboard() {
         </div>
 
         {/* Network list + plugin sub-nav */}
-        <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
+        <nav aria-label="Mes réseaux" className="flex-1 overflow-y-auto px-3 py-2 space-y-1">
           {networks.length === 0 && !showCreateForm && (
             <p className="text-xs text-civium-100 px-2 py-2">Aucun réseau. Cliquez sur + pour en créer un.</p>
           )}
@@ -1546,7 +2231,7 @@ export default function Dashboard() {
         </nav>
 
         {/* Navigation globale */}
-        <div className="px-3 py-2 border-t border-civium-700 space-y-0.5">
+        <div role="tablist" aria-label="Sections du réseau" className="px-3 py-2 border-t border-civium-700 space-y-0.5">
           {selected && (
             <p className="text-xs text-civium-500 px-1 pb-1 truncate" title={selected.name}>
               ◈ {selected.name}
@@ -1561,6 +2246,7 @@ export default function Dashboard() {
           {globalNavItem('notifications', '🔔', 'Notifications', unreadCount > 0 ? unreadCount : undefined)}
           {selected?.is_directory && globalNavItem('annuaire', '🔍', 'Annuaire')}
           {selected?.is_rrm && globalNavItem('rrm', '🚫', 'Réseaux signalés')}
+          {globalNavItem('connexions', '🔗', 'Connexions')}
           {globalNavItem('extensions', '🧩', 'Extensions')}
         </div>
 
@@ -1571,13 +2257,14 @@ export default function Dashboard() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-y-auto">
+      <main id={`panel-${activeView}`} role="tabpanel" aria-label={activeView} className="flex-1 overflow-y-auto">
         {/* Bannière connexion réseau racine */}
         {rootConnected && (
           <div className="bg-civium-600 text-white px-6 py-2 flex items-center gap-2 text-sm">
             <span className="font-semibold">Connecté au réseau Civium</span>
             <span className="text-civium-200">— votre réseau ({rootConnected}) est maintenant dans l'annuaire public.</span>
             <button
+              aria-label="Fermer"
               onClick={() => setRootConnected(null)}
               className="ml-auto text-civium-200 hover:text-white transition-colors text-xs"
             >
@@ -1586,20 +2273,96 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Email manquant — requis pour le RCC */}
+        {!profileEmail && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2 flex items-center justify-between text-sm">
+            <span className="text-amber-800">Renseignez votre email de contact pour enregistrer vos réseaux au RCC (registre légal obligatoire).</span>
+            <button
+              className="ml-4 text-xs underline text-amber-700 hover:text-amber-900 shrink-0"
+              onClick={() => setShowSettings(true)}
+            >
+              Paramètres
+            </button>
+          </div>
+        )}
+
+        {/* Node crash banner */}
+        {nodeCrashed && !nodeStatus.running && (
+          <div role="alert" className="bg-orange-600 text-white px-6 py-2 flex items-center justify-between text-sm">
+            <span>Le nœud P2P s'est arrêté — redémarrage automatique en cours…</span>
+            <button
+              aria-label="Fermer"
+              onClick={() => setNodeCrashed(false)}
+              className="text-orange-200 hover:text-white transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Fraud alert banners */}
+        {updateAvailable && (
+          <div className="bg-civium-600 text-white px-6 py-2 flex items-center justify-between text-sm">
+            <span>Nouvelle version disponible : <strong>{updateAvailable.version}</strong></span>
+            <button
+              aria-label="Reporter la mise à jour"
+              onClick={() => setUpdateAvailable(null)}
+              className="text-civium-200 hover:text-white transition-colors"
+            >
+              ✕ Plus tard
+            </button>
+          </div>
+        )}
+
         {activeAlerts.length > 0 && (
-          <div className="bg-red-600 text-white px-6 py-3 space-y-1">
+          <div className="bg-red-700 text-white px-6 py-2 space-y-1.5">
             {activeAlerts.map((al, i) => (
               <div key={i} className="flex items-start gap-2 text-sm">
                 <span className="font-bold uppercase shrink-0">[{al.alert_type}]</span>
-                <span>{al.description}</span>
+                <span className="flex-1">{al.description}</span>
                 {al.network_cids.length > 0 && (
-                  <span className="ml-2 text-red-200 text-xs">
+                  <span className="text-red-200 text-xs shrink-0">
                     Réseaux : {al.network_cids.join(", ")}
                   </span>
                 )}
+                <button
+                  onClick={() => {
+                    tauriInvoke("alert_dismiss", { alertType: al.alert_type, emittedAt: al.emitted_at }).catch(() => {});
+                    setActiveAlerts((prev) => prev.filter((_, j) => j !== i));
+                  }}
+                  title="Masquer cette alerte définitivement"
+                  className="shrink-0 text-red-200 hover:text-white transition-colors leading-none"
+                >
+                  ✕
+                </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {!backupDismissed && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-start gap-3">
+            <span className="text-amber-600 text-lg leading-none shrink-0">⚠</span>
+            <div className="flex-1 text-sm text-amber-900">
+              <span className="font-semibold">Sauvegardez votre identité.</span>{" "}
+              Sans fichier de sauvegarde, la perte de cet appareil entraîne la perte définitive de votre identité Civium.{" "}
+              <button
+                className="underline hover:no-underline"
+                onClick={() => {
+                  setShowSettings(true);
+                  setSelected(null);
+                }}
+              >
+                Créer une sauvegarde chiffrée →
+              </button>
+            </div>
+            <button
+              onClick={dismissBackupWarning}
+              title="Ne plus afficher"
+              className="shrink-0 text-amber-500 hover:text-amber-800 transition-colors text-xs"
+            >
+              ✕ Compris
+            </button>
           </div>
         )}
 
@@ -1624,6 +2387,16 @@ export default function Dashboard() {
               <p className="text-xs text-gray-400 mb-3">
                 Ces informations vous permettent de vous connecter depuis le client web ou un autre appareil. Ne partagez jamais votre clé secrète.
               </p>
+
+              {/* Backup warning */}
+              <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-3">
+                <span className="text-amber-500 text-lg shrink-0">⚠️</span>
+                <div className="text-xs text-amber-800">
+                  <p className="font-semibold mb-0.5">Sauvegardez votre clé secrète</p>
+                  <p>Sans sauvegarde, la perte de cet appareil entraîne la perte définitive de votre identité Civium. Exportez votre clé dans un fichier et conservez-le en lieu sûr.</p>
+                </div>
+              </div>
+
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
                 {identity ? (
                   <>
@@ -1632,10 +2405,64 @@ export default function Dashboard() {
                       <div className="flex items-center gap-2">
                         <code className="flex-1 text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1.5 break-all">{identity.cid_full}</code>
                         <button
-                          className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0"
-                          onClick={() => navigator.clipboard.writeText(identity!.cid_full)}
-                        >Copier</button>
+                          className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0 transition-colors"
+                          onClick={() => copyToClipboard(identity!.cid_full, "cid")}
+                        >{copiedKey === "cid" ? "✓ Copié" : "Copier"}</button>
                       </div>
+                    </div>
+                    {/* Email de contact */}
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">Email de contact <span className="text-gray-400">(pour les alertes RCC)</span></p>
+                      {profileEmailEditing ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="email"
+                            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-civium-400"
+                            value={profileEmailEdit}
+                            onChange={(e) => setProfileEmailEdit(e.target.value)}
+                            onKeyDown={async (e) => {
+                              if (e.key === "Enter") {
+                                setProfileEmailSaving(true);
+                                try {
+                                  await tauriInvoke("profile_email_set", { email: profileEmailEdit.trim() });
+                                  setProfileEmail(profileEmailEdit.trim());
+                                  setProfileEmailEditing(false);
+                                } catch (err) { showToast(String(err)); }
+                                finally { setProfileEmailSaving(false); }
+                              }
+                              if (e.key === "Escape") { setProfileEmailEdit(profileEmail); setProfileEmailEditing(false); }
+                            }}
+                            autoFocus
+                          />
+                          <button
+                            className="text-xs bg-civium-600 text-white border border-civium-600 rounded px-2 py-1 shrink-0 disabled:opacity-50"
+                            disabled={profileEmailSaving || !profileEmailEdit.trim()}
+                            onClick={async () => {
+                              setProfileEmailSaving(true);
+                              try {
+                                await tauriInvoke("profile_email_set", { email: profileEmailEdit.trim() });
+                                setProfileEmail(profileEmailEdit.trim());
+                                setProfileEmailEditing(false);
+                              } catch (err) { showToast(String(err)); }
+                              finally { setProfileEmailSaving(false); }
+                            }}
+                          >{profileEmailSaving ? "…" : "Enregistrer"}</button>
+                          <button className="text-xs border border-gray-200 rounded px-2 py-1 shrink-0 hover:bg-gray-50"
+                            onClick={() => { setProfileEmailEdit(profileEmail); setProfileEmailEditing(false); }}>Annuler</button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          {profileEmail ? (
+                            <span className="flex-1 text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded px-2 py-1.5">{profileEmail}</span>
+                          ) : (
+                            <span className="flex-1 text-sm text-red-400 bg-red-50 border border-red-200 rounded px-2 py-1.5">Non renseigné — requis pour le RCC</span>
+                          )}
+                          <button
+                            className="text-xs border border-gray-200 rounded px-2 py-1 shrink-0 hover:bg-gray-50"
+                            onClick={() => { setProfileEmailEdit(profileEmail); setProfileEmailEditing(true); }}
+                          >{profileEmail ? "Modifier" : "Renseigner"}</button>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <p className="text-xs text-gray-500 mb-1">Clé secrète <span className="text-red-400">(confidentielle)</span></p>
@@ -1649,16 +2476,101 @@ export default function Dashboard() {
                         >{secretVisible ? "Masquer" : "Afficher"}</button>
                         {secretVisible && (
                           <button
-                            className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0"
-                            onClick={() => navigator.clipboard.writeText(identity!.secret_b58)}
-                          >Copier</button>
+                            className="text-xs text-civium-600 hover:text-civium-800 border border-civium-200 rounded px-2 py-1 shrink-0 transition-colors"
+                            onClick={() => copyToClipboard(identity!.secret_b58, "secret")}
+                          >{copiedKey === "secret" ? "✓ Copié" : "Copier"}</button>
                         )}
                       </div>
+                    </div>
+                    {/* Export backup chiffré */}
+                    <div className="pt-2 border-t border-gray-100">
+                      <p className="text-xs text-gray-500 mb-2">Exporter la clé en fichier de sauvegarde chiffré</p>
+                      <BackupExportWidget cidShort={identity!.cid_short} onToast={showToast} />
+                    </div>
+                    {/* Export all data */}
+                    <div className="pt-2 border-t border-gray-100">
+                      <p className="text-xs text-gray-500 mb-2">Exporter toutes mes données (messages, réseaux, etc.)</p>
+                      <button
+                        className="text-xs px-3 py-1.5 bg-gray-50 border border-gray-200 text-gray-700
+                                   rounded-lg hover:bg-gray-100 transition-colors"
+                        onClick={async () => {
+                          try {
+                            const json = await tauriInvoke<string>("export_data");
+                            const blob = new Blob([json], { type: "application/json" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `civium-export-${identity?.cid_short ?? "data"}.json`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          } catch (e) { showToast(String(e)); }
+                        }}
+                      >
+                        Télécharger mes données (.json)
+                      </button>
+                    </div>
+                    {/* Download logs */}
+                    <div className="pt-2 border-t border-gray-100">
+                      <p className="text-xs text-gray-500 mb-2">Journaux applicatifs (utile pour les rapports de bug)</p>
+                      <button
+                        className="text-xs px-3 py-1.5 bg-gray-50 border border-gray-200 text-gray-700
+                                   rounded-lg hover:bg-gray-100 transition-colors"
+                        onClick={async () => {
+                          try {
+                            const content = await tauriInvoke<string>("logs_get");
+                            if (!content) { showToast("Aucun journal disponible pour aujourd'hui.", "ok"); return; }
+                            const blob = new Blob([content], { type: "text/plain" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            const date = new Date().toISOString().slice(0, 10);
+                            a.download = `civium-${date}.log`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          } catch (e) { showToast(String(e)); }
+                        }}
+                      >
+                        Télécharger les journaux (.log)
+                      </button>
                     </div>
                   </>
                 ) : (
                   <p className="text-xs text-gray-400">Chargement…</p>
                 )}
+              </div>
+            </section>
+
+            {/* ── Sauvegarde automatique ── */}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Sauvegarde de la base de données</h3>
+              <p className="text-xs text-gray-400 mb-3">
+                Une copie de <code>civium.db</code> est créée au démarrage et toutes les 6 heures. Les 7 dernières sauvegardes sont conservées.
+              </p>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">Dernière sauvegarde :</p>
+                  <p className="text-sm font-medium text-gray-800 mt-0.5">
+                    {lastBackup
+                      ? new Date(lastBackup).toLocaleString("fr-FR")
+                      : "Aucune sauvegarde disponible"}
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    setBackingUp(true);
+                    try {
+                      await tauriInvoke("db_backup_now");
+                      const ts = await tauriInvoke<string | null>("db_backup_last");
+                      setLastBackup(ts);
+                      showToast("Sauvegarde créée avec succès.", "ok");
+                    } catch (e) { showToast(String(e)); }
+                    finally { setBackingUp(false); }
+                  }}
+                  disabled={backingUp}
+                  className="text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg hover:bg-civium-700 disabled:opacity-50 transition-colors shrink-0"
+                >
+                  {backingUp ? "Sauvegarde…" : "Sauvegarder maintenant"}
+                </button>
               </div>
             </section>
 
@@ -1678,7 +2590,9 @@ export default function Dashboard() {
                     <p className="text-xs text-gray-500 mb-1">Adresses d'accès (cliquer pour copier) :</p>
                     <div className="space-y-1">
                       {nodeStatus.listen_addrs.map((a) => (
-                        <div key={a} className="text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1 cursor-pointer hover:bg-gray-100 truncate" onClick={() => navigator.clipboard.writeText(a)} title="Cliquer pour copier">{a}</div>
+                        <div key={a} className="text-xs font-mono bg-gray-50 border border-gray-200 rounded px-2 py-1 cursor-pointer hover:bg-gray-100 truncate transition-colors" onClick={() => copyToClipboard(a, `addr-${a}`)} title="Cliquer pour copier">
+                          {copiedKey === `addr-${a}` ? "✓ Copié !" : a}
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -1765,7 +2679,7 @@ export default function Dashboard() {
                             try {
                               const info = await tauriInvoke<RccStatusInfo>("rcc_mark_registered", { networkCid: selected.cid_short });
                               setRccStatuses((prev) => ({ ...prev, [info.network_cid_short]: info }));
-                            } catch (e) { alert(String(e)); }
+                            } catch (e) { showToast(String(e)); }
                           }}>
                           Le serveur a déjà confirmé → marquer comme déclaré
                         </button>
@@ -1777,16 +2691,17 @@ export default function Dashboard() {
                         <button className="text-xs text-red-500 hover:text-red-700 underline" disabled={rccRegistering} onClick={handleRccForceRetry}>Ré-essayer</button>
                       </div>
                     );
-                    return (
-                      <div className="space-y-3">
-                        <p className="text-xs text-gray-500">Entrez votre adresse email pour déclarer ce réseau. Elle servira uniquement à vous contacter en cas d'alerte de sécurité.</p>
-                        <div className="flex gap-2">
-                          <input type="email" className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5" placeholder="votre@email.com" value={rccEmail} onChange={(e) => setRccEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleRccRegister(); }} />
-                          <button className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50" disabled={rccRegistering || !rccEmail.trim()} onClick={handleRccRegister}>
-                            {rccRegistering ? "…" : "Déclarer"}
-                          </button>
-                        </div>
+                    return profileEmail.trim() ? (
+                      <div className="space-y-2">
+                        <p className="text-xs text-gray-500">Ce réseau n'est pas encore déclaré. La déclaration utilisera votre email de contact : <span className="font-medium text-gray-700">{profileEmail}</span></p>
+                        <button className="text-sm bg-civium-600 text-white px-3 py-1.5 rounded hover:bg-civium-700 disabled:opacity-50" disabled={rccRegistering} onClick={handleRccRegister}>
+                          {rccRegistering ? "Déclaration…" : "Déclarer ce réseau"}
+                        </button>
                       </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        Renseignez votre email de contact dans <button className="underline text-civium-600 hover:text-civium-800" onClick={() => setShowSettings(true)}>Paramètres → Identité</button> pour pouvoir déclarer ce réseau.
+                      </p>
                     );
                   })()}
                 </div>
@@ -1805,8 +2720,8 @@ export default function Dashboard() {
                   {selected.ap_enabled ? (
                     <div className="space-y-3">
                       {selected.ap_actor_url && (
-                        <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-700 cursor-pointer hover:bg-gray-100" onClick={() => navigator.clipboard.writeText(selected.ap_actor_url!)} title="Cliquer pour copier">
-                          {selected.ap_actor_url} <span className="text-gray-400 font-sans">(copier)</span>
+                        <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono break-all text-gray-700 cursor-pointer hover:bg-gray-100 transition-colors" onClick={() => copyToClipboard(selected.ap_actor_url!, "ap_url")} title="Cliquer pour copier">
+                          {copiedKey === "ap_url" ? <span className="font-sans text-green-600">✓ Copié !</span> : <>{selected.ap_actor_url} <span className="text-gray-400 font-sans">(copier)</span></>}
                         </div>
                       )}
                       <p className="text-xs text-gray-500">{apFollowers.length} abonné{apFollowers.length !== 1 ? "s" : ""}</p>
@@ -1914,13 +2829,40 @@ export default function Dashboard() {
             </section>
 
             {/* ── Zone de danger ── */}
-            {selected && selected.member_count <= 1 && (
-              <section className="border border-red-200 rounded-xl p-4">
-                <h3 className="text-sm font-semibold text-red-600 uppercase tracking-wide mb-3">Zone de danger</h3>
-                <div className="flex items-center justify-between">
+            <section className="border border-red-200 rounded-xl p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-red-600 uppercase tracking-wide">Zone de danger</h3>
+
+              {/* Leave network */}
+              {selected && (
+                <div className="flex items-center justify-between gap-4 py-2 border-b border-red-100">
                   <div>
-                    <p className="text-sm font-medium text-gray-800">Supprimer ce réseau</p>
-                    <p className="text-xs text-gray-400 mt-0.5">Action irréversible. Toutes les données locales seront effacées.</p>
+                    <p className="text-sm font-medium text-gray-800">Quitter « {selected.name} »</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Vous quittez ce réseau. Vos messages restent visibles pour les autres membres.</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`Quitter le réseau « ${selected.name} » ?`)) return;
+                      try {
+                        await tauriInvoke("network_leave", { networkCid: selected.cid_short });
+                        const nets = await tauriInvoke<NetworkInfo[]>("network_list");
+                        setNetworks(nets);
+                        setSelected(nets[0] ?? null);
+                        setShowSettings(false);
+                      } catch (e) { showToast(String(e)); }
+                    }}
+                    className="text-xs border border-red-300 text-red-600 rounded-lg px-3 py-1.5 hover:bg-red-50 transition-colors shrink-0"
+                  >
+                    Quitter
+                  </button>
+                </div>
+              )}
+
+              {/* Delete network (admin only, when empty) */}
+              {selected && selected.member_count <= 1 && (
+                <div className="flex items-center justify-between gap-4 py-2 border-b border-red-100">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Supprimer « {selected.name} »</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Supprime le réseau et toutes ses données locales. Irréversible.</p>
                   </div>
                   <button
                     onClick={async () => {
@@ -1931,17 +2873,36 @@ export default function Dashboard() {
                         setNetworks(nets);
                         setSelected(nets[0] ?? null);
                         setShowSettings(false);
-                      } catch (e) {
-                        alert(String(e));
-                      }
+                      } catch (e) { showToast(String(e)); }
                     }}
                     className="text-xs border border-red-300 text-red-600 rounded-lg px-3 py-1.5 hover:bg-red-50 transition-colors shrink-0"
                   >
                     Supprimer
                   </button>
                 </div>
-              </section>
-            )}
+              )}
+
+              {/* Wipe all data */}
+              <div className="flex items-center justify-between gap-4 py-2">
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Effacer toutes mes données</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Supprime votre identité, tous les réseaux, messages, et clés de cet appareil. Irréversible sans sauvegarde.</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    if (!confirm("Effacer TOUTES vos données Civium ? Votre identité et tous vos réseaux seront supprimés. Cette action est irréversible sans fichier de sauvegarde.")) return;
+                    if (!confirm("Dernière confirmation : supprimer définitivement toutes vos données ?")) return;
+                    try {
+                      await tauriInvoke("wipe_all_data");
+                      window.location.reload();
+                    } catch (e) { showToast(String(e)); }
+                  }}
+                  className="text-xs border border-red-500 bg-red-50 text-red-700 rounded-lg px-3 py-1.5 hover:bg-red-100 transition-colors shrink-0 font-semibold"
+                >
+                  Tout effacer
+                </button>
+              </div>
+            </section>
           </div>
 
         ) : showJoinForm ? (
@@ -2091,75 +3052,91 @@ export default function Dashboard() {
                 <button className="text-gray-400 hover:text-gray-600 text-sm" onClick={() => setShowCreateForm(false)}>✕</button>
               </div>
               <div className="space-y-4">
+                {/* Type de réseau */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Type de réseau</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {([
+                      { id: 'standard', icon: '👥', label: 'Réseau', desc: 'Groupe de personnes : famille, équipe, association…' },
+                      { id: 'annuaire', icon: '🔍', label: 'Annuaire', desc: 'Répertoire public de réseaux, membres ou services.' },
+                      { id: 'rrm',      icon: '🚫', label: 'RRM (Registre des Réseaux Malveillants)', desc: 'Liste de réseaux signalés comme malveillants.' },
+                    ] as const).map(({ id, icon, label, desc }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setCreateNetworkType(id)}
+                        title={desc}
+                        className={`py-2 px-2 rounded-lg border text-xs font-medium transition-colors text-center ${
+                          createNetworkType === id
+                            ? "bg-civium-50 border-civium-400 text-civium-700"
+                            : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                        }`}
+                      >
+                        <span className="block text-lg">{icon}</span>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {createNetworkType === 'annuaire'
+                      ? "Un annuaire (Annuaire de réseau Civium) permet de référencer et de rendre découvrables des réseaux, membres ou services."
+                      : createNetworkType === 'rrm'
+                      ? "Un RRM (Registre des Réseaux Malveillants) permet de signaler des réseaux au comportement prouvé malveillant. Utilisé par les autres réseaux pour filtrer."
+                      : "Un réseau standard est un espace de groupe privé ou public : famille, équipe, association…"}
+                  </p>
+                </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Nom du réseau</label>
                   <input
                     type="text"
                     autoFocus
                     className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
-                    placeholder="Ex : Famille Martin, Équipe projet…"
+                    placeholder={createNetworkType === 'annuaire' ? "Ex : Annuaire des associations de Lyon…" : createNetworkType === 'rrm' ? "Ex : RRM Global Civium…" : "Ex : Famille Martin, Équipe projet…"}
                     value={createName}
                     onChange={(e) => setCreateName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") handleCreateNetwork(); }}
                   />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Un réseau est un espace de groupe indépendant de votre identité. Vous en êtes l'administrateur et pouvez y inviter qui vous voulez. Vous pouvez aussi rejoindre les réseaux d'autres personnes avec la même identité.
-                  </p>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Votre email <span className="text-xs font-normal text-gray-400">(pour les alertes de sécurité)</span>
-                  </label>
-                  <input
-                    type="email"
-                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-civium-400"
-                    placeholder="votre@email.com"
-                    value={createAdminEmail}
-                    onChange={(e) => setCreateAdminEmail(e.target.value)}
-                  />
-                  <p className="text-xs text-gray-400 mt-1">
-                    Pour déclarer votre réseau au Registre Central Civium (RCC — registre légal obligatoire). Il ne sera jamais partagé publiquement.
-                  </p>
-                </div>
-                {/* Visibilité */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Visibilité</label>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setCreateIsPublic(false)}
-                      className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                        !createIsPublic
-                          ? "bg-civium-50 border-civium-400 text-civium-700"
-                          : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                      }`}
-                    >
-                      🔒 Privé
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCreateIsPublic(true)}
-                      className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
-                        createIsPublic
-                          ? "bg-green-50 border-green-400 text-green-700"
-                          : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
-                      }`}
-                    >
-                      🌐 Public
-                    </button>
+                {createNetworkType === 'standard' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Visibilité</label>
+                    <div className="flex gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setCreateIsPublic(true)}
+                        className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                          createIsPublic
+                            ? "bg-green-50 border-green-400 text-green-700"
+                            : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                        }`}
+                      >
+                        🌐 Public
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreateIsPublic(false)}
+                        className={`flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${
+                          !createIsPublic
+                            ? "bg-civium-50 border-civium-400 text-civium-700"
+                            : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"
+                        }`}
+                      >
+                        🔒 Privé
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {createIsPublic
+                        ? "Votre réseau sera visible dans les annuaires Civium. Tout le monde peut demander à le rejoindre."
+                        : "Votre réseau est sur invitation uniquement. Seules les personnes que vous invitez peuvent le rejoindre."}
+                    </p>
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">
-                    {createIsPublic
-                      ? "Votre réseau sera visible dans les annuaires Civium. Tout le monde peut demander à le rejoindre."
-                      : "Votre réseau est sur invitation uniquement. Seules les personnes que vous invitez peuvent le rejoindre."}
-                  </p>
-                </div>
+                )}
                 <button
                   className="w-full py-2.5 bg-civium-600 text-white rounded-xl font-semibold text-sm hover:bg-civium-700 disabled:opacity-50 transition-colors"
-                  disabled={creating || !createName.trim() || !createAdminEmail.trim()}
+                  disabled={creating || !createName.trim()}
                   onClick={handleCreateNetwork}
                 >
-                  {creating ? "Création et déclaration…" : "Créer le réseau"}
+                  {creating ? "Création en cours…" : `Créer ${createNetworkType === 'annuaire' ? "l'annuaire" : createNetworkType === 'rrm' ? 'le RRM' : 'le réseau'}`}
                 </button>
               </div>
             </div>
@@ -2167,47 +3144,67 @@ export default function Dashboard() {
         ) : (
           <div className="max-w-2xl mx-auto py-8 px-6 space-y-6">
             {/* Welcome / select prompt (non-Extensions views only) */}
-            {activeView !== 'extensions' && !selected && (
-              <div className="flex flex-col items-center justify-center h-96 gap-4 text-gray-400">
-                {networks.length === 0 ? (
-                  <div className="text-center max-w-sm space-y-3">
-                    <p className="text-gray-600 font-medium">Bienvenue sur Civium</p>
-                    <p className="text-sm text-gray-400 leading-relaxed">
-                      Votre identité ({identity?.cid_short ?? "…"}) est distincte de vos réseaux.
-                      Un réseau est un espace de groupe que vous créez ou rejoignez — vous pouvez en rejoindre plusieurs avec la même identité.
-                    </p>
-                    <div className="flex flex-col gap-2 pt-1">
-                      <button
-                        className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
-                        onClick={() => setShowCreateForm(true)}
-                      >
-                        + Créer un nouveau réseau
-                      </button>
-                      <button
-                        className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
-                        onClick={() => { setShowJoinForm(true); setJoinTab("directory"); loadPublicNetworks(); }}
-                      >
-                        Rejoindre un réseau existant
-                      </button>
-                    </div>
+            {activeView !== 'extensions' && !selected && networks.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-80 text-center">
+                <p className="text-gray-600 font-medium mb-2">Bienvenue sur Civium</p>
+                <p className="text-sm text-gray-400 leading-relaxed max-w-sm mb-5">
+                  Votre identité ({identity?.cid_short ?? "…"}) est distincte de vos réseaux.
+                  Un réseau est un espace de groupe que vous créez ou rejoignez.
+                </p>
+                <div className="flex flex-col gap-2 w-full max-w-xs">
+                  <button
+                    className="text-sm px-4 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
+                    onClick={() => setShowCreateForm(true)}
+                  >
+                    + Créer un nouveau réseau
+                  </button>
+                  <button
+                    className="text-sm px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
+                    onClick={() => { setShowJoinForm(true); setJoinTab("directory"); loadPublicNetworks(); }}
+                  >
+                    Rejoindre un réseau existant
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Global activity feed — shown when networks exist but none selected */}
+            {activeView !== 'extensions' && !selected && networks.length > 0 && (
+              <div className="space-y-4">
+                {/* Header */}
+                <div className="bg-gradient-to-br from-civium-50 to-indigo-50 border border-civium-100 rounded-2xl px-6 py-5">
+                  <h2 className="text-xl font-bold text-civium-700 mb-0.5">Fil d'actualité</h2>
+                  <p className="text-sm text-civium-500">
+                    {networks.length} réseau{networks.length > 1 ? "x" : ""} — sélectionnez-en un dans la barre latérale
+                  </p>
+                </div>
+
+                {globalFeed.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                    <span className="text-4xl mb-3">📭</span>
+                    <p className="text-sm font-medium">Aucune activité récente.</p>
+                    <p className="text-xs mt-1 text-gray-300">Les événements de vos réseaux s'afficheront ici.</p>
                   </div>
                 ) : (
-                  <div className="w-full">
-                    <h2 className="text-lg font-semibold text-gray-700 mb-3">Fil d'actualité</h2>
-                    {globalFeed.length === 0 ? (
-                      <p className="text-sm text-gray-400">Aucune activité récente. Sélectionnez un réseau dans la barre latérale pour commencer.</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {globalFeed.map((e) => (
-                          <li key={e.id} className="flex items-start gap-3 bg-white border border-gray-100 rounded-lg px-4 py-3 text-sm shadow-sm">
-                            <span className="text-gray-400 font-mono text-xs mt-0.5 shrink-0">{e.network_cid_short}</span>
-                            <span className="text-gray-700 flex-1">{e.summary}</span>
-                            <span className="text-gray-300 text-xs shrink-0">{new Date(e.occurred_at * 1000).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                  <ul className="space-y-2">
+                    {globalFeed.map((e) => {
+                      const netName = networks.find((n) => n.cid_short === e.network_cid_short)?.name ?? e.network_cid_short;
+                      return (
+                        <li key={e.id} className="flex items-start gap-3 bg-white border border-gray-100 rounded-xl px-4 py-3 text-sm shadow-sm hover:shadow-md transition-shadow">
+                          <span className="w-8 h-8 rounded-full bg-civium-100 flex-shrink-0 flex items-center justify-center text-civium-700 text-xs font-bold mt-0.5">
+                            {netName[0]?.toUpperCase() ?? "?"}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs font-medium text-civium-600">{netName}</span>
+                            <p className="text-gray-700 mt-0.5 leading-snug">{e.summary}</p>
+                          </div>
+                          <span className="text-gray-300 text-xs shrink-0 mt-0.5">
+                            {new Date(e.occurred_at * 1000).toLocaleString('fr-FR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
               </div>
             )}
@@ -2251,9 +3248,20 @@ export default function Dashboard() {
                         <div className="text-sm font-medium truncate">{p.display_name}</div>
                         <div className="text-xs text-gray-400 font-mono">{p.cid_short}</div>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={admitCircle[p.cid_short] ?? 1}
+                          onChange={(e) => setAdmitCircle((prev) => ({ ...prev, [p.cid_short]: Number(e.target.value) }))}
+                          className="text-xs border border-gray-200 rounded px-1.5 py-1 focus:outline-none"
+                          title="Cercle de confiance"
+                        >
+                          <option value={0}>0 — Annuaire</option>
+                          <option value={1}>1 — Connaissance</option>
+                          <option value={2}>2 — Confiance</option>
+                          <option value={3}>3 — Intime</option>
+                        </select>
                         <button
-                          onClick={() => admitMember(p.cid_short, 1)}
+                          onClick={() => admitMember(p.cid_short, admitCircle[p.cid_short] ?? 1)}
                           disabled={admitting === p.cid_short}
                           className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg
                                      hover:bg-green-700 disabled:opacity-50 transition-colors"
@@ -2294,7 +3302,7 @@ export default function Dashboard() {
                 {members.length === 0 && (
                   <p className="px-4 py-3 text-sm text-gray-400">Aucun membre.</p>
                 )}
-                {members.map((m) => (
+                {members.slice(membersPage * PAGE_SIZE, (membersPage + 1) * PAGE_SIZE).map((m) => (
                   <div key={m.cid_short}>
                     <div
                       className="flex items-center px-4 py-3 gap-3 cursor-pointer hover:bg-gray-50 transition-colors"
@@ -2320,6 +3328,11 @@ export default function Dashboard() {
                         {m.is_minor && (
                           <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">
                             mineur
+                          </span>
+                        )}
+                        {mutedMembers.has(m.cid_short) && (
+                          <span className="text-xs px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full" title="Membre en sourdine — ses messages sont masqués">
+                            sourdine
                           </span>
                         )}
                       </div>
@@ -2378,8 +3391,52 @@ export default function Dashboard() {
                           const isMe = m.cid_short === identity?.cid_short;
                           return (
                         <div className="px-4 pb-3 space-y-2 border-t border-gray-100">
+                          {/* Circle selector */}
+                          {iAmAdmin && (
+                            <div className="flex items-center gap-2 pt-2">
+                              <span className="text-xs text-gray-500">Cercle :</span>
+                              <select
+                                value={m.circle}
+                                onChange={(e) => { handleChangeCircle(m.cid_short, Number(e.target.value)); }}
+                                disabled={changingCircle === m.cid_short}
+                                className="text-xs border border-gray-200 rounded px-1.5 py-0.5 focus:outline-none disabled:opacity-50"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <option value={0}>0 — Annuaire</option>
+                                <option value={1}>1 — Connaissance</option>
+                                <option value={2}>2 — Confiance</option>
+                                <option value={3}>3 — Intime</option>
+                              </select>
+                              {changingCircle === m.cid_short && <span className="text-xs text-gray-400">…</span>}
+                            </div>
+                          )}
                           <div className="flex flex-wrap items-center gap-2 pt-2">
                             <span className="text-xs text-gray-500">Admin :</span>
+                            {/* Mute / unmute — local only, visible to self only */}
+                            {!isMe && (
+                              <button
+                                className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                                  mutedMembers.has(m.cid_short)
+                                    ? "bg-orange-50 border-orange-300 text-orange-700 hover:bg-orange-100"
+                                    : "bg-gray-50 border-gray-300 text-gray-600 hover:bg-gray-100"
+                                }`}
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const isMuted = mutedMembers.has(m.cid_short);
+                                  try {
+                                    if (isMuted) {
+                                      await tauriInvoke("member_unmute", { networkCid: selected!.cid_short, memberCid: m.cid_short });
+                                      setMutedMembers((prev) => { const s = new Set(prev); s.delete(m.cid_short); return s; });
+                                    } else {
+                                      await tauriInvoke("member_mute", { networkCid: selected!.cid_short, memberCid: m.cid_short });
+                                      setMutedMembers((prev) => new Set([...prev, m.cid_short]));
+                                    }
+                                  } catch (err) { showToast(String(err)); }
+                                }}
+                              >
+                                {mutedMembers.has(m.cid_short) ? "🔕 Rétablir" : "🔔 Mettre en sourdine"}
+                              </button>
+                            )}
                             {iAmAdmin && !isMe && (
                               <button
                                 className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
@@ -2457,6 +3514,21 @@ export default function Dashboard() {
                   </div>
                 ))}
               </div>
+              {members.length > PAGE_SIZE && (
+                <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                  <button
+                    disabled={membersPage === 0}
+                    onClick={() => setMembersPage((p) => p - 1)}
+                    className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                  >← Précédent</button>
+                  <span>Page {membersPage + 1} / {Math.ceil(members.length / PAGE_SIZE)}</span>
+                  <button
+                    disabled={(membersPage + 1) * PAGE_SIZE >= members.length}
+                    onClick={() => setMembersPage((p) => p + 1)}
+                    className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                  >Suivant →</button>
+                </div>
+              )}
             </section>}
 
             {/* Invite link */}
@@ -2481,9 +3553,9 @@ export default function Dashboard() {
                       </div>
                       <button
                         className="flex-shrink-0 text-xs px-3 py-2 bg-civium-600 text-white rounded-lg hover:bg-civium-700 transition-colors"
-                        onClick={() => navigator.clipboard.writeText(inviteLink)}
+                        onClick={() => copyToClipboard(inviteLink, "invite")}
                       >
-                        Copier
+                        {copiedKey === "invite" ? "✓ Copié !" : "Copier"}
                       </button>
                     </div>
                   </div>
@@ -2505,9 +3577,9 @@ export default function Dashboard() {
                             </div>
                             <button
                               className="flex-shrink-0 text-xs px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-lg hover:bg-gray-50 transition-colors"
-                              onClick={() => navigator.clipboard.writeText(addr)}
+                              onClick={() => copyToClipboard(addr, `peer-${addr}`)}
                             >
-                              Copier
+                              {copiedKey === `peer-${addr}` ? "✓ Copié !" : "Copier"}
                             </button>
                           </div>
                         ))}
@@ -2592,11 +3664,80 @@ export default function Dashboard() {
               </section>
             )}
 
+            {/* Liste des invitations */}
+            {selected && activeView === 'membres' && invitations.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+                  Invitations ({invitations.filter((i) => !i.revoked && !i.is_expired).length} actives)
+                </h3>
+                <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
+                  {invitations.map((inv) => {
+                    const active = !inv.revoked && !inv.is_expired;
+                    return (
+                      <div key={inv.nonce_b58} className="flex items-center gap-3 px-4 py-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                              inv.revoked ? "bg-red-100 text-red-600" :
+                              inv.is_expired ? "bg-gray-100 text-gray-500" :
+                              "bg-green-100 text-green-700"
+                            }`}>
+                              {inv.revoked ? "Révoquée" : inv.is_expired ? "Expirée" : "Active"}
+                            </span>
+                            <span className="text-xs text-gray-400 font-mono truncate">
+                              …{inv.nonce_b58.slice(-8)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            Créée le {new Date(inv.created_at * 1000).toLocaleDateString("fr-FR")}
+                            {inv.expires_at > 0 && ` · Expire le ${new Date(inv.expires_at * 1000).toLocaleDateString("fr-FR")}`}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {active && (
+                            <button
+                              className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50 transition-colors"
+                              onClick={() => copyToClipboard(inv.link, `inv-${inv.nonce_b58}`)}
+                              title="Copier le lien"
+                            >
+                              {copiedKey === `inv-${inv.nonce_b58}` ? "✓ Copié !" : "Copier"}
+                            </button>
+                          )}
+                          {active && (
+                            <button
+                              className="text-xs px-2 py-1 border border-red-200 text-red-600 rounded hover:bg-red-50 disabled:opacity-50 transition-colors"
+                              disabled={revokingNonce === inv.nonce_b58}
+                              onClick={async () => {
+                                if (!confirm("Révoquer ce lien d'invitation ? Les personnes qui l'ont déjà reçu ne pourront plus l'utiliser.")) return;
+                                setRevokingNonce(inv.nonce_b58);
+                                try {
+                                  await tauriInvoke("invitation_revoke", {
+                                    networkCid: selected.cid_short,
+                                    nonceB58: inv.nonce_b58,
+                                  });
+                                  setInvitations((prev) => prev.map((i) =>
+                                    i.nonce_b58 === inv.nonce_b58 ? { ...i, revoked: true } : i
+                                  ));
+                                } catch (e) { showToast(String(e)); }
+                                finally { setRevokingNonce(null); }
+                              }}
+                            >
+                              {revokingNonce === inv.nonce_b58 ? "…" : "Révoquer"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {/* Garde-fou majoritaire */}
             {selected && activeView === 'gouvernance' && adminActions.length > 0 && (
               <section>
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                  Actions admin — Garde-fou
+                  Décisions en contestation
                 </h3>
                 <div className="space-y-2">
                   {adminActions.map((a) => {
@@ -2657,48 +3798,58 @@ export default function Dashboard() {
             {selected && activeView === 'gouvernance' && <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
-                  Propositions ({proposals.length})
+                  Votes & Propositions
+                  {proposals.filter(p => p.status === "open").length > 0 && (
+                    <span className="ml-2 text-xs font-normal text-green-600 normal-case">
+                      {proposals.filter(p => p.status === "open").length} ouverte{proposals.filter(p => p.status === "open").length > 1 ? "s" : ""}
+                    </span>
+                  )}
                 </h3>
                 <button
                   onClick={() => setShowProposalForm((v) => !v)}
                   className="text-xs px-3 py-1.5 bg-civium-600 text-white rounded-lg
                              hover:bg-civium-700 transition-colors"
                 >
-                  {showProposalForm ? "Annuler" : "+ Proposer"}
+                  {showProposalForm ? "Annuler" : "+ Nouvelle proposition"}
                 </button>
               </div>
 
-              {/* Network-wide delegation */}
-              {(() => {
+              {/* Delegation panel (collapsed by default) */}
+              {showDelegationPanel && (() => {
                 const globalDel = myDelegations.find((d) => d.proposal_id === null);
-                return globalDel ? (
-                  <div className="flex items-center gap-2 text-xs mb-2 text-blue-600">
-                    <span>Délégation réseau active → <span className="font-mono">{globalDel.delegate_cid_short}</span></span>
-                    <button
-                      onClick={() => handleRevokeDelegation(null)}
-                      className="text-gray-400 hover:text-red-500 transition-colors"
-                    >
-                      Révoquer
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 mb-2">
-                    <input
-                      type="text"
-                      value={delegatingTo["global"] ?? ""}
-                      onChange={(e) => setDelegatingTo((p) => ({ ...p, global: e.target.value }))}
-                      placeholder="Délégation réseau (CID court)…"
-                      className="border border-gray-200 rounded px-2 py-1 text-xs
-                                 focus:outline-none focus:ring-1 focus:ring-blue-300 w-52"
-                    />
-                    <button
-                      onClick={() => handleDelegate(null, delegatingTo["global"] ?? "")}
-                      disabled={savingDelegation === "global" || !delegatingTo["global"]?.trim()}
-                      className="text-xs px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
-                                 rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
-                    >
-                      {savingDelegation === "global" ? "…" : "Déléguer tout"}
-                    </button>
+                return (
+                  <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 mb-3">
+                    <p className="text-xs font-medium text-blue-700 mb-2">Délégation réseau (toutes propositions)</p>
+                    {globalDel ? (
+                      <div className="flex items-center gap-2 text-xs text-blue-600">
+                        <span>Active → <span className="font-mono">{globalDel.delegate_cid_short}</span></span>
+                        <button
+                          onClick={() => handleRevokeDelegation(null)}
+                          className="text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          Révoquer
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={delegatingTo["global"] ?? ""}
+                          onChange={(e) => setDelegatingTo((p) => ({ ...p, global: e.target.value }))}
+                          placeholder="CID court du délégué…"
+                          className="border border-blue-200 bg-white rounded px-2 py-1 text-xs
+                                     focus:outline-none focus:ring-1 focus:ring-blue-300 w-52"
+                        />
+                        <button
+                          onClick={() => handleDelegate(null, delegatingTo["global"] ?? "")}
+                          disabled={savingDelegation === "global" || !delegatingTo["global"]?.trim()}
+                          className="text-xs px-2 py-1 bg-blue-600 text-white
+                                     rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                        >
+                          {savingDelegation === "global" ? "…" : "Déléguer"}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -2782,29 +3933,32 @@ export default function Dashboard() {
                         <span className={`flex-shrink-0 text-xs px-2 py-0.5 rounded-full ${
                           prop.status === "open"
                             ? "bg-green-100 text-green-700"
+                            : prop.status === "cancelled"
+                            ? "bg-red-100 text-red-600"
                             : "bg-gray-100 text-gray-500"
                         }`}>
-                          {prop.status}
+                          {prop.status === "open" ? "Ouverte" : prop.status === "cancelled" ? "Annulée" : "Fermée"}
                         </span>
                       </div>
 
-                      {/* Delegation for this proposal */}
-                      {prop.status === "open" && (() => {
+                      {/* Per-proposal delegation (shown only in delegation panel) */}
+                      {showDelegationPanel && prop.status === "open" && (() => {
                         const propDel = myDelegations.find((d) => d.proposal_id === prop.id);
                         const globalDel = myDelegations.find((d) => d.proposal_id === null);
                         const activeDel = propDel ?? globalDel;
                         const key = prop.id;
                         return (
-                          <div className="flex items-center gap-2 text-xs">
+                          <div className="flex items-center gap-2 text-xs bg-blue-50 rounded-lg px-3 py-2">
+                            <span className="text-blue-500 font-medium">Délégation :</span>
                             {activeDel ? (
                               <>
                                 <span className="text-blue-600">
-                                  Vote délégué → <span className="font-mono">{activeDel.delegate_cid_short}</span>
+                                  → <span className="font-mono">{activeDel.delegate_cid_short}</span>
                                   {activeDel.proposal_id === null && " (réseau)"}
                                 </span>
                                 <button
                                   onClick={() => handleRevokeDelegation(propDel ? prop.id : null)}
-                                  className="text-gray-400 hover:text-red-500 transition-colors"
+                                  className="text-gray-400 hover:text-red-500 transition-colors ml-1"
                                 >
                                   Révoquer
                                 </button>
@@ -2817,15 +3971,15 @@ export default function Dashboard() {
                                   onChange={(e) =>
                                     setDelegatingTo((p) => ({ ...p, [key]: e.target.value }))
                                   }
-                                  placeholder="Déléguer à (CID court)…"
-                                  className="border border-gray-200 rounded px-2 py-1 text-xs
-                                             focus:outline-none focus:ring-1 focus:ring-blue-300 w-44"
+                                  placeholder="CID court…"
+                                  className="border border-blue-200 bg-white rounded px-2 py-1 text-xs
+                                             focus:outline-none focus:ring-1 focus:ring-blue-300 w-36"
                                 />
                                 <button
                                   onClick={() => handleDelegate(prop.id, delegatingTo[key] ?? "")}
                                   disabled={savingDelegation === key || !delegatingTo[key]?.trim()}
-                                  className="px-2 py-1 bg-blue-50 border border-blue-200 text-blue-700
-                                             rounded hover:bg-blue-100 disabled:opacity-50 transition-colors"
+                                  className="px-2 py-1 bg-blue-600 text-white text-xs
+                                             rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
                                 >
                                   {savingDelegation === key ? "…" : "Déléguer"}
                                 </button>
@@ -2843,20 +3997,12 @@ export default function Dashboard() {
                               key={i}
                               onClick={() => handleVote(prop.id, i)}
                               disabled={voting === prop.id}
-                              className="text-xs px-3 py-1.5 bg-civium-50 border border-civium-200
-                                         text-civium-700 rounded-lg hover:bg-civium-100
-                                         disabled:opacity-50 transition-colors"
+                              className="text-sm px-5 py-2.5 bg-civium-600 text-white rounded-lg
+                                         hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
                             >
-                              {opt}
+                              {voting === prop.id ? "…" : opt}
                             </button>
                           ))}
-                          <button
-                            onClick={() => loadResults(prop.id)}
-                            className="text-xs px-3 py-1.5 bg-white border border-gray-200
-                                       text-gray-500 rounded-lg hover:bg-gray-50 transition-colors"
-                          >
-                            Voir résultats
-                          </button>
                         </div>
                       )}
 
@@ -2896,6 +4042,16 @@ export default function Dashboard() {
                   );
                 })}
               </div>
+
+              {/* Delegation — advanced option at the bottom */}
+              <div className="mt-4 pt-3 border-t border-gray-100">
+                <button
+                  onClick={() => setShowDelegationPanel((v) => !v)}
+                  className="text-xs text-gray-400 hover:text-civium-600 transition-colors"
+                >
+                  {showDelegationPanel ? "▲ Masquer les délégations de vote" : "▼ Gérer mes délégations de vote"}
+                </button>
+              </div>
             </section>}
 
             {/* Thread messages */}
@@ -2919,59 +4075,269 @@ export default function Dashboard() {
 
               {/* Message list */}
               <div className="bg-white rounded-t-xl border border-b-0 border-gray-200
-                              max-h-72 overflow-y-auto p-4 space-y-4">
-                {messages.filter((m) => !m.is_direct).length === 0 ? (
+                              h-[calc(100vh-320px)] min-h-64 overflow-y-auto p-4 space-y-4">
+                {/* Pagination — load older messages */}
+                {hasMoreMessages && (
+                  <div className="text-center pb-2">
+                    <button
+                      onClick={() => loadOlderMessages(selected.cid_short)}
+                      disabled={loadingOlderMessages}
+                      className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200
+                                 text-gray-600 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {loadingOlderMessages ? "Chargement…" : "↑ Charger les messages précédents"}
+                    </button>
+                  </div>
+                )}
+                {messages.filter((m) => !m.is_direct && !mutedMembers.has(m.author_cid_short)).length === 0 ? (
                   <p className="text-sm text-gray-400 text-center py-4">
                     Aucun message. Soyez le premier à écrire !
                   </p>
                 ) : (
                   messages
-                    .filter((m) => !m.is_direct)
-                    .map((msg) => (
-                      <div key={msg.id} className="flex gap-3">
+                    .filter((m) => !m.is_direct && !mutedMembers.has(m.author_cid_short))
+                    .map((msg) => {
+                      const iAmAdmin = members.find((x) => x.cid_short === identity?.cid_short)?.role === "admin";
+                      return (
+                      <div key={msg.id} className="flex gap-3 group">
                         <div className="w-7 h-7 rounded-full bg-civium-100 flex-shrink-0 flex
                                         items-center justify-center text-civium-700 text-xs font-semibold">
                           {msg.author_name[0]?.toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-baseline gap-2 flex-wrap">
-                            <span className="text-sm font-medium text-gray-900">
-                              {msg.author_name}
-                            </span>
+                            <span className="text-sm font-medium text-gray-900">{msg.author_name}</span>
                             <span className="text-xs text-civium-400 font-medium">{msg.network_name}</span>
                             <span className="text-xs text-gray-400">{formatTime(msg.sent_at)}</span>
+                            <button
+                              onClick={async () => {
+                                const reason = prompt("Raison du signalement (facultatif) :") ?? "";
+                                try {
+                                  await tauriInvoke("message_report", { networkCid: selected!.cid_short, messageId: msg.id, reason });
+                                  showToast("Message signalé aux administrateurs.", "ok");
+                                } catch (e) { showToast(String(e)); }
+                              }}
+                              className="opacity-0 group-hover:opacity-100 text-xs text-orange-400 hover:text-orange-600 transition-opacity ml-auto"
+                              title="Signaler ce message"
+                              aria-label="Signaler ce message"
+                            >
+                              ⚑
+                            </button>
+                            {(iAmAdmin || msg.author_cid_short === identity?.cid_short) && (
+                              <button
+                                onClick={async () => {
+                                  if (!confirm("Supprimer ce message ?")) return;
+                                  setDeletingMessage(msg.id);
+                                  try {
+                                    await tauriInvoke("message_delete", { networkCid: selected!.cid_short, messageId: msg.id });
+                                    setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+                                  } catch (e) { showToast(String(e)); }
+                                  finally { setDeletingMessage(null); }
+                                }}
+                                disabled={deletingMessage === msg.id}
+                                className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-opacity disabled:opacity-50"
+                                title={iAmAdmin ? "Supprimer (admin)" : "Supprimer mon message"}
+                                aria-label="Supprimer ce message"
+                              >
+                                {deletingMessage === msg.id ? "…" : "✕"}
+                              </button>
+                            )}
                           </div>
-                          <p className="text-sm text-gray-700 mt-0.5 whitespace-pre-wrap break-words">
-                            {msg.body}
-                          </p>
+                          {msg.is_file ? (
+                            <div className="mt-2 w-full">
+                              {/* Image — pleine largeur, clic pour agrandir */}
+                              {msg.mime_type?.startsWith("image/") && fileDataCache[msg.id] && (
+                                <img
+                                  src={`data:${msg.mime_type};base64,${fileDataCache[msg.id]}`}
+                                  alt={msg.filename ?? "image"}
+                                  className="w-full rounded-xl border border-gray-200 object-contain cursor-zoom-in mb-1"
+                                  onClick={() => setLightboxSrc(`data:${msg.mime_type};base64,${fileDataCache[msg.id]}`)}
+                                />
+                              )}
+                              {/* Vidéo — pleine largeur */}
+                              {msg.mime_type?.startsWith("video/") && fileDataCache[msg.id] && (
+                                <video
+                                  controls
+                                  src={`data:${msg.mime_type};base64,${fileDataCache[msg.id]}`}
+                                  className="w-full rounded-xl border border-gray-200 mb-1"
+                                />
+                              )}
+                              {/* Audio */}
+                              {msg.mime_type?.startsWith("audio/") && fileDataCache[msg.id] && (
+                                <audio
+                                  controls
+                                  src={`data:${msg.mime_type};base64,${fileDataCache[msg.id]}`}
+                                  className="w-full mb-1"
+                                />
+                              )}
+                              {/* Texte brut (txt, md, csv, json…) */}
+                              {(msg.mime_type?.startsWith("text/") || msg.mime_type === "application/json") && fileDataCache[msg.id] && (
+                                <pre className="w-full bg-gray-900 text-green-300 text-xs rounded-xl p-3 mb-1 overflow-auto max-h-48 whitespace-pre-wrap break-words">
+                                  {(() => {
+                                    try {
+                                      const bytes = Uint8Array.from(atob(fileDataCache[msg.id]), (c) => c.charCodeAt(0));
+                                      return new TextDecoder("utf-8").decode(bytes);
+                                    } catch { return atob(fileDataCache[msg.id]); }
+                                  })()}
+                                </pre>
+                              )}
+                              {/* PDF — iframe intégrée */}
+                              {msg.mime_type === "application/pdf" && fileDataCache[msg.id] && (
+                                <iframe
+                                  src={`data:application/pdf;base64,${fileDataCache[msg.id]}`}
+                                  className="w-full rounded-xl border border-gray-200 mb-1"
+                                  style={{ height: "320px" }}
+                                  title={msg.filename ?? "pdf"}
+                                />
+                              )}
+                              {/* Barre de fichier : nom + taille + télécharger */}
+                              <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700">
+                                <span className="text-lg flex-shrink-0">
+                                  {msg.mime_type?.startsWith("image/") ? "🖼️"
+                                    : msg.mime_type?.startsWith("audio/") ? "🎵"
+                                    : msg.mime_type?.startsWith("video/") ? "🎬"
+                                    : msg.mime_type === "application/pdf" ? "📄"
+                                    : msg.mime_type?.startsWith("text/") ? "📝"
+                                    : "📎"}
+                                </span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-medium truncate">{msg.filename}</p>
+                                  <p className="text-xs text-gray-400">
+                                    {msg.size_bytes && msg.size_bytes >= 1_048_576
+                                      ? `${(msg.size_bytes / 1_048_576).toFixed(1)} Mo`
+                                      : `${Math.round((msg.size_bytes ?? 0) / 1024)} Ko`}
+                                    {loadingFile === msg.id && " — chargement…"}
+                                  </p>
+                                </div>
+                                {fileDataCache[msg.id] && (
+                                  <button
+                                    onClick={() => handleDownloadFile(msg)}
+                                    className="flex-shrink-0 text-xs px-2 py-1 bg-civium-600 text-white rounded hover:bg-civium-700 transition-colors"
+                                  >
+                                    ⬇ Télécharger
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ) : msg.is_calendar_event ? (
+                            <div className="mt-1 flex items-center gap-2 bg-blue-50 border border-blue-200
+                                            rounded-lg px-3 py-2 text-sm text-blue-800 max-w-xs">
+                              <span className="text-lg">📅</span>
+                              <div>
+                                <p className="font-medium">{msg.event_title}</p>
+                                {msg.event_start && (
+                                  <p className="text-xs text-blue-600">
+                                    {new Date(msg.event_start * 1000).toLocaleString("fr-FR")}
+                                    {msg.event_end ? ` → ${new Date(msg.event_end * 1000).toLocaleTimeString("fr-FR")}` : ""}
+                                  </p>
+                                )}
+                                {msg.event_location && (
+                                  <p className="text-xs text-blue-500">📍 {msg.event_location}</p>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="text-sm text-gray-700 mt-0.5 prose prose-sm max-w-none
+                                            prose-p:my-0.5 prose-pre:bg-gray-100 prose-pre:rounded prose-code:text-xs
+                                            prose-a:text-civium-600 prose-a:underline break-words">
+                              <ReactMarkdown
+                                rehypePlugins={[rehypeSanitize]}
+                                components={{
+                                  a: ({ href, children }) => (
+                                    <a
+                                      href={href}
+                                      onClick={(e) => { e.preventDefault(); if (href) shellOpen(href); }}
+                                      className="text-civium-600 underline hover:text-civium-800 cursor-pointer"
+                                    >{children}</a>
+                                  ),
+                                }}
+                              >{msg.body}</ReactMarkdown>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    ))
+                      );
+                    })
                 )}
                 <div ref={messagesEndRef} />
               </div>
 
               {/* Send form */}
-              <div className="flex gap-2 bg-white border border-gray-200 rounded-b-xl p-3">
-                <textarea
-                  value={msgBody}
-                  onChange={(e) => setMsgBody(e.target.value)}
-                  onKeyDown={handleMsgKeyDown}
-                  placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour sauter une ligne)"
-                  rows={2}
-                  disabled={sending}
-                  className="flex-1 text-sm resize-none border border-gray-200 rounded-lg px-3 py-2
-                             focus:outline-none focus:ring-2 focus:ring-civium-400 disabled:opacity-50
-                             placeholder:text-gray-400"
-                />
-                <button
-                  onClick={handleSendMessage}
-                  disabled={sending || !msgBody.trim()}
-                  className="self-end text-xs px-4 py-2 bg-civium-600 text-white rounded-lg
-                             hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
-                >
-                  {sending ? "…" : "Envoyer"}
-                </button>
+              <div className="bg-white border border-gray-200 rounded-b-xl">
+                {/* Markdown toolbar */}
+                <div className="flex items-center gap-1 px-3 pt-2 pb-1 border-b border-gray-100">
+                  {[
+                    { label: "G", title: "Gras", wrap: "**", icon: <strong>G</strong> },
+                    { label: "I", title: "Italique", wrap: "_", icon: <em>I</em> },
+                    { label: "`", title: "Code inline", wrap: "`", icon: <code className="font-mono">`</code> },
+                  ].map(({ label, title, wrap, icon }) => (
+                    <button
+                      key={label}
+                      type="button"
+                      title={title}
+                      disabled={sending || sendingFile}
+                      className="text-xs w-7 h-7 flex items-center justify-center rounded border border-gray-200
+                                 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                      onClick={() => {
+                        const ta = document.querySelector<HTMLTextAreaElement>("#msg-textarea");
+                        if (!ta) return;
+                        const { selectionStart: s, selectionEnd: e } = ta;
+                        const before = msgBody.slice(0, s);
+                        const selected = msgBody.slice(s, e);
+                        const after = msgBody.slice(e);
+                        setMsgBody(`${before}${wrap}${selected || title}${wrap}${after}`);
+                        setTimeout(() => { ta.focus(); ta.setSelectionRange(s + wrap.length, s + wrap.length + (selected || title).length); }, 0);
+                      }}
+                    >{icon}</button>
+                  ))}
+                  <span className="text-xs text-gray-300 ml-1">Markdown supporté</span>
+                </div>
+                <div className="flex gap-2 p-3">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sendingFile || sending}
+                    title="Joindre un fichier"
+                    className="self-end text-lg px-2 py-1.5 text-gray-400 hover:text-civium-600
+                               disabled:opacity-40 transition-colors rounded-lg hover:bg-gray-50"
+                  >
+                    📎
+                  </button>
+                  <button
+                    onClick={openWebcam}
+                    disabled={sendingFile || sending}
+                    title="Prendre une photo avec la webcam"
+                    className="self-end text-lg px-2 py-1.5 text-gray-400 hover:text-civium-600
+                               disabled:opacity-40 transition-colors rounded-lg hover:bg-gray-50"
+                  >
+                    📷
+                  </button>
+                  <textarea
+                    id="msg-textarea"
+                    value={msgBody}
+                    onChange={(e) => setMsgBody(e.target.value)}
+                    onKeyDown={handleMsgKeyDown}
+                    placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour sauter une ligne)"
+                    rows={2}
+                    disabled={sending || sendingFile}
+                    className="flex-1 text-sm resize-none border border-gray-200 rounded-lg px-3 py-2
+                               focus:outline-none focus:ring-2 focus:ring-civium-400 disabled:opacity-50
+                               placeholder:text-gray-400"
+                  />
+                  <button
+                    onClick={handleSendMessage}
+                    disabled={sending || sendingFile || !msgBody.trim()}
+                    className="self-end text-xs px-4 py-2 bg-civium-600 text-white rounded-lg
+                               hover:bg-civium-700 disabled:opacity-50 transition-colors font-medium"
+                  >
+                    {sending || sendingFile ? "…" : "Envoyer"}
+                  </button>
+                </div>
               </div>
             </section>}
 
@@ -3024,12 +4390,35 @@ export default function Dashboard() {
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
                   Agenda ({agendaEvents.length})
                 </h3>
-                <button
-                  onClick={() => setShowAgendaForm((v) => !v)}
-                  className="text-xs text-indigo-500 hover:text-indigo-700"
-                >
-                  {showAgendaForm ? "Annuler" : "+ Événement"}
-                </button>
+                <div className="flex gap-2">
+                  {agendaEvents.length > 0 && (
+                    <button
+                      onClick={async () => {
+                        if (!selected) return;
+                        try {
+                          const ics = await tauriInvoke<string>("agenda_export_ics", { networkCidShort: selected.cid_short });
+                          const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `civium-agenda-${selected.cid_short}.ics`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        } catch (e) { showToast(String(e)); }
+                      }}
+                      className="text-xs text-gray-500 hover:text-gray-700"
+                      title="Exporter vers calendrier (.ics)"
+                    >
+                      ↓ .ics
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setShowAgendaForm((v) => !v)}
+                    className="text-xs text-indigo-500 hover:text-indigo-700"
+                  >
+                    {showAgendaForm ? "Annuler" : "+ Événement"}
+                  </button>
+                </div>
               </div>
 
               {showAgendaForm && (
@@ -3087,7 +4476,7 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-400 italic">Aucun événement.</p>
               ) : (
                 <div className="space-y-2">
-                  {agendaEvents.map((ev) => (
+                  {agendaEvents.slice(agendaPage * PAGE_SIZE, (agendaPage + 1) * PAGE_SIZE).map((ev) => (
                     <div
                       key={ev.id}
                       className="flex items-start justify-between gap-2 p-2 bg-gray-50 rounded border border-gray-100"
@@ -3116,6 +4505,21 @@ export default function Dashboard() {
                       </button>
                     </div>
                   ))}
+                  {agendaEvents.length > PAGE_SIZE && (
+                    <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                      <button
+                        disabled={agendaPage === 0}
+                        onClick={() => setAgendaPage((p) => p - 1)}
+                        className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                      >← Précédent</button>
+                      <span>Page {agendaPage + 1} / {Math.ceil(agendaEvents.length / PAGE_SIZE)}</span>
+                      <button
+                        disabled={(agendaPage + 1) * PAGE_SIZE >= agendaEvents.length}
+                        onClick={() => setAgendaPage((p) => p + 1)}
+                        className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                      >Suivant →</button>
+                    </div>
+                  )}
                 </div>
               )}
             </section>}
@@ -3163,7 +4567,7 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-400 italic">Aucun document.</p>
               ) : (
                 <div className="space-y-2">
-                  {documents.map((doc) => (
+                  {documents.slice(docsPage * PAGE_SIZE, (docsPage + 1) * PAGE_SIZE).map((doc) => (
                     <div
                       key={doc.id}
                       className="p-2 bg-gray-50 rounded border border-gray-100"
@@ -3198,6 +4602,21 @@ export default function Dashboard() {
                       )}
                     </div>
                   ))}
+                  {documents.length > PAGE_SIZE && (
+                    <div className="flex items-center justify-between mt-2 text-xs text-gray-500">
+                      <button
+                        disabled={docsPage === 0}
+                        onClick={() => setDocsPage((p) => p - 1)}
+                        className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                      >← Précédent</button>
+                      <span>Page {docsPage + 1} / {Math.ceil(documents.length / PAGE_SIZE)}</span>
+                      <button
+                        disabled={(docsPage + 1) * PAGE_SIZE >= documents.length}
+                        onClick={() => setDocsPage((p) => p + 1)}
+                        className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                      >Suivant →</button>
+                    </div>
+                  )}
                 </div>
               )}
             </section>}
@@ -3642,9 +5061,10 @@ export default function Dashboard() {
                       </p>
                     );
                   }
+                  const pageItems = items.slice(dirPage * PAGE_SIZE, (dirPage + 1) * PAGE_SIZE);
                   return (
                     <div className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
-                      {items.map((entry) => (
+                      {pageItems.map((entry) => (
                         <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
                           <span className={`mt-0.5 text-xs font-medium px-2 py-0.5 rounded-full flex-shrink-0 ${
                             entry.kind === "network"
@@ -3685,6 +5105,21 @@ export default function Dashboard() {
                           </button>
                         </div>
                       ))}
+                      {items.length > PAGE_SIZE && (
+                        <div className="flex items-center justify-between px-4 py-2 text-xs text-gray-500">
+                          <button
+                            disabled={dirPage === 0}
+                            onClick={() => setDirPage((p) => p - 1)}
+                            className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                          >← Précédent</button>
+                          <span>Page {dirPage + 1} / {Math.ceil(items.length / PAGE_SIZE)}</span>
+                          <button
+                            disabled={(dirPage + 1) * PAGE_SIZE >= items.length}
+                            onClick={() => setDirPage((p) => p + 1)}
+                            className="px-3 py-1 rounded border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-40 transition-colors"
+                          >Suivant →</button>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -3751,6 +5186,162 @@ export default function Dashboard() {
               </section>
             )}
 
+            {/* ── Connexions inter-réseaux (APC) ── */}
+            {selected && activeView === 'connexions' && (
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                    Connexions inter-réseaux (APC)
+                  </h3>
+                  <button
+                    className="text-xs text-civium-600 hover:text-civium-800"
+                    onClick={() => tauriInvoke<ConnectionInfo[]>("connection_list", { networkCid: selected.cid_short })
+                      .then(setConnections).catch(() => {})}
+                  >
+                    ↻ Actualiser
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Chaque connexion est régie par un Accord de Partage Civium (APC — Accord de Partage Civium) signé par les deux réseaux.
+                  Les connexions en attente doivent être acceptées ou refusées par un admin.
+                </p>
+                {connections.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-gray-200 px-4 py-6 text-center">
+                    <p className="text-sm text-gray-400">Aucune connexion inter-réseau.</p>
+                    <p className="text-xs text-gray-300 mt-1">Utilisez le CLI <code>civium connect request</code> pour initier une connexion.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {connections.map((c) => {
+                      const isPending = c.state === "En attente";
+                      const isActive  = c.state === "Active";
+                      const stateColor = isPending ? "text-amber-600 bg-amber-50 border-amber-200"
+                        : isActive ? "text-green-600 bg-green-50 border-green-200"
+                        : "text-gray-500 bg-gray-50 border-gray-200";
+                      return (
+                        <div key={c.peer_cid_full} className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-gray-800 truncate">{c.peer_name}</p>
+                              <p className="text-xs font-mono text-gray-400">{c.peer_cid_short}</p>
+                            </div>
+                            <span className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${stateColor}`}>{c.state}</span>
+                          </div>
+                          {/* APC terms */}
+                          {isActive && (
+                            <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                              <div className="bg-gray-50 rounded-lg px-3 py-2">
+                                <p className="font-medium text-gray-500 mb-0.5">Nous exposons</p>
+                                <p>{c.expose_directory_to_peer ? "Annuaire des membres" : "Rien (privé)"}</p>
+                              </div>
+                              <div className="bg-gray-50 rounded-lg px-3 py-2">
+                                <p className="font-medium text-gray-500 mb-0.5">Ils exposent</p>
+                                <p>{c.peer_exposes_directory ? "Annuaire des membres" : "Rien (privé)"}</p>
+                              </div>
+                            </div>
+                          )}
+                          {c.apc_nonce && (
+                            <p className="text-xs text-gray-400">
+                              Nonce APC : <code className="font-mono">{c.apc_nonce.slice(0, 12)}…</code>
+                              {" — "}{new Date(c.updated_at * 1000).toLocaleDateString("fr-FR")}
+                            </p>
+                          )}
+                          {/* Actions */}
+                          {isPending && (
+                            <div className="flex flex-wrap gap-2">
+                              <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                                <input
+                                  type="checkbox"
+                                  id={`expose-${c.peer_cid_full}`}
+                                  defaultChecked={true}
+                                  className="rounded"
+                                />
+                                Exposer mon annuaire
+                              </label>
+                              <button
+                                className="text-xs px-3 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 transition-colors"
+                                disabled={acceptingConn === c.peer_cid_full}
+                                onClick={async () => {
+                                  const checkbox = document.getElementById(`expose-${c.peer_cid_full}`) as HTMLInputElement;
+                                  setAcceptingConn(c.peer_cid_full);
+                                  try {
+                                    await tauriInvoke("connection_accept", {
+                                      networkCid: selected.cid_short,
+                                      peerCidFull: c.peer_cid_full,
+                                      exposeDirectory: checkbox?.checked ?? true,
+                                    });
+                                    showToast("Connexion acceptée — APC signé.", "ok");
+                                    const updated = await tauriInvoke<ConnectionInfo[]>("connection_list", { networkCid: selected.cid_short });
+                                    setConnections(updated);
+                                  } catch (e) { showToast(String(e)); }
+                                  finally { setAcceptingConn(null); }
+                                }}
+                              >
+                                {acceptingConn === c.peer_cid_full ? "Signature…" : "✓ Accepter"}
+                              </button>
+                              <button
+                                className="text-xs px-3 py-1 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                                disabled={actingConn === c.peer_cid_full}
+                                onClick={async () => {
+                                  setActingConn(c.peer_cid_full);
+                                  try {
+                                    await tauriInvoke("connection_refuse", { networkCid: selected.cid_short, peerCidFull: c.peer_cid_full, reason: null });
+                                    showToast("Connexion refusée.", "ok");
+                                    setConnections((prev) => prev.filter((x) => x.peer_cid_full !== c.peer_cid_full));
+                                  } catch (e) { showToast(String(e)); }
+                                  finally { setActingConn(null); }
+                                }}
+                              >
+                                ✗ Refuser
+                              </button>
+                            </div>
+                          )}
+                          {(isActive || c.state === "Demandée") && (
+                            <div className="flex gap-2">
+                              <button
+                                className="text-xs px-2 py-1 border border-red-200 text-red-600 rounded hover:bg-red-50 disabled:opacity-50 transition-colors"
+                                disabled={actingConn === c.peer_cid_full}
+                                onClick={async () => {
+                                  if (!confirm(`Révoquer la connexion avec « ${c.peer_name} » ?`)) return;
+                                  setActingConn(c.peer_cid_full);
+                                  try {
+                                    await tauriInvoke("connection_revoke", { networkCid: selected.cid_short, peerCidFull: c.peer_cid_full });
+                                    showToast("Connexion révoquée.", "ok");
+                                    const updated = await tauriInvoke<ConnectionInfo[]>("connection_list", { networkCid: selected.cid_short });
+                                    setConnections(updated);
+                                  } catch (e) { showToast(String(e)); }
+                                  finally { setActingConn(null); }
+                                }}
+                              >
+                                Révoquer
+                              </button>
+                              <button
+                                className="text-xs px-2 py-1 border border-gray-300 text-gray-500 rounded hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                                disabled={actingConn === c.peer_cid_full}
+                                onClick={async () => {
+                                  if (!confirm(`Bloquer « ${c.peer_name} » ? Le réseau verra une connexion refusée.`)) return;
+                                  setActingConn(c.peer_cid_full);
+                                  try {
+                                    await tauriInvoke("connection_block", { networkCid: selected.cid_short, peerCidFull: c.peer_cid_full });
+                                    showToast("Réseau bloqué.", "ok");
+                                    const updated = await tauriInvoke<ConnectionInfo[]>("connection_list", { networkCid: selected.cid_short });
+                                    setConnections(updated);
+                                  } catch (e) { showToast(String(e)); }
+                                  finally { setActingConn(null); }
+                                }}
+                              >
+                                Bloquer
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+            )}
+
             {/* ── Extensions section ── */}
             {activeView === 'extensions' && (
               <section>
@@ -3794,6 +5385,145 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Lightbox */}
+      {lightboxSrc && (
+        <div
+          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 cursor-zoom-out"
+          onClick={() => setLightboxSrc(null)}
+        >
+          <img
+            src={lightboxSrc}
+            alt="Aperçu"
+            className="max-w-full max-h-full object-contain rounded-lg select-none"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            onClick={() => setLightboxSrc(null)}
+            className="absolute top-4 right-4 text-white/80 hover:text-white text-3xl leading-none"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Webcam capture modal — always mounted so webcamVideoRef is never null */}
+      <div
+        className={`fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 ${showWebcam ? "" : "hidden"}`}
+        onClick={(e) => { if (e.target === e.currentTarget) closeWebcam(); }}
+      >
+        <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-gray-900">Caméra</h3>
+            <button onClick={closeWebcam} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
+          </div>
+
+          {/* Mode toggle — hidden during/after recording */}
+          {!capturedPhoto && !recordedBlob && !isRecording && (
+            <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm font-medium">
+              <button
+                onClick={() => setWebcamMode("photo")}
+                className={`flex-1 py-2 transition-colors ${webcamMode === "photo" ? "bg-civium-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
+              >
+                📷 Photo
+              </button>
+              <button
+                onClick={() => setWebcamMode("video")}
+                className={`flex-1 py-2 transition-colors ${webcamMode === "video" ? "bg-civium-600 text-white" : "text-gray-600 hover:bg-gray-50"}`}
+              >
+                🎥 Vidéo
+              </button>
+            </div>
+          )}
+
+          {/* Preview après capture photo */}
+          {capturedPhoto ? (
+            <div className="space-y-3">
+              <img src={capturedPhoto} alt="Aperçu" className="w-full rounded-xl border border-gray-200" />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setCapturedPhoto(null); openWebcam(); }}
+                  className="flex-1 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+                >
+                  Reprendre
+                </button>
+                <button onClick={sendCapturedPhoto} disabled={sendingFile}
+                  className="flex-1 py-2 bg-civium-600 text-white rounded-lg text-sm font-medium hover:bg-civium-700 disabled:opacity-50">
+                  {sendingFile ? "Envoi…" : "Envoyer"}
+                </button>
+              </div>
+            </div>
+
+          ) : recordedBlob ? (
+            /* Preview après enregistrement vidéo */
+            <div className="space-y-3">
+              <video
+                src={recordedUrl ?? ""}
+                controls
+                playsInline
+                className="w-full rounded-xl bg-black aspect-video"
+                autoPlay
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    setRecordedBlob(null);
+                    if (recordedUrl) { URL.revokeObjectURL(recordedUrl); setRecordedUrl(null); }
+                    openWebcam();
+                  }}
+                  className="flex-1 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50"
+                >
+                  Reprendre
+                </button>
+                <button onClick={sendRecordedVideo} disabled={sendingFile}
+                  className="flex-1 py-2 bg-civium-600 text-white rounded-lg text-sm font-medium hover:bg-civium-700 disabled:opacity-50">
+                  {sendingFile ? "Envoi…" : "Envoyer"}
+                </button>
+              </div>
+            </div>
+
+          ) : (
+            /* Viewfinder en direct */
+            <div className="space-y-3">
+              <div className="relative">
+                <video
+                  ref={webcamVideoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  className="w-full rounded-xl bg-black aspect-video object-cover"
+                />
+                {isRecording && (
+                  <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-black/60 text-white text-xs px-2 py-1 rounded-full">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    {String(Math.floor(recordingSeconds / 60)).padStart(2, "0")}:{String(recordingSeconds % 60).padStart(2, "0")}
+                  </div>
+                )}
+              </div>
+              <canvas ref={webcamCanvasRef} className="hidden" />
+
+              {webcamMode === "photo" ? (
+                <button onClick={capturePhoto}
+                  className="w-full py-3 bg-civium-600 text-white rounded-xl text-sm font-semibold hover:bg-civium-700">
+                  📷 Capturer
+                </button>
+              ) : isRecording ? (
+                <button onClick={stopRecording}
+                  className="w-full py-3 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 flex items-center justify-center gap-2">
+                  <span className="w-3 h-3 rounded-sm bg-white inline-block" />
+                  Arrêter l'enregistrement
+                </button>
+              ) : (
+                <button onClick={startRecording}
+                  className="w-full py-3 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 flex items-center justify-center gap-2">
+                  <span className="w-3 h-3 rounded-full bg-white inline-block" />
+                  Démarrer l'enregistrement
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

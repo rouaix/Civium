@@ -77,7 +77,7 @@ pub async fn run_mcp_server(
     let listener = match TcpListener::bind(format!("127.0.0.1:{port}")).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[MCP] Impossible d'écouter sur le port {port}: {e}");
+            tracing::error!("MCP impossible d'écouter sur le port {port}: {e}");
             return;
         }
     };
@@ -91,11 +91,27 @@ pub async fn run_mcp_server(
                         let t = token.clone();
                         tokio::spawn(async move { handle_conn(stream, dd, t).await; });
                     }
-                    Err(e) => eprintln!("[MCP] Erreur accept: {e}"),
+                    Err(e) => tracing::error!("MCP erreur accept: {e}"),
                 }
             }
             _ = &mut shutdown_rx => break,
         }
+    }
+}
+
+// ── CORS helper ───────────────────────────────────────────────────────────────
+
+/// Allowed origins: null (file://), localhost variants only.
+fn cors_origin(origin: &str) -> Option<&str> {
+    if origin == "null"
+        || origin.starts_with("http://localhost")
+        || origin.starts_with("https://localhost")
+        || origin.starts_with("http://127.0.0.1")
+        || origin.starts_with("https://127.0.0.1")
+    {
+        Some(origin)
+    } else {
+        None
     }
 }
 
@@ -104,25 +120,30 @@ pub async fn run_mcp_server(
 async fn handle_conn(mut stream: TcpStream, data_dir: PathBuf, token: String) {
     let Some((headers, body)) = read_request(&mut stream).await else { return };
 
+    let origin = headers.get("origin").map(|s| s.as_str()).unwrap_or("null");
+    let allowed_origin = cors_origin(origin).unwrap_or("null");
+
     // CORS preflight
     if headers.get("method").map(|s| s.as_str()) == Some("options") {
-        let _ = stream.write_all(
-            b"HTTP/1.1 200 OK\r\n\
-              Access-Control-Allow-Origin: *\r\n\
-              Access-Control-Allow-Headers: Authorization,Content-Type\r\n\
-              Access-Control-Allow-Methods: POST,OPTIONS\r\n\
-              Content-Length: 0\r\n\r\n",
-        ).await;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Access-Control-Allow-Origin: {allowed_origin}\r\n\
+             Access-Control-Allow-Headers: Authorization,Content-Type\r\n\
+             Access-Control-Allow-Methods: POST,OPTIONS\r\n\
+             Vary: Origin\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        let _ = stream.write_all(resp.as_bytes()).await;
         return;
     }
 
     // Bearer token authentication
     let auth = headers.get("authorization").map(|s| s.as_str()).unwrap_or("");
     if auth != format!("Bearer {token}") {
-        let body = r#"{"error":"non autorisé — jeton Bearer invalide ou manquant"}"#;
+        let b = r#"{"error":"non autorisé — jeton Bearer invalide ou manquant"}"#;
         let resp = format!(
-            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(), body
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {allowed_origin}\r\nVary: Origin\r\nContent-Length: {}\r\n\r\n{}",
+            b.len(), b
         );
         let _ = stream.write_all(resp.as_bytes()).await;
         return;
@@ -133,7 +154,7 @@ async fn handle_conn(mut stream: TcpStream, data_dir: PathBuf, token: String) {
         Ok(v) => v,
         Err(_) => {
             let r = json!({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":null});
-            write_json(&mut stream, &r).await;
+            write_json(&mut stream, &r, allowed_origin).await;
             return;
         }
     };
@@ -146,7 +167,7 @@ async fn handle_conn(mut stream: TcpStream, data_dir: PathBuf, token: String) {
         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
         Err(msg)   => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":msg}}),
     };
-    write_json(&mut stream, &response).await;
+    write_json(&mut stream, &response, allowed_origin).await;
 }
 
 // ── JSON-RPC dispatch ─────────────────────────────────────────────────────────
@@ -336,6 +357,9 @@ async fn read_request(stream: &mut TcpStream) -> Option<(HashMap<String, String>
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(0);
 
+    // Body size limit: 64 KB
+    if content_length > 65_536 { return None; }
+
     let body_start = header_end + 4;
     while buf.len() < body_start + content_length {
         let n = stream.read(&mut tmp).await.ok()?;
@@ -367,10 +391,10 @@ async fn read_request(stream: &mut TcpStream) -> Option<(HashMap<String, String>
     Some((headers, body))
 }
 
-async fn write_json(stream: &mut TcpStream, value: &Value) {
+async fn write_json(stream: &mut TcpStream, value: &Value, allowed_origin: &str) {
     let body = value.to_string();
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {allowed_origin}\r\nVary: Origin\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
         body
     );

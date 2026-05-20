@@ -95,6 +95,7 @@ Le RCC n'est **pas** une autorité. Il est un registre légal et un canal d'aler
 | `network_cid` | CID du réseau (clé primaire) |
 | `network_name` | Nom public du réseau |
 | `admin_cid` | CID du membre fondateur |
+| `admin_name` | Nom public du membre fondateur |
 | `admin_pubkey` | Clé publique Ed25519 du fondateur (pour vérifier les signatures) |
 | `admin_email` | Email de contact **obligatoire** |
 | `ip_address` | IP au moment de l'enregistrement |

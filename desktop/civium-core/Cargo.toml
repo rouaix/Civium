@@ -22,6 +22,7 @@ serde_json.workspace   = true
 bs58.workspace         = true
 rand.workspace         = true
 # uuid: v4 on native; v4+js on wasm32 (browser crypto.getRandomValues backend)
+base64                 = "0.22"
 blake3                 = "1"
 zeroize                = { version = "1", features = ["derive"] }
 chacha20poly1305       = "0.10"
@@ -38,7 +39,10 @@ wasm-bindgen          = { version = "0.2", optional = true }
 wasm-bindgen-futures  = { version = "0.4", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-uuid  = { workspace = true }
+uuid      = { workspace = true }
+anyhow    = "1"
+# WASM sandbox for third-party plugins (not usable inside a browser WASM build)
+wasmtime  = { version = "21", default-features = false, features = ["cranelift", "runtime", "component-model"] }
 # Native: full libp2p transport stack + Tokio async runtime
 libp2p = { version = "0.55", features = [
     "tokio",
@@ -54,6 +58,10 @@ libp2p = { version = "0.55", features = [
     "macros",
     "request-response",
     "cbor",
+    "memory-connection-limits",
+    "relay",
+    "autonat",
+    "upnp",
 ] }
 tokio = { workspace = true }
 

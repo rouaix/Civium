@@ -1,3 +1,4 @@
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key, Nonce,
@@ -68,6 +69,31 @@ impl GroupKey {
             .map_err(|e| CiviumError::Crypto(e.to_string()))?;
         let ciphertext = bs58::decode(ciphertext_b58)
             .into_vec()
+            .map_err(|e| CiviumError::Crypto(e.to_string()))?;
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        self.cipher
+            .decrypt(nonce, ciphertext.as_slice())
+            .map_err(|_| CiviumError::Crypto("decryption failed — wrong key or corrupted data".into()))
+    }
+
+    /// Encrypt a binary chunk using base64 output — O(n), suitable for large payloads.
+    /// Use this for `EncryptedChunk` instead of `encrypt` (which uses base58 = O(n²)).
+    pub fn encrypt_chunk(&self, plaintext: &[u8]) -> Result<(String, String), CiviumError> {
+        let mut nonce_bytes = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, plaintext)
+            .map_err(|e| CiviumError::Crypto(e.to_string()))?;
+        Ok((B64.encode(nonce_bytes), B64.encode(ciphertext)))
+    }
+
+    /// Decrypt a chunk encrypted by `encrypt_chunk`.
+    pub fn decrypt_chunk(&self, nonce_b64: &str, ciphertext_b64: &str) -> Result<Vec<u8>, CiviumError> {
+        let nonce_bytes = B64.decode(nonce_b64)
+            .map_err(|e| CiviumError::Crypto(e.to_string()))?;
+        let ciphertext = B64.decode(ciphertext_b64)
             .map_err(|e| CiviumError::Crypto(e.to_string()))?;
         let nonce = Nonce::from_slice(&nonce_bytes);
         self.cipher

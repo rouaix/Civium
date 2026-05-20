@@ -9,7 +9,7 @@ use civium_core::{
     add_contest, compute_result_with_delegations,
     ActivityKind, AdminAction, AdminActionKind, AdminActionStatus, AgendaEvent,
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
-    DirectoryEntry, Document, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
+    DirectoryEntry, Document, EncryptedChunk, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PairKey, PluginState, Proposal, ProposalStatus,
     RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
     RCC_URL,
@@ -124,6 +124,22 @@ pub fn identity_show(app: AppHandle) -> Result<IdentityInfo, String> {
 }
 
 #[tauri::command]
+pub fn identity_restore_from_secret(app: AppHandle, secret_b58: String) -> Result<IdentityInfo, String> {
+    let conn = open(&app)?;
+    if store::identity_exists(&conn) {
+        return Err("Une identité existe déjà sur cet appareil. Supprimez-la d'abord.".into());
+    }
+    let keypair = CiviumKeypair::from_secret_b58(&secret_b58).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    store::save_identity(&conn, &keypair).map_err(|e| e.to_string())?;
+    Ok(IdentityInfo {
+        cid_short: cid.short().to_string(),
+        cid_full: cid.full().to_string(),
+        secret_b58: keypair.secret_b58(),
+    })
+}
+
+#[tauri::command]
 pub fn network_create(
     app: AppHandle,
     name: String,
@@ -200,6 +216,280 @@ pub fn network_delete(app: AppHandle, network_cid: String) -> Result<(), String>
 }
 
 #[tauri::command]
+pub fn network_leave(app: AppHandle, network_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let my_cid = keypair.cid().short().to_string();
+
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let is_only_admin = network.data.members.iter()
+        .filter(|m| matches!(m.role, civium_core::MemberRole::Admin))
+        .count() == 1
+        && network.data.members.iter().any(|m| {
+            m.cid_short == my_cid && matches!(m.role, civium_core::MemberRole::Admin)
+        });
+    if is_only_admin && network.data.members.len() > 1 {
+        return Err("Vous êtes le seul administrateur. Nommez un autre administrateur avant de quitter.".into());
+    }
+    network.remove_member(&my_cid).map_err(|e| e.to_string())?;
+    if network.data.members.is_empty() {
+        store::delete_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    } else {
+        store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn wipe_all_data(app: AppHandle) -> Result<(), String> {
+    let db_path = data_dir(&app).join("civium.db");
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Perform a manual backup of civium.db. Returns the backup file path.
+#[tauri::command]
+pub fn db_backup_now(app: AppHandle) -> Result<String, String> {
+    perform_backup(&data_dir(&app)).map_err(|e| e.to_string())
+}
+
+/// Returns the timestamp (ISO 8601) of the most recent backup, or null if none.
+#[tauri::command]
+pub fn db_backup_last(app: AppHandle) -> Option<String> {
+    let backups_dir = data_dir(&app).join(".backups");
+    let mut entries: Vec<_> = std::fs::read_dir(&backups_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".db"))
+        .collect();
+    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    let last = entries.last()?;
+    let ts = last.metadata().ok()?.modified().ok()?;
+    let secs = ts.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    // Format as ISO 8601 timestamp
+    let dt = chrono_from_secs(secs);
+    Some(dt)
+}
+
+fn chrono_from_secs(secs: u64) -> String {
+    // Simple ISO format without chrono dependency
+    let secs = secs as i64;
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    // Days since Unix epoch → date (simplified, good enough for display)
+    let mut y = 1970i64;
+    let mut d = days;
+    loop {
+        let dy = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if d < dy { break; }
+        d -= dy;
+        y += 1;
+    }
+    let months = [31i64,if y%4==0&&(y%100!=0||y%400==0){29}else{28},31,30,31,30,31,31,30,31,30,31];
+    let mut mo = 1i64;
+    for mlen in &months {
+        if d < *mlen { break; }
+        d -= mlen;
+        mo += 1;
+    }
+    format!("{y:04}-{mo:02}-{:02}T{h:02}:{m:02}:{s:02}Z", d + 1)
+}
+
+pub(crate) fn perform_backup(data_dir: &std::path::Path) -> Result<String, std::io::Error> {
+    let db_path = data_dir.join("civium.db");
+    if !db_path.exists() {
+        return Ok("no_db".to_string());
+    }
+    let backups_dir = data_dir.join(".backups");
+    std::fs::create_dir_all(&backups_dir)?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let dest = backups_dir.join(format!("civium-{ts}.db"));
+    std::fs::copy(&db_path, &dest)?;
+
+    // Prune: keep only the 7 most recent backups
+    let mut entries: Vec<_> = std::fs::read_dir(&backups_dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".db"))
+        .collect();
+    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    while entries.len() > 7 {
+        let old = entries.remove(0);
+        let _ = std::fs::remove_file(old.path());
+    }
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// Export all user data as a portable JSON string.
+#[tauri::command]
+pub fn export_data(app: AppHandle) -> Result<String, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
+
+    let mut export = serde_json::json!({
+        "version": 1,
+        "exported_at": chrono_from_secs(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()),
+        "identity": {
+            "cid_short": cid.short(),
+            "cid_full": cid.full(),
+        },
+        "networks": [],
+    });
+
+    let nets_arr = export["networks"].as_array_mut().unwrap();
+    for network in &networks {
+        let messages = store::load_messages(&conn, &network.cid_short())
+            .unwrap_or_default();
+        let proposals = store::list_proposals(&conn, &network.cid_short())
+            .unwrap_or_default();
+
+        nets_arr.push(serde_json::json!({
+            "cid_short": network.cid_short(),
+            "name": network.name(),
+            "members": network.data.members.iter().map(|m| serde_json::json!({
+                "cid_short": m.cid_short,
+                "display_name": m.display_name,
+                "circle": m.circle as u8,
+                "role": m.role.to_string(),
+            })).collect::<Vec<_>>(),
+            "messages": messages.iter().map(|m| serde_json::json!({
+                "id": m.id,
+                "author_cid_short": m.author_cid_short,
+                "sent_at": m.sent_at,
+            })).collect::<Vec<_>>(),
+            "proposals": proposals.iter().map(|p| serde_json::json!({
+                "id": p.id,
+                "title": p.title,
+                "status": p.status.to_string(),
+            })).collect::<Vec<_>>(),
+        }));
+    }
+
+    serde_json::to_string_pretty(&export).map_err(|e| e.to_string())
+}
+
+/// Export the identity key as an Argon2id+ChaCha20-Poly1305 encrypted backup (base64).
+/// Format: magic(2) + version(1) + salt(16) + nonce(12) + ciphertext
+#[tauri::command]
+pub fn identity_backup_export(app: AppHandle, password: String) -> Result<String, String> {
+    use argon2::{Argon2, Params, Algorithm, Version};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::{Aead, KeyInit, OsRng, AeadCore}};
+    use base64::{Engine, engine::general_purpose};
+
+    if password.len() < 8 {
+        return Err("Le mot de passe doit faire au moins 8 caractères.".into());
+    }
+
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let secret = keypair.secret_b58();
+
+    // Generate random salt (16 bytes) and derive a 32-byte key via Argon2id.
+    let salt: [u8; 16] = {
+        let mut s = [0u8; 16];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut s);
+        s
+    };
+
+    let params = Params::new(65536, 3, 1, Some(32))
+        .map_err(|e| format!("Argon2 params: {e}"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key_bytes = [0u8; 32];
+    argon2
+        .hash_password_into(password.as_bytes(), &salt, &mut key_bytes)
+        .map_err(|e| format!("Dérivation de clé: {e}"))?;
+
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(&nonce, secret.as_bytes())
+        .map_err(|e| format!("Chiffrement: {e}"))?;
+
+    // Pack: magic(0xCB,0xCB) + version(1) + salt(16) + nonce(12) + ciphertext
+    let mut payload = Vec::with_capacity(2 + 1 + 16 + 12 + ciphertext.len());
+    payload.extend_from_slice(&[0xCB, 0xCB, 0x01]);
+    payload.extend_from_slice(&salt);
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+
+    Ok(general_purpose::STANDARD.encode(&payload))
+}
+
+/// Import an identity from an encrypted backup produced by identity_backup_export.
+#[tauri::command]
+pub fn identity_backup_import(
+    app: AppHandle,
+    backup_b64: String,
+    password: String,
+) -> Result<IdentityInfo, String> {
+    use argon2::{Argon2, Params, Algorithm, Version};
+    use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, aead::{Aead, KeyInit}};
+    use base64::{Engine, engine::general_purpose};
+
+    let payload = general_purpose::STANDARD
+        .decode(backup_b64.trim())
+        .map_err(|_| "Format de sauvegarde invalide.".to_string())?;
+
+    if payload.len() < 3 + 16 + 12 + 1 {
+        return Err("Fichier de sauvegarde trop court ou corrompu.".into());
+    }
+    if payload[0] != 0xCB || payload[1] != 0xCB || payload[2] != 0x01 {
+        return Err("Ce fichier n'est pas une sauvegarde Civium valide.".into());
+    }
+
+    let salt      = &payload[3..19];
+    let nonce_raw = &payload[19..31];
+    let ciphertext= &payload[31..];
+
+    let params = Params::new(65536, 3, 1, Some(32))
+        .map_err(|e| format!("Argon2 params: {e}"))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+
+    let mut key_bytes = [0u8; 32];
+    argon2
+        .hash_password_into(password.as_bytes(), salt, &mut key_bytes)
+        .map_err(|e| format!("Dérivation de clé: {e}"))?;
+
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key_bytes));
+    let nonce = Nonce::from_slice(nonce_raw);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| "Mot de passe incorrect ou fichier corrompu.".to_string())?;
+
+    let secret_b58 = String::from_utf8(plaintext)
+        .map_err(|_| "Données de sauvegarde corrompues.".to_string())?;
+
+    let conn = open(&app)?;
+    if store::identity_exists(&conn) {
+        return Err("Une identité existe déjà sur cet appareil. Supprimez-la d'abord.".into());
+    }
+
+    let keypair = CiviumKeypair::from_secret_b58(&secret_b58).map_err(|e| e.to_string())?;
+    let cid = keypair.cid();
+    store::save_identity(&conn, &keypair).map_err(|e| e.to_string())?;
+
+    Ok(IdentityInfo {
+        cid_short: cid.short().to_string(),
+        cid_full: cid.full().to_string(),
+        secret_b58,
+    })
+}
+
+#[tauri::command]
 pub fn network_list(app: AppHandle) -> Result<Vec<NetworkInfo>, String> {
     let conn = open(&app)?;
     let networks = store::list_networks(&conn).map_err(|e| e.to_string())?;
@@ -236,9 +526,65 @@ pub fn network_invite(
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let inviter_cid = keypair.cid();
     let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
-    network
-        .create_invitation(&inviter_cid, expires_in)
-        .map_err(|e| e.to_string())
+
+    let invite = Invitation::create(network.keypair(), &network.data.name, &inviter_cid, expires_in)
+        .map_err(|e| e.to_string())?;
+    let link = invite.to_link().map_err(|e| e.to_string())?;
+
+    // Persister l'invitation pour permettre la révocation
+    let _ = store::save_invitation(&conn, &store::StoredInvitation {
+        network_cid_short: network.cid_short().to_string(),
+        nonce_b58: invite.nonce_b58().to_string(),
+        inviter_cid_short: inviter_cid.short().to_string(),
+        created_at: invite.payload.created_at,
+        expires_at: invite.payload.expires_at,
+        link_b58: link.clone(),
+        revoked: false,
+    });
+
+    Ok(link)
+}
+
+#[derive(Serialize)]
+pub struct InvitationInfo {
+    pub network_cid_short: String,
+    pub nonce_b58: String,
+    pub inviter_cid_short: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub link: String,
+    pub revoked: bool,
+    pub is_expired: bool,
+}
+
+#[tauri::command]
+pub fn invitation_list(app: AppHandle, network_cid: String) -> Result<Vec<InvitationInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let invs = store::list_invitations(&conn, &network.cid_short().to_string());
+    Ok(invs.into_iter().map(|i| InvitationInfo {
+        is_expired: i.expires_at != 0 && i.expires_at < now,
+        network_cid_short: i.network_cid_short,
+        nonce_b58: i.nonce_b58,
+        inviter_cid_short: i.inviter_cid_short,
+        created_at: i.created_at,
+        expires_at: i.expires_at,
+        link: i.link_b58,
+        revoked: i.revoked,
+    }).collect())
+}
+
+#[tauri::command]
+pub fn invitation_revoke(app: AppHandle, network_cid: String, nonce_b58: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let found = store::revoke_invitation(&conn, &network.cid_short().to_string(), &nonce_b58)
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err("Invitation introuvable.".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -284,6 +630,10 @@ pub fn network_join(
             "Réseau '{}' introuvable localement. En Phase 0, partagez la même base de données que l'admin.",
             invitation.network_name()
         ))?;
+
+    if store::is_invitation_revoked(&conn, &network.cid_short().to_string(), invitation.nonce_b58()) {
+        return Err("Ce lien d'invitation a été révoqué.".into());
+    }
 
     network
         .submit_join_request(&member_cid, display_name, &invitation, Some(keypair.pub_key_b58()))
@@ -439,6 +789,23 @@ pub fn member_set_role(
     })
 }
 
+#[tauri::command]
+pub fn member_change_circle(
+    app: AppHandle,
+    network_cid: String,
+    member_cid: String,
+    circle: u8,
+) -> Result<(), String> {
+    use civium_core::TrustCircle;
+    let trust_circle = TrustCircle::from_u8(circle)
+        .ok_or_else(|| format!("Cercle invalide : {circle} (valeurs 0–3 acceptées)"))?;
+    let conn = open(&app)?;
+    let mut network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    network.set_member_circle(&member_cid, trust_circle).map_err(|e| e.to_string())?;
+    store::save_network(&conn, &network).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Remove an admitted member from the network (admin only).
 #[tauri::command]
 pub fn member_remove(
@@ -577,6 +944,15 @@ pub struct MessageDisplay {
     pub is_direct: bool,
     pub to_cid_short: Option<String>,
     pub is_e2e: bool,
+    pub is_file: bool,
+    pub filename: Option<String>,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub is_calendar_event: bool,
+    pub event_title: Option<String>,
+    pub event_start: Option<u64>,
+    pub event_end: Option<u64>,
+    pub event_location: Option<String>,
 }
 
 /// Return decrypted thread messages for a network, ordered by sent_at.
@@ -606,30 +982,56 @@ pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDi
 
     let mut result = Vec::with_capacity(messages.len());
     for msg in messages {
-        let (body, is_direct, is_e2e, to_cid_short) = match &msg.kind {
+        let author_name = member_names
+            .get(&msg.author_cid_short)
+            .cloned()
+            .unwrap_or_else(|| msg.author_cid_short.clone());
+
+        let mut display = MessageDisplay {
+            id: msg.id.clone(),
+            network_cid_short: network.cid_short().to_string(),
+            network_name: network.data.name.clone(),
+            author_cid_short: msg.author_cid_short.clone(),
+            author_name,
+            body: String::new(),
+            sent_at: msg.sent_at,
+            is_direct: false,
+            to_cid_short: None,
+            is_e2e: false,
+            is_file: false,
+            filename: None,
+            mime_type: None,
+            size_bytes: None,
+            is_calendar_event: false,
+            event_title: None,
+            event_start: None,
+            event_end: None,
+            event_location: None,
+        };
+
+        match &msg.kind {
             MessageKind::Thread => {
-                let body = group_key
+                display.body = group_key
                     .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_else(|_| "[message illisible]".into());
-                (body, false, false, None)
             }
             MessageKind::Direct { to_cid_short } => {
-                let body = group_key
+                display.body = group_key
                     .decrypt(&msg.nonce_b58, &msg.ciphertext_b58)
                     .map(|b| String::from_utf8_lossy(&b).into_owned())
                     .unwrap_or_else(|_| "[message illisible]".into());
-                (body, true, false, Some(to_cid_short.clone()))
+                display.is_direct = true;
+                display.to_cid_short = Some(to_cid_short.clone());
             }
             MessageKind::E2E { to_cid_full } => {
-                // Derive pair key: our secret + the other party's pubkey
                 let my_cid_full = keypair.cid().full().to_string();
                 let peer_cid_full = if msg.author_cid_short == keypair.cid().short() {
                     to_cid_full.clone()
                 } else {
                     my_cid_full.clone()
                 };
-                let body = member_pubkeys
+                display.body = member_pubkeys
                     .get(&peer_cid_full)
                     .and_then(|pk_b58| {
                         let pk_bytes = bs58::decode(pk_b58).into_vec().ok()?;
@@ -639,34 +1041,229 @@ pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDi
                         String::from_utf8(plain).ok()
                     })
                     .unwrap_or_else(|| "[message E2E — clé introuvable]".into());
-                // to_cid_short: resolve from cid_full
-                let to_short = network.data.members.iter()
+                display.is_direct = true;
+                display.is_e2e = true;
+                display.to_cid_short = network.data.members.iter()
                     .find(|m| &m.cid_full == to_cid_full)
                     .map(|m| m.cid_short.clone());
-                (body, true, true, to_short)
             }
-        };
+            MessageKind::File { filename, mime_type, size_bytes, .. } => {
+                let mb = *size_bytes as f64 / 1_048_576.0;
+                display.body = if mb >= 1.0 {
+                    format!("📎 {} ({:.1} Mo)", filename, mb)
+                } else {
+                    format!("📎 {} ({:.0} Ko)", filename, *size_bytes as f64 / 1024.0)
+                };
+                display.is_file = true;
+                display.filename = Some(filename.clone());
+                display.mime_type = Some(mime_type.clone());
+                display.size_bytes = Some(*size_bytes);
+            }
+            MessageKind::CalendarEvent { title, start_at, end_at, location, description } => {
+                display.body = format!("📅 {}", title);
+                display.is_calendar_event = true;
+                display.event_title = Some(title.clone());
+                display.event_start = Some(*start_at);
+                display.event_end = Some(*end_at);
+                display.event_location = location.clone();
+                let _ = description;
+            }
+        }
 
+        result.push(display);
+    }
+    Ok(result)
+}
+
+/// Paginated result returned by `message_list_paged`.
+#[derive(Serialize)]
+pub struct MessageListPage {
+    pub messages: Vec<MessageDisplay>,
+    /// rowid of the oldest message in this page — pass as `before_rowid` to load earlier messages.
+    pub oldest_rowid: Option<i64>,
+    /// True if there are older messages to load.
+    pub has_more: bool,
+}
+
+/// Return the last `limit` messages (max 200) before the given `before_rowid` cursor.
+/// On first load, omit `before_rowid` to get the most recent messages.
+#[tauri::command]
+pub fn message_list_paged(
+    app: AppHandle,
+    network_cid: String,
+    limit: usize,
+    before_rowid: Option<i64>,
+) -> Result<MessageListPage, String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let group_key =
+        GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+    let member_names: HashMap<String, String> = network
+        .data.members.iter()
+        .map(|m| (m.cid_short.clone(), m.display_name.clone()))
+        .collect();
+    let member_pubkeys: HashMap<String, String> = network
+        .data.members.iter()
+        .filter_map(|m| m.pub_key_b58.as_ref().map(|k| (m.cid_short.clone(), k.clone())))
+        .collect();
+
+    let capped = limit.min(200);
+    let (pairs, has_more) = store::load_messages_paged(&conn, &network_cid, capped, before_rowid)
+        .map_err(|e| e.to_string())?;
+
+    let oldest_rowid = pairs.first().map(|(rowid, _)| *rowid);
+    let my_cid_full = keypair.cid().full().to_string();
+    let my_secret = keypair.secret_b58();
+
+    let mut messages = Vec::with_capacity(pairs.len());
+    for (_, msg) in pairs {
         let author_name = member_names
             .get(&msg.author_cid_short)
             .cloned()
             .unwrap_or_else(|| msg.author_cid_short.clone());
 
-        result.push(MessageDisplay {
-            id: msg.id,
+        let mut display = MessageDisplay {
+            id: msg.id.clone(),
             network_cid_short: network.cid_short().to_string(),
             network_name: network.data.name.clone(),
-            author_cid_short: msg.author_cid_short,
+            author_cid_short: msg.author_cid_short.clone(),
             author_name,
-            body,
+            body: String::new(),
             sent_at: msg.sent_at,
-            is_direct,
-            to_cid_short,
-            is_e2e,
-        });
+            is_direct: false,
+            to_cid_short: None,
+            is_e2e: false,
+            is_file: false,
+            filename: None,
+            mime_type: None,
+            size_bytes: None,
+            is_calendar_event: false,
+            event_title: None,
+            event_start: None,
+            event_end: None,
+            event_location: None,
+        };
+
+        match &msg.kind {
+            civium_core::MessageKind::Thread => {
+                if let Ok(plain) = group_key.decrypt(&msg.nonce_b58, &msg.ciphertext_b58) {
+                    display.body = String::from_utf8_lossy(&plain).to_string();
+                }
+            }
+            civium_core::MessageKind::Direct { to_cid_short } => {
+                display.is_direct = true;
+                display.to_cid_short = Some(to_cid_short.clone());
+                if let Ok(plain) = group_key.decrypt(&msg.nonce_b58, &msg.ciphertext_b58) {
+                    display.body = String::from_utf8_lossy(&plain).to_string();
+                }
+            }
+            civium_core::MessageKind::E2E { to_cid_full } => {
+                display.is_direct = true;
+                display.is_e2e = true;
+                display.to_cid_short = Some(to_cid_full.chars().take(12).collect());
+                if to_cid_full == &my_cid_full {
+                    if let Some(sender_pub_b58) = member_pubkeys.get(&msg.author_cid_short) {
+                        if let Ok(their_bytes) = bs58::decode(sender_pub_b58).into_vec() {
+                            if let Ok(their_arr) = <[u8; 32]>::try_from(their_bytes.as_slice()) {
+                                if let Ok(pair_key) = civium_core::PairKey::derive(keypair.secret_bytes(), &their_arr) {
+                                    if let Ok(plain) = pair_key.decrypt(&msg.nonce_b58, &msg.ciphertext_b58) {
+                                        display.body = String::from_utf8_lossy(&plain).to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if msg.author_cid_short == keypair.cid().short() {
+                    display.body = "[Message E2E envoyé]".to_string();
+                }
+            }
+            civium_core::MessageKind::File { filename, mime_type, size_bytes, .. } => {
+                display.is_file = true;
+                display.filename = Some(filename.clone());
+                display.mime_type = Some(mime_type.clone());
+                display.size_bytes = Some(*size_bytes);
+                display.body = format!("📎 {filename}");
+            }
+            civium_core::MessageKind::CalendarEvent { title, description, start_at, end_at, location } => {
+                display.is_calendar_event = true;
+                display.event_title = Some(title.clone());
+                display.event_start = Some(*start_at);
+                display.event_end = Some(*end_at);
+                display.event_location = location.clone();
+                let _ = description;
+                display.body = format!("📅 {title}");
+            }
+        }
+
+        messages.push(display);
     }
-    Ok(result)
+
+    Ok(MessageListPage { messages, oldest_rowid, has_more })
 }
+
+/// Delete a message from the local DB (admin or original author).
+#[tauri::command]
+pub fn message_delete(
+    app: AppHandle,
+    network_cid: String,
+    message_id: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let my_cid = keypair.cid().short().to_string();
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let is_admin = network.data.members.iter().any(|m| {
+        m.cid_short == my_cid && matches!(m.role, civium_core::MemberRole::Admin)
+    });
+
+    // Allow the original author to delete their own message
+    let messages = store::load_messages(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let is_author = messages.iter().any(|m| m.id == message_id && m.author_cid_short == my_cid);
+
+    if !is_admin && !is_author {
+        return Err("Vous ne pouvez supprimer que vos propres messages.".into());
+    }
+    store::delete_message(&conn, &network_cid, &message_id).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Report a message to the network admins — creates an activity event visible to admins.
+#[tauri::command]
+pub fn message_report(
+    app: AppHandle,
+    network_cid: String,
+    message_id: String,
+    reason: String,
+) -> Result<(), String> {
+    let conn = open(&app)?;
+    let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+    let reporter_cid = keypair.cid().short().to_string();
+
+    // Verify the message exists
+    let messages = store::load_messages(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let msg = messages.iter().find(|m| m.id == message_id)
+        .ok_or_else(|| "Message introuvable.".to_string())?;
+
+    let summary = format!(
+        "Message signalé (id: {}) — raison : {}",
+        &msg.id[..8.min(msg.id.len())],
+        if reason.trim().is_empty() { "non précisée" } else { reason.trim() }
+    );
+
+    store::emit_activity(
+        &conn,
+        &network_cid,
+        civium_core::ActivityKind::MessageReported,
+        &reporter_cid,
+        &summary,
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+const MAX_MESSAGE_BYTES: usize = 65_536; // 64 KiB
 
 /// Encrypt and store a new thread message in the local network mailbox.
 #[tauri::command]
@@ -675,6 +1272,9 @@ pub fn message_send(
     network_cid: String,
     body: String,
 ) -> Result<MessageDisplay, String> {
+    if body.len() > MAX_MESSAGE_BYTES {
+        return Err(format!("Message trop long ({} octets, max {})", body.len(), MAX_MESSAGE_BYTES));
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let author_cid = keypair.cid();
@@ -724,6 +1324,8 @@ pub fn message_send(
         is_direct: false,
         to_cid_short: None,
         is_e2e: false,
+        is_file: false, filename: None, mime_type: None, size_bytes: None,
+        is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
     })
 }
 
@@ -735,6 +1337,9 @@ pub fn message_send_direct(
     to_cid_short: String,
     body: String,
 ) -> Result<MessageDisplay, String> {
+    if body.len() > MAX_MESSAGE_BYTES {
+        return Err(format!("Message trop long ({} octets, max {})", body.len(), MAX_MESSAGE_BYTES));
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let author_cid = keypair.cid();
@@ -787,6 +1392,8 @@ pub fn message_send_direct(
         is_direct: true,
         to_cid_short: Some(to_cid_short),
         is_e2e: false,
+        is_file: false, filename: None, mime_type: None, size_bytes: None,
+        is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
     })
 }
 
@@ -799,6 +1406,9 @@ pub fn message_send_e2e(
     to_cid_short: String,
     body: String,
 ) -> Result<MessageDisplay, String> {
+    if body.len() > MAX_MESSAGE_BYTES {
+        return Err(format!("Message trop long ({} octets, max {})", body.len(), MAX_MESSAGE_BYTES));
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let author_cid = keypair.cid();
@@ -858,7 +1468,252 @@ pub fn message_send_e2e(
         is_direct: true,
         to_cid_short: Some(to_cid_short),
         is_e2e: true,
+        is_file: false, filename: None, mime_type: None, size_bytes: None,
+        is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
     })
+}
+
+/// Send a file attachment encrypted with the network group key (max 50 MB).
+/// The frontend reads the file and passes its content as a base64 string.
+/// Async to avoid blocking the IPC thread during chunk encryption.
+#[tauri::command]
+pub async fn message_send_file(
+    app: AppHandle,
+    network_cid: String,
+    filename: String,
+    mime_type: String,
+    data_base64: String,
+) -> Result<MessageDisplay, String> {
+    tokio::task::spawn_blocking(move || {
+        use base64::{Engine, engine::general_purpose};
+
+        let data = general_purpose::STANDARD
+            .decode(&data_base64)
+            .map_err(|e| format!("décodage base64 : {e}"))?;
+
+        if data.len() > 52_428_800 {
+            return Err("fichier trop volumineux (max 50 Mo)".into());
+        }
+
+        let conn = open(&app)?;
+        let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+        let author_cid = keypair.cid();
+        let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+        let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+        const CHUNK: usize = 65_536;
+        let chunks: Vec<EncryptedChunk> = data
+            .chunks(CHUNK)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let (nonce_b58, ciphertext_b58) = group_key.encrypt_chunk(chunk).map_err(|e| e.to_string())?;
+                Ok(EncryptedChunk { index: i as u32, nonce_b58, ciphertext_b58 })
+            })
+            .collect::<Result<_, String>>()?;
+
+        let (id, _) = group_key.encrypt(b"").map_err(|e| e.to_string())?;
+        let size_bytes = data.len() as u64;
+        let sent_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let msg = Message {
+            id: id.clone(),
+            author_cid_short: author_cid.short().to_string(),
+            kind: MessageKind::File { filename: filename.clone(), mime_type: mime_type.clone(), size_bytes, chunks },
+            nonce_b58: String::new(),
+            ciphertext_b58: String::new(),
+            sent_at,
+        };
+        store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
+
+        let author_name = network.data.members.iter()
+            .find(|m| m.cid_short == author_cid.short())
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| author_cid.short().to_string());
+
+        let mb = size_bytes as f64 / 1_048_576.0;
+        let body = if mb >= 1.0 {
+            format!("📎 {} ({:.1} Mo)", filename, mb)
+        } else {
+            format!("📎 {} ({:.0} Ko)", filename, size_bytes as f64 / 1024.0)
+        };
+
+        let _ = store::emit_activity(&conn, &network_cid, ActivityKind::MessagePosted,
+            author_cid.short(), &format!("{} a partagé un fichier : {}", author_name, filename));
+
+        Ok::<_, String>(MessageDisplay {
+            id: msg.id,
+            network_cid_short: network.cid_short().to_string(),
+            network_name: network.data.name.clone(),
+            author_cid_short: msg.author_cid_short,
+            author_name,
+            body,
+            sent_at: msg.sent_at,
+            is_direct: false,
+            to_cid_short: None,
+            is_e2e: false,
+            is_file: true,
+            filename: Some(filename),
+            mime_type: Some(mime_type),
+            size_bytes: Some(size_bytes),
+            is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("tâche annulée : {e}"))
+    .and_then(|r| r)
+}
+
+/// Decrypt and return the raw file data for a file-type message (as base64).
+/// Async to avoid blocking the IPC thread during chunk decryption.
+#[tauri::command]
+pub async fn message_get_file(
+    app: AppHandle,
+    network_cid: String,
+    message_id: String,
+) -> Result<serde_json::Value, String> {
+    let result = tokio::task::spawn_blocking(move || {
+        use base64::{Engine, engine::general_purpose};
+
+        let conn = open(&app)?;
+        let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+        let group_key =
+            GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+        let messages = store::load_messages(&conn, &network_cid).map_err(|e| e.to_string())?;
+        let msg = messages
+            .into_iter()
+            .find(|m| m.id == message_id)
+            .ok_or_else(|| "Message introuvable".to_string())?;
+
+        match msg.kind {
+            MessageKind::File { filename, mime_type, chunks, .. } => {
+                let mut sorted = chunks;
+                sorted.sort_by_key(|c| c.index);
+
+                let mut data: Vec<u8> = Vec::new();
+                for chunk in sorted {
+                    let plain = group_key
+                        .decrypt_chunk(&chunk.nonce_b58, &chunk.ciphertext_b58)
+                        .map_err(|e| e.to_string())?;
+                    data.extend(plain);
+                }
+
+                Ok::<_, String>(serde_json::json!({
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "data_b64": general_purpose::STANDARD.encode(&data),
+                }))
+            }
+            _ => Err("Ce message n'est pas un fichier".to_string()),
+        }
+    })
+    .await
+    .map_err(|e| format!("tâche annulée : {e}"))??;
+
+    Ok(result)
+}
+
+/// Send a file larger than the IPC limit (~50 MB) by reading it from a temp path on disk.
+/// The JS side writes the blob to the temp directory via tauri-plugin-fs, then calls this
+/// command with the resulting path. The file is deleted after the message is created.
+/// Async to avoid blocking the IPC thread during encryption of large files.
+#[tauri::command]
+pub async fn message_send_file_path(
+    app: AppHandle,
+    network_cid: String,
+    temp_path: String,
+    filename: String,
+    mime_type: String,
+) -> Result<MessageDisplay, String> {
+    let data = tokio::task::spawn_blocking({
+        let temp_path = temp_path.clone();
+        move || {
+            let d = std::fs::read(&temp_path)
+                .map_err(|e| format!("lecture du fichier temporaire : {e}"))?;
+            let _ = std::fs::remove_file(&temp_path);
+            Ok::<_, String>(d)
+        }
+    })
+    .await
+    .map_err(|e| format!("tâche annulée : {e}"))??;
+
+    // Temp file already deleted inside spawn_blocking above.
+
+    if data.len() > 524_288_000 {
+        return Err("fichier trop volumineux (max 500 Mo)".into());
+    }
+
+    // Encrypt on a blocking thread so the async IPC executor stays free.
+    let (network_cid2, filename2, mime_type2) = (network_cid.clone(), filename.clone(), mime_type.clone());
+    let app2 = app.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = open(&app2)?;
+        let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
+        let author_cid = keypair.cid();
+        let network = store::load_network(&conn, &network_cid2).map_err(|e| e.to_string())?;
+        let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+
+        const CHUNK: usize = 65_536;
+        let chunks: Vec<EncryptedChunk> = data
+            .chunks(CHUNK)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let (nonce_b58, ciphertext_b58) = group_key.encrypt_chunk(chunk).map_err(|e| e.to_string())?;
+                Ok(EncryptedChunk { index: i as u32, nonce_b58, ciphertext_b58 })
+            })
+            .collect::<Result<_, String>>()?;
+
+        let (id, _) = group_key.encrypt(b"").map_err(|e| e.to_string())?;
+        let size_bytes = data.len() as u64;
+        let sent_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
+        let msg = Message {
+            id: id.clone(),
+            author_cid_short: author_cid.short().to_string(),
+            kind: MessageKind::File { filename: filename2.clone(), mime_type: mime_type2.clone(), size_bytes, chunks },
+            nonce_b58: String::new(),
+            ciphertext_b58: String::new(),
+            sent_at,
+        };
+        store::save_message(&conn, &network_cid2, &msg).map_err(|e| e.to_string())?;
+
+        let author_name = network.data.members.iter()
+            .find(|m| m.cid_short == author_cid.short())
+            .map(|m| m.display_name.clone())
+            .unwrap_or_else(|| author_cid.short().to_string());
+
+        let mb = size_bytes as f64 / 1_048_576.0;
+        let body = if mb >= 1.0 {
+            format!("📎 {} ({:.1} Mo)", filename2, mb)
+        } else {
+            format!("📎 {} ({:.0} Ko)", filename2, size_bytes as f64 / 1024.0)
+        };
+
+        let _ = store::emit_activity(&conn, &network_cid2, ActivityKind::MessagePosted,
+            author_cid.short(), &format!("{} a partagé un fichier : {}", author_name, filename2));
+
+        Ok::<_, String>(MessageDisplay {
+            id: msg.id,
+            network_cid_short: network.cid_short().to_string(),
+            network_name: network.data.name.clone(),
+            author_cid_short: msg.author_cid_short,
+            author_name,
+            body,
+            sent_at: msg.sent_at,
+            is_direct: false,
+            to_cid_short: None,
+            is_e2e: false,
+            is_file: true,
+            filename: Some(filename),
+            mime_type: Some(mime_type),
+            size_bytes: Some(size_bytes),
+            is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("tâche annulée : {e}"))??;
+
+    Ok(result)
 }
 
 // ── Outbox ────────────────────────────────────────────────────────────────────
@@ -1092,10 +1947,45 @@ pub fn vote_delegate(
     let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
 
     if delegator_cid.short() == delegate_cid_short.as_str() {
-        return Err("cannot delegate to yourself".into());
+        return Err("Impossible de se déléguer à soi-même.".into());
     }
     if !network.data.members.iter().any(|m| m.cid_short == delegate_cid_short) {
-        return Err(format!("member '{}' not found in this network", delegate_cid_short));
+        return Err(format!("Membre '{}' introuvable dans ce réseau.", delegate_cid_short));
+    }
+
+    // Cycle detection: BFS from delegate through existing delegations to ensure
+    // we never reach the delegator (which would create a cycle A→B→…→A).
+    {
+        let all_delegations = store::list_delegations(&conn, &network_cid)
+            .unwrap_or_default();
+
+        use std::collections::{HashMap, HashSet, VecDeque};
+        // Build adjacency: delegator_cid → delegate_cid (same proposal_id scope)
+        let mut adj: HashMap<&str, &str> = HashMap::new();
+        for d in &all_delegations {
+            if d.proposal_id == proposal_id {
+                adj.insert(d.delegator_cid_short.as_str(), d.delegate_cid_short.as_str());
+            }
+        }
+
+        // BFS from delegate_cid_short: if we reach delegator_cid it's a cycle
+        let target = delegator_cid.short();
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut queue: VecDeque<&str> = VecDeque::new();
+        queue.push_back(delegate_cid_short.as_str());
+        while let Some(node) = queue.pop_front() {
+            if visited.contains(node) { continue; }
+            visited.insert(node);
+            if node == target {
+                return Err(format!(
+                    "Délégation circulaire détectée : '{}' délègue déjà (directement ou indirectement) à vous. Impossible de créer cette délégation.",
+                    delegate_cid_short
+                ));
+            }
+            if let Some(&next) = adj.get(node) {
+                queue.push_back(next);
+            }
+        }
     }
 
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
@@ -1997,6 +2887,71 @@ pub fn agenda_delete(
         .map_err(|e| e.to_string())
 }
 
+/// Export all agenda events for a network as an iCalendar (.ics) string.
+#[tauri::command]
+pub fn agenda_export_ics(app: AppHandle, network_cid_short: String) -> Result<String, String> {
+    let conn = open(&app)?;
+    let events = store::list_agenda_events(&conn, &network_cid_short)
+        .map_err(|e| e.to_string())?;
+
+    fn fmt_dt(ts: u64) -> String {
+        let secs = ts as i64;
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+            .unwrap_or_default();
+        dt.format("%Y%m%dT%H%M%SZ").to_string()
+    }
+
+    fn fold_line(line: &str) -> String {
+        // RFC 5545: lines must be ≤ 75 octets; fold with CRLF + SPACE
+        let bytes = line.as_bytes();
+        if bytes.len() <= 75 {
+            return format!("{}\r\n", line);
+        }
+        let mut out = String::new();
+        let mut start = 0;
+        while start < bytes.len() {
+            let end = (start + if start == 0 { 75 } else { 74 }).min(bytes.len());
+            if start > 0 { out.push(' '); }
+            out.push_str(&String::from_utf8_lossy(&bytes[start..end]));
+            out.push_str("\r\n");
+            start = end;
+        }
+        out
+    }
+
+    let mut ics = String::new();
+    ics.push_str("BEGIN:VCALENDAR\r\n");
+    ics.push_str("VERSION:2.0\r\n");
+    ics.push_str("PRODID:-//Civium//Agenda//FR\r\n");
+    ics.push_str("CALSCALE:GREGORIAN\r\n");
+    ics.push_str("METHOD:PUBLISH\r\n");
+
+    for ev in &events {
+        ics.push_str("BEGIN:VEVENT\r\n");
+        ics.push_str(&fold_line(&format!("UID:{}", ev.id)));
+        ics.push_str(&fold_line(&format!("DTSTART:{}", fmt_dt(ev.start_at))));
+        if let Some(end) = ev.end_at {
+            ics.push_str(&fold_line(&format!("DTEND:{}", fmt_dt(end))));
+        }
+        ics.push_str(&fold_line(&format!("DTSTAMP:{}", fmt_dt(ev.created_at))));
+        ics.push_str(&fold_line(&format!("LAST-MODIFIED:{}", fmt_dt(ev.updated_at))));
+        let safe_title = ev.title.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;").replace('\n', "\\n");
+        ics.push_str(&fold_line(&format!("SUMMARY:{}", safe_title)));
+        if !ev.description.is_empty() {
+            let safe_desc = ev.description.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;").replace('\n', "\\n");
+            ics.push_str(&fold_line(&format!("DESCRIPTION:{}", safe_desc)));
+        }
+        if let Some(loc) = &ev.location {
+            let safe_loc = loc.replace('\\', "\\\\").replace(',', "\\,").replace(';', "\\;").replace('\n', "\\n");
+            ics.push_str(&fold_line(&format!("LOCATION:{}", safe_loc)));
+        }
+        ics.push_str("END:VEVENT\r\n");
+    }
+
+    ics.push_str("END:VCALENDAR\r\n");
+    Ok(ics)
+}
+
 // ── Activity & Notifications ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -2875,6 +3830,22 @@ pub fn node_settings_set(
     Ok(())
 }
 
+#[tauri::command]
+pub fn profile_email_get(app: AppHandle) -> Result<String, String> {
+    let conn = open(&app)?;
+    Ok(store::get_node_setting(&conn, "admin_email").unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn profile_email_set(app: AppHandle, email: String) -> Result<(), String> {
+    let email = email.trim().to_string();
+    if !email.contains('@') || !email.contains('.') {
+        return Err("Adresse email invalide.".into());
+    }
+    let conn = open(&app)?;
+    store::set_node_setting(&conn, "admin_email", &email).map_err(|e| e.to_string())
+}
+
 // ── Pairing ───────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -3152,14 +4123,38 @@ impl From<civium_core::FraudAlert> for FraudAlertInfo {
 
 #[tauri::command]
 pub fn get_active_alerts(app: AppHandle) -> Vec<FraudAlertInfo> {
+    // Filter out alerts that were previously dismissed by the user.
+    let conn = match open(&app) {
+        Ok(c) => c,
+        Err(_) => {
+            return app.state::<AppState>()
+                .active_alerts.lock().unwrap()
+                .iter().cloned().map(FraudAlertInfo::from).collect();
+        }
+    };
     app.state::<AppState>()
         .active_alerts
         .lock()
         .unwrap()
         .iter()
+        .filter(|a| !store::is_alert_dismissed(&conn, &a.alert_type, a.emitted_at))
         .cloned()
         .map(FraudAlertInfo::from)
         .collect()
+}
+
+/// Permanently dismiss an alert — persisted so it never reappears after restart.
+#[tauri::command]
+pub fn alert_dismiss(app: AppHandle, alert_type: String, emitted_at: u64) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::dismiss_alert(&conn, &alert_type, emitted_at).map_err(|e| e.to_string())?;
+    // Also remove from the in-memory list.
+    app.state::<AppState>()
+        .active_alerts
+        .lock()
+        .unwrap()
+        .retain(|a| !(a.alert_type == alert_type && a.emitted_at == emitted_at));
+    Ok(())
 }
 
 /// Shape of each alert object returned by GET /api/alerts on the hub.
@@ -3199,6 +4194,7 @@ pub async fn poll_hub_alerts(app: AppHandle) -> Result<Vec<FraudAlertInfo>, Stri
         .await
         .map_err(|e| format!("poll_hub_alerts parse: {e}"))?;
 
+    let conn = open(&app)?;
     let state = app.state::<AppState>();
     let mut active = state.active_alerts.lock().unwrap();
 
@@ -3207,19 +4203,225 @@ pub async fn poll_hub_alerts(app: AppHandle) -> Result<Vec<FraudAlertInfo>, Stri
         let already = active
             .iter()
             .any(|a| a.alert_type == row.alert_type && a.emitted_at == row.emitted_at);
-        if !already {
-            let alert = civium_core::FraudAlert {
-                alert_type:   row.alert_type,
-                description:  row.description,
-                network_cids: row.network_cids,
-                emitted_at:   row.emitted_at,
-                emitted_by:   row.emitted_by,
-            };
-            active.push(alert.clone());
-            let _ = app.emit("civium://fraud-alert", &alert);
-            added.push(FraudAlertInfo::from(alert));
+        if already {
+            continue;
         }
+        // Skip alerts the user has already dismissed.
+        if store::is_alert_dismissed(&conn, &row.alert_type, row.emitted_at) {
+            continue;
+        }
+        let alert = civium_core::FraudAlert {
+            alert_type:   row.alert_type,
+            description:  row.description,
+            network_cids: row.network_cids,
+            emitted_at:   row.emitted_at,
+            emitted_by:   row.emitted_by,
+        };
+        active.push(alert.clone());
+        let _ = app.emit("civium://fraud-alert", &alert);
+        added.push(FraudAlertInfo::from(alert));
     }
 
     Ok(added)
+}
+
+// ── Connexions inter-réseaux (APC) ────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct ConnectionInfo {
+    pub peer_cid_short: String,
+    pub peer_cid_full:  String,
+    pub peer_name:      String,
+    pub state:          String,
+    pub initiated_at:   u64,
+    pub updated_at:     u64,
+    pub expose_directory_to_peer: bool,
+    pub peer_exposes_directory:   bool,
+    pub apc_nonce:      Option<String>,
+}
+
+impl From<civium_core::ConnectionRecord> for ConnectionInfo {
+    fn from(r: civium_core::ConnectionRecord) -> Self {
+        use civium_core::ConnectionState;
+        let state = match &r.state {
+            ConnectionState::Requested  => "Demandée".into(),
+            ConnectionState::Validating => "En attente".into(),
+            ConnectionState::Active     => "Active".into(),
+            ConnectionState::Refused { reason } =>
+                format!("Refusée{}", reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()),
+            ConnectionState::Blocked    => "Bloquée".into(),
+            ConnectionState::Revoked    => "Révoquée".into(),
+        };
+        ConnectionInfo {
+            peer_cid_short: r.peer_cid_short,
+            peer_cid_full:  r.peer_cid_full,
+            peer_name:      r.peer_name,
+            state,
+            initiated_at:   r.initiated_at,
+            updated_at:     r.updated_at,
+            expose_directory_to_peer: r.our_terms.expose_member_directory,
+            peer_exposes_directory:   r.their_terms.as_ref().map(|t| t.expose_member_directory).unwrap_or(false),
+            apc_nonce: r.apc.map(|a| a.request.nonce_b58),
+        }
+    }
+}
+
+/// List all inter-network connections for a given network.
+#[tauri::command]
+pub fn connection_list(app: AppHandle, network_cid: String) -> Result<Vec<ConnectionInfo>, String> {
+    let conn = open(&app)?;
+    store::list_connections(&conn, &network_cid)
+        .map(|v| v.into_iter().map(ConnectionInfo::from).collect())
+        .map_err(|e| e.to_string())
+}
+
+/// Accept a pending inter-network connection request (Validating → Active).
+/// Builds and signs the APC.
+#[tauri::command]
+pub fn connection_accept(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid_full: String,
+    expose_directory: bool,
+) -> Result<ConnectionInfo, String> {
+    use civium_core::{ConnectionState, ShareAgreement, ShareTerms};
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid).map_err(|e| e.to_string())?;
+    let mut record = store::load_connection(&conn, &network_cid, &peer_cid_full)
+        .map_err(|e| e.to_string())?
+        .ok_or("Connexion introuvable")?;
+
+    if record.state != ConnectionState::Validating {
+        return Err(format!("La connexion est en état '{}', pas en attente", record.state));
+    }
+    let signed_req = record.incoming_request.clone()
+        .ok_or("Requête entrante manquante dans le dossier de connexion")?;
+
+    let our_terms = ShareTerms { expose_member_directory: expose_directory, privacy: false };
+    let apc = ShareAgreement::build_from_acceptance(
+        &signed_req, network.keypair(), network.name(), our_terms.clone(),
+    ).map_err(|e| format!("Erreur APC : {e}"))?;
+    apc.verify().map_err(|e| format!("Vérification APC échouée : {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    record.state = ConnectionState::Active;
+    record.our_terms = our_terms;
+    record.their_terms = Some(apc.request.from_terms.clone());
+    record.incoming_request = None;
+    record.apc = Some(apc);
+    record.updated_at = now;
+    store::save_connection(&conn, &network_cid, &record).map_err(|e| e.to_string())?;
+    Ok(ConnectionInfo::from(record))
+}
+
+/// Refuse a pending inter-network connection request.
+#[tauri::command]
+pub fn connection_refuse(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid_full: String,
+    reason: Option<String>,
+) -> Result<(), String> {
+    use civium_core::ConnectionState;
+    let conn = open(&app)?;
+    let mut record = store::load_connection(&conn, &network_cid, &peer_cid_full)
+        .map_err(|e| e.to_string())?
+        .ok_or("Connexion introuvable")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    record.state = ConnectionState::Refused { reason };
+    record.incoming_request = None;
+    record.updated_at = now;
+    store::save_connection(&conn, &network_cid, &record).map_err(|e| e.to_string())
+}
+
+/// Block a network (locally — not propagated).
+#[tauri::command]
+pub fn connection_block(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid_full: String,
+) -> Result<(), String> {
+    use civium_core::ConnectionState;
+    let conn = open(&app)?;
+    let mut record = store::load_connection(&conn, &network_cid, &peer_cid_full)
+        .map_err(|e| e.to_string())?
+        .ok_or("Connexion introuvable")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    record.state = ConnectionState::Blocked;
+    record.incoming_request = None;
+    record.apc = None;
+    record.updated_at = now;
+    store::save_connection(&conn, &network_cid, &record).map_err(|e| e.to_string())
+}
+
+/// Revoke an active inter-network connection.
+#[tauri::command]
+pub fn connection_revoke(
+    app: AppHandle,
+    network_cid: String,
+    peer_cid_full: String,
+) -> Result<(), String> {
+    use civium_core::ConnectionState;
+    let conn = open(&app)?;
+    let mut record = store::load_connection(&conn, &network_cid, &peer_cid_full)
+        .map_err(|e| e.to_string())?
+        .ok_or("Connexion introuvable")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    record.state = ConnectionState::Revoked;
+    record.apc = None;
+    record.updated_at = now;
+    store::save_connection(&conn, &network_cid, &record).map_err(|e| e.to_string())
+}
+
+// ── Muted members ─────────────────────────────────────────────────────────────
+
+/// Mute a member locally (messages hidden, member not excluded).
+#[tauri::command]
+pub fn member_mute(app: AppHandle, network_cid: String, member_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::mute_member(&conn, &network_cid, &member_cid).map_err(|e| e.to_string())
+}
+
+/// Unmute a previously muted member.
+#[tauri::command]
+pub fn member_unmute(app: AppHandle, network_cid: String, member_cid: String) -> Result<(), String> {
+    let conn = open(&app)?;
+    store::unmute_member(&conn, &network_cid, &member_cid).map_err(|e| e.to_string())
+}
+
+/// Return the list of muted member CID shorts for a network.
+#[tauri::command]
+pub fn member_muted_list(app: AppHandle, network_cid: String) -> Result<Vec<String>, String> {
+    let conn = open(&app)?;
+    store::list_muted_members(&conn, &network_cid).map_err(|e| e.to_string())
+}
+
+// ── Logs ─────────────────────────────────────────────────────────────────────
+
+/// Return the content of today's log file (empty string if not found).
+#[tauri::command]
+pub fn logs_get(app: AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    let log_dir = data_dir.join("logs");
+
+    // Rolling daily appender names files like "civium.log.2026-05-18".
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today_file = log_dir.join(format!("civium.log.{today}"));
+
+    // Fall back to an un-suffixed "civium.log" (first run before rotation).
+    let path = if today_file.exists() {
+        today_file
+    } else {
+        let plain = log_dir.join("civium.log");
+        if plain.exists() { plain } else { return Ok(String::new()); }
+    };
+
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }

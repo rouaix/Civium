@@ -1,0 +1,56 @@
+name: Rust CI
+
+on:
+  push:
+    paths:
+      - 'desktop/civium-core/**'
+      - 'desktop/civium-cli/**'
+      - 'desktop/Cargo.toml'
+      - 'desktop/Cargo.lock'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'desktop/civium-core/**'
+      - 'desktop/civium-cli/**'
+      - 'desktop/Cargo.toml'
+      - 'desktop/Cargo.lock'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build civium-core
+        run: cargo build -p civium-core --all-features
+
+      - name: Build civium-cli
+        run: cargo build -p civium-cli
+
+      - name: Run tests
+        run: cargo test -p civium-core -p civium-cli
+
+      - name: Clippy (civium-core)
+        run: cargo clippy -p civium-core --all-features -- -D warnings
+
+      - name: Clippy (civium-cli)
+        run: cargo clippy -p civium-cli -- -D warnings

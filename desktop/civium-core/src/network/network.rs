@@ -1,6 +1,23 @@
 use crate::{crypto::GroupKey, Cid, CiviumError, CiviumKeypair};
 use serde::{Deserialize, Serialize};
 
+fn validate_name(field: &str, value: &str) -> Result<(), CiviumError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return Err(CiviumError::Validation {
+            field: field.to_string(),
+            constraint: "doit contenir entre 1 et 64 caractères".to_string(),
+        });
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err(CiviumError::Validation {
+            field: field.to_string(),
+            constraint: "ne doit pas contenir de caractères de contrôle".to_string(),
+        });
+    }
+    Ok(())
+}
+
 use super::{
     invitation::Invitation,
     member::{MemberRecord, MemberRole, PendingRecord, TrustCircle},
@@ -81,6 +98,8 @@ impl Network {
         is_public: bool,
         parent_cid: Option<String>,
     ) -> Result<Self, CiviumError> {
+        validate_name("name", &name)?;
+        validate_name("admin_display_name", &admin_display_name)?;
         let keypair = CiviumKeypair::generate()?;
         let cid = keypair.cid();
         let group_key = GroupKey::generate();
@@ -160,6 +179,7 @@ impl Network {
         invite: &Invitation,
         pub_key_b58: Option<String>,
     ) -> Result<(), CiviumError> {
+        validate_name("display_name", &display_name)?;
         invite.verify()?;
 
         // Ensure the invite is for this network
@@ -257,6 +277,19 @@ impl Network {
 
     /// Change the role of an admitted member (admin-only operation).
     pub fn set_member_role(&mut self, member_cid_short: &str, role: MemberRole) -> Result<(), CiviumError> {
+        // Guard: prevent removing the last admin.
+        if role != MemberRole::Admin {
+            let admin_count = self.data.members.iter()
+                .filter(|m| m.role == MemberRole::Admin)
+                .count();
+            let is_last_admin = admin_count == 1
+                && self.data.members.iter().any(|m| m.cid_short == member_cid_short && m.role == MemberRole::Admin);
+            if is_last_admin {
+                return Err(CiviumError::Network(
+                    "Vous êtes le seul admin de ce réseau. Nommez un autre admin avant de changer votre rôle.".to_string(),
+                ));
+            }
+        }
         let m = self
             .data
             .members
@@ -264,6 +297,17 @@ impl Network {
             .find(|m| m.cid_short == member_cid_short)
             .ok_or_else(|| CiviumError::Network(format!("member {member_cid_short} not found")))?;
         m.role = role;
+        Ok(())
+    }
+
+    pub fn set_member_circle(&mut self, member_cid_short: &str, circle: TrustCircle) -> Result<(), CiviumError> {
+        let m = self
+            .data
+            .members
+            .iter_mut()
+            .find(|m| m.cid_short == member_cid_short)
+            .ok_or_else(|| CiviumError::Network(format!("member {member_cid_short} not found")))?;
+        m.circle = circle;
         Ok(())
     }
 
@@ -275,6 +319,17 @@ impl Network {
             .iter()
             .position(|m| m.cid_short == member_cid_short)
             .ok_or_else(|| CiviumError::Network(format!("member {member_cid_short} not found")))?;
+        // Guard: prevent removing the last admin.
+        if self.data.members[idx].role == MemberRole::Admin {
+            let admin_count = self.data.members.iter()
+                .filter(|m| m.role == MemberRole::Admin)
+                .count();
+            if admin_count == 1 {
+                return Err(CiviumError::Network(
+                    "Vous êtes le seul admin de ce réseau. Nommez un autre admin avant de quitter.".to_string(),
+                ));
+            }
+        }
         self.data.members.remove(idx);
         Ok(())
     }

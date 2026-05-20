@@ -1,0 +1,96 @@
+name: Tauri Build
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'desktop/civium-tauri/**'
+      - 'desktop/civium-core/**'
+      - 'desktop/Cargo.toml'
+      - 'desktop/Cargo.lock'
+      - '.github/workflows/tauri.yml'
+  pull_request:
+    paths:
+      - 'desktop/civium-tauri/**'
+      - 'desktop/civium-core/**'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up build deps (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # Strawberry Perl is pre-installed on windows-latest runners.
+          # Prepend it so it shadows Git's bundled MSYS perl, which lacks
+          # the modules needed by OpenSSL's Configure script.
+          echo "C:\Strawberry\perl\bin" >> $env:GITHUB_PATH
+          echo "C:\Strawberry\c\bin"    >> $env:GITHUB_PATH
+          # cmake is also pre-installed; make sure it's in PATH.
+          echo "C:\Program Files\CMake\bin" >> $env:GITHUB_PATH
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/civium-tauri/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: ${{ runner.os }}-cargo-tauri-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-tauri-
+
+      - name: Install frontend deps
+        working-directory: desktop/civium-tauri
+        run: npm ci
+
+      - name: Build Tauri app
+        id: tauri-build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop/civium-tauri
+          args: --target ${{ matrix.target }}
+
+      - name: Upload Linux artifacts (AppImage + deb)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: civium-linux-${{ github.sha }}
+          path: |
+            desktop/civium-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            desktop/civium-tauri/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: warn

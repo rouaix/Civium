@@ -6,7 +6,11 @@ use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, Ag
 use rusqlite::{params, Connection};
 use std::path::Path;
 
-const SCHEMA: &str = "
+// ── Schema migrations ─────────────────────────────────────────────────────────
+// To evolve the schema: add a new MIGRATION_NNN constant and append it to MIGRATIONS.
+// Never modify an existing migration — create a new one instead.
+
+const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS identity (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     secret_b58  TEXT    NOT NULL,
@@ -167,10 +171,151 @@ CREATE TABLE IF NOT EXISTS hub_config (
 );
 ";
 
+const MIGRATION_002: &str = "
+CREATE TABLE IF NOT EXISTS dismissed_alerts (
+    alert_type  TEXT    NOT NULL,
+    emitted_at  INTEGER NOT NULL,
+    dismissed_at INTEGER NOT NULL,
+    PRIMARY KEY (alert_type, emitted_at)
+);
+";
+
+const MIGRATION_003: &str = "
+CREATE TABLE IF NOT EXISTS invitations (
+    network_cid_short TEXT    NOT NULL,
+    nonce_b58         TEXT    NOT NULL,
+    inviter_cid_short TEXT    NOT NULL,
+    created_at        INTEGER NOT NULL,
+    expires_at        INTEGER NOT NULL DEFAULT 0,
+    link_b58          TEXT    NOT NULL,
+    revoked           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (network_cid_short, nonce_b58)
+);
+";
+
+const MIGRATION_004: &str = "
+CREATE TABLE IF NOT EXISTS muted_members (
+    network_cid_short TEXT NOT NULL,
+    member_cid_short  TEXT NOT NULL,
+    muted_at          INTEGER NOT NULL,
+    PRIMARY KEY (network_cid_short, member_cid_short)
+);
+";
+
+// Add new migrations here as MIGRATION_005, MIGRATION_006, etc.
+// Each migration runs exactly once per database, in order.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_initial", MIGRATION_001),
+    ("002_dismissed_alerts", MIGRATION_002),
+    ("003_invitations", MIGRATION_003),
+    ("004_muted_members", MIGRATION_004),
+];
+
+fn apply_migrations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version    TEXT    PRIMARY KEY,
+            applied_at INTEGER NOT NULL
+        );",
+    )?;
+
+    for (name, sql) in MIGRATIONS {
+        let already_applied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        if already_applied == 0 {
+            conn.execute_batch(sql)
+                .with_context(|| format!("migration {name} failed"))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                params![name, now],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Return the hex-encoded 32-byte SQLCipher key, creating and storing it in the
+/// OS keyring on first launch.
+fn db_key_hex() -> Result<String> {
+    let entry = keyring::Entry::new("civium", "db_encryption_key")
+        .map_err(|e| anyhow::anyhow!("keyring init: {e}"))?;
+
+    match entry.get_password() {
+        Ok(hex) if hex.len() == 64 => Ok(hex),
+        Ok(_) => anyhow::bail!("clé de chiffrement corrompue dans le trousseau — supprimez l'entrée 'civium/db_encryption_key' et relancez l'application"),
+        Err(keyring::Error::NoEntry) => {
+            // First launch: generate 32 cryptographic-random bytes via two v4 UUIDs.
+            let a = uuid::Uuid::new_v4();
+            let b = uuid::Uuid::new_v4();
+            let mut buf = [0u8; 32];
+            buf[..16].copy_from_slice(a.as_bytes());
+            buf[16..].copy_from_slice(b.as_bytes());
+            let hex: String = buf.iter().fold(String::with_capacity(64), |mut s, byte| {
+                use std::fmt::Write;
+                let _ = write!(s, "{byte:02x}");
+                s
+            });
+            entry.set_password(&hex)
+                .map_err(|e| anyhow::anyhow!("impossible de stocker la clé dans le trousseau OS : {e}"))?;
+            Ok(hex)
+        }
+        Err(e) => anyhow::bail!("erreur trousseau de clés : {e}"),
+    }
+}
+
+/// Encrypt an existing plaintext SQLite database using SQLCipher.
+/// Opens the plaintext file, exports it into a new encrypted file, then replaces the original.
+fn migrate_plaintext_to_encrypted(db_path: &std::path::PathBuf, key_hex: &str) -> Result<()> {
+    let tmp_path = db_path.with_extension("db.enc_tmp");
+    // SQLite/SQLCipher accept forward slashes on all platforms.
+    let tmp_str = tmp_path.to_string_lossy().replace('\\', "/");
+
+    let plain = Connection::open(db_path)?;
+    plain.execute_batch(&format!(
+        "ATTACH DATABASE '{tmp_str}' AS encrypted KEY \"x'{key_hex}'\"; \
+         SELECT sqlcipher_export('encrypted'); \
+         DETACH DATABASE encrypted;"
+    )).context("migration vers SQLCipher échouée")?;
+    drop(plain);
+
+    std::fs::rename(&tmp_path, db_path)
+        .context("remplacement du fichier de base de données échoué")?;
+    tracing::info!("[civium] base de données migrée vers SQLCipher");
+    Ok(())
+}
+
 pub fn open_db(data_dir: &Path) -> Result<Connection> {
     std::fs::create_dir_all(data_dir)?;
-    let conn = Connection::open(data_dir.join("civium.db"))?;
-    conn.execute_batch(SCHEMA)?;
+    let db_path = data_dir.join("civium.db");
+    let key_hex = db_key_hex()?;
+    let key_pragma = format!("PRAGMA key = \"x'{key_hex}'\";");
+
+    let conn = Connection::open(&db_path)?;
+    conn.execute_batch(&key_pragma)?;
+
+    // If the DB was previously unencrypted, sqlite_master will be unreadable.
+    // Detect this and migrate transparently.
+    if conn.execute_batch("SELECT count(*) FROM sqlite_master").is_err() {
+        drop(conn);
+        migrate_plaintext_to_encrypted(&db_path, &key_hex)?;
+        let conn2 = Connection::open(&db_path)?;
+        conn2.execute_batch(&key_pragma)?;
+        apply_migrations(&conn2)?;
+        seed_plugins(&conn2)?;
+        return Ok(conn2);
+    }
+
+    apply_migrations(&conn)?;
     seed_plugins(&conn)?;
     Ok(conn)
 }
@@ -198,6 +343,32 @@ pub fn load_identity(conn: &Connection) -> Result<CiviumKeypair> {
         .query_row("SELECT secret_b58 FROM identity WHERE id = 1", [], |r| r.get(0))
         .context("no identity found")?;
     CiviumKeypair::from_secret_b58(&secret).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+pub fn load_secret_b58(conn: &Connection) -> Result<String> {
+    conn.query_row("SELECT secret_b58 FROM identity WHERE id = 1", [], |r| r.get(0))
+        .context("no identity found")
+}
+
+pub fn dismiss_alert(conn: &Connection, alert_type: &str, emitted_at: u64) -> Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    conn.execute(
+        "INSERT OR IGNORE INTO dismissed_alerts (alert_type, emitted_at, dismissed_at) VALUES (?1, ?2, ?3)",
+        params![alert_type, emitted_at as i64, now as i64],
+    )?;
+    Ok(())
+}
+
+pub fn is_alert_dismissed(conn: &Connection, alert_type: &str, emitted_at: u64) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM dismissed_alerts WHERE alert_type = ?1 AND emitted_at = ?2",
+        params![alert_type, emitted_at as i64],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0) > 0
 }
 
 // ── Network ───────────────────────────────────────────────────────────────────
@@ -278,6 +449,54 @@ pub fn load_messages(conn: &Connection, network_cid_short: &str) -> Result<Vec<M
     Ok(messages)
 }
 
+/// Load `limit` messages before `before_rowid` (cursor-based pagination).
+/// Returns (rowid, Message) pairs ordered ASC (oldest first within the page), plus a
+/// `has_more` flag indicating that older messages still exist.
+pub fn load_messages_paged(
+    conn: &Connection,
+    network_cid_short: &str,
+    limit: usize,
+    before_rowid: Option<i64>,
+) -> Result<(Vec<(i64, Message)>, bool)> {
+    let fetch = (limit + 1) as i64;
+    let mut pairs: Vec<(i64, Message)> = Vec::new();
+
+    if let Some(br) = before_rowid {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, message_json FROM messages
+             WHERE network_cid = ?1 AND in_outbox = 0 AND rowid < ?2
+             ORDER BY rowid DESC LIMIT ?3",
+        )?;
+        let mut rows = stmt.query(params![network_cid_short, br, fetch])?;
+        while let Some(row) = rows.next()? {
+            let rowid: i64 = row.get(0)?;
+            let json: String = row.get(1)?;
+            if let Ok(msg) = serde_json::from_str::<Message>(&json) {
+                pairs.push((rowid, msg));
+            }
+        }
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, message_json FROM messages
+             WHERE network_cid = ?1 AND in_outbox = 0
+             ORDER BY rowid DESC LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(params![network_cid_short, fetch])?;
+        while let Some(row) = rows.next()? {
+            let rowid: i64 = row.get(0)?;
+            let json: String = row.get(1)?;
+            if let Ok(msg) = serde_json::from_str::<Message>(&json) {
+                pairs.push((rowid, msg));
+            }
+        }
+    }
+
+    let has_more = pairs.len() > limit;
+    if has_more { pairs.pop(); }
+    pairs.reverse(); // ASC for display
+    Ok((pairs, has_more))
+}
+
 /// Persist a single message (thread or direct) into the messages table.
 pub fn save_message(conn: &Connection, network_cid_short: &str, msg: &Message) -> Result<()> {
     let json = serde_json::to_string(msg)?;
@@ -285,6 +504,14 @@ pub fn save_message(conn: &Connection, network_cid_short: &str, msg: &Message) -
         "INSERT OR IGNORE INTO messages (network_cid, message_id, message_json, in_outbox)
          VALUES (?1, ?2, ?3, 0)",
         params![network_cid_short, &msg.id, json],
+    )?;
+    Ok(())
+}
+
+pub fn delete_message(conn: &Connection, network_cid_short: &str, message_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM messages WHERE network_cid = ?1 AND message_id = ?2",
+        params![network_cid_short, message_id],
     )?;
     Ok(())
 }
@@ -1013,6 +1240,9 @@ pub fn mark_notification_read(conn: &Connection, notif_id: &str) -> Result<()> {
 /// Merge members and messages received via P2P sync.
 /// Members already present (by cid_full) are skipped.
 /// Messages use INSERT OR IGNORE to avoid duplicates.
+const SYNC_RATE_LIMIT_WINDOW_SECS: i64 = 60;
+const SYNC_RATE_LIMIT_MAX_MSGS: i64 = 60;
+
 pub fn merge_sync_data(
     conn: &Connection,
     network_cid_short: &str,
@@ -1027,6 +1257,24 @@ pub fn merge_sync_data(
     }
     save_network(conn, &network)?;
     for msg in &messages {
+        // Per-author sliding-window rate limit: skip messages that exceed the threshold.
+        let now = unix_now_store() as i64;
+        let window_start = now - SYNC_RATE_LIMIT_WINDOW_SECS;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages
+             WHERE network_cid = ?1
+               AND json_extract(message_json, '$.author_cid_short') = ?2
+               AND CAST(json_extract(message_json, '$.sent_at') AS INTEGER) >= ?3",
+            params![network_cid_short, &msg.author_cid_short, window_start],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        if count >= SYNC_RATE_LIMIT_MAX_MSGS {
+            tracing::warn!(
+                "[rate-limit] dropping message from {} — {} msgs/{} s",
+                msg.author_cid_short, SYNC_RATE_LIMIT_MAX_MSGS, SYNC_RATE_LIMIT_WINDOW_SECS
+            );
+            continue;
+        }
         let json = serde_json::to_string(msg)?;
         conn.execute(
             "INSERT OR IGNORE INTO messages (network_cid, message_id, message_json, in_outbox)
@@ -1366,6 +1614,69 @@ pub fn set_node_setting(conn: &Connection, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
+// ── Invitations ────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct StoredInvitation {
+    pub network_cid_short: String,
+    pub nonce_b58: String,
+    pub inviter_cid_short: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub link_b58: String,
+    pub revoked: bool,
+}
+
+pub fn save_invitation(conn: &Connection, inv: &StoredInvitation) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO invitations
+         (network_cid_short, nonce_b58, inviter_cid_short, created_at, expires_at, link_b58, revoked)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
+        params![
+            inv.network_cid_short, inv.nonce_b58, inv.inviter_cid_short,
+            inv.created_at as i64, inv.expires_at as i64, inv.link_b58,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_invitations(conn: &Connection, network_cid_short: &str) -> Vec<StoredInvitation> {
+    let mut stmt = match conn.prepare(
+        "SELECT network_cid_short, nonce_b58, inviter_cid_short, created_at, expires_at, link_b58, revoked
+         FROM invitations WHERE network_cid_short = ?1 ORDER BY created_at DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map(params![network_cid_short], |r| Ok(StoredInvitation {
+        network_cid_short: r.get(0)?,
+        nonce_b58: r.get(1)?,
+        inviter_cid_short: r.get(2)?,
+        created_at: r.get::<_, i64>(3)? as u64,
+        expires_at: r.get::<_, i64>(4)? as u64,
+        link_b58: r.get(5)?,
+        revoked: r.get::<_, i64>(6)? != 0,
+    })).ok()
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
+pub fn revoke_invitation(conn: &Connection, network_cid_short: &str, nonce_b58: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE invitations SET revoked = 1 WHERE network_cid_short = ?1 AND nonce_b58 = ?2",
+        params![network_cid_short, nonce_b58],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn is_invitation_revoked(conn: &Connection, network_cid_short: &str, nonce_b58: &str) -> bool {
+    conn.query_row(
+        "SELECT revoked FROM invitations WHERE network_cid_short = ?1 AND nonce_b58 = ?2",
+        params![network_cid_short, nonce_b58],
+        |r| r.get::<_, i64>(0),
+    ).map(|v| v != 0).unwrap_or(false)
+}
+
 /// Retourne la NodeConfig à utiliser au démarrage, construite depuis la base.
 pub fn load_node_config(conn: &Connection) -> civium_core::NodeConfig {
     let tcp_port = get_node_setting(conn, "tcp_port")
@@ -1386,4 +1697,34 @@ pub fn load_node_config(conn: &Connection) -> civium_core::NodeConfig {
         mcp_port:                None,
         auto_accept_connections: false,
     }
+}
+
+// ── Muted members ─────────────────────────────────────────────────────────────
+
+pub fn mute_member(conn: &Connection, network_cid_short: &str, member_cid_short: &str) -> Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    conn.execute(
+        "INSERT OR REPLACE INTO muted_members (network_cid_short, member_cid_short, muted_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![network_cid_short, member_cid_short, now],
+    )?;
+    Ok(())
+}
+
+pub fn unmute_member(conn: &Connection, network_cid_short: &str, member_cid_short: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM muted_members WHERE network_cid_short = ?1 AND member_cid_short = ?2",
+        rusqlite::params![network_cid_short, member_cid_short],
+    )?;
+    Ok(())
+}
+
+pub fn list_muted_members(conn: &Connection, network_cid_short: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT member_cid_short FROM muted_members WHERE network_cid_short = ?1",
+    )?;
+    let cids = stmt.query_map(rusqlite::params![network_cid_short], |row| {
+        row.get::<_, String>(0)
+    })?.filter_map(|r| r.ok()).collect();
+    Ok(cids)
 }

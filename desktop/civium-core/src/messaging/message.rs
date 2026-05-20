@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+/// A single encrypted chunk of a file attachment (64 KB block, group-key encrypted).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedChunk {
+    pub index: u32,
+    pub nonce_b58: String,
+    pub ciphertext_b58: String,
+}
+
 /// Routing descriptor for a message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -11,6 +19,21 @@ pub enum MessageKind {
     /// True end-to-end message — encrypted with the sender/recipient pair key.
     /// Only the two parties can decrypt, not even network admins.
     E2E { to_cid_full: String },
+    /// Binary file attachment chunked and encrypted with the group key (circles 0-2).
+    File {
+        filename: String,
+        mime_type: String,
+        size_bytes: u64,
+        chunks: Vec<EncryptedChunk>,
+    },
+    /// Reference to a calendar event shared in the network thread.
+    CalendarEvent {
+        title: String,
+        start_at: u64,
+        end_at: u64,
+        location: Option<String>,
+        description: Option<String>,
+    },
 }
 
 /// An encrypted message persisted in a network mailbox.

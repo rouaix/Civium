@@ -2,7 +2,130 @@ import { useState } from "react";
 import { tauriInvoke } from "../tauri";
 import type { IdentityInfo, NetworkInfo } from "../types";
 
-type Step = "welcome" | "identity" | "choice" | "create" | "join" | "done";
+const MAX_TEXT = 256;
+const B58_ALPHABET = /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]+$/;
+const NULL_BYTE = /\0/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateName(v: string): string | null {
+  const s = v.trim();
+  if (!s) return "Ce champ est requis.";
+  if (s.length > MAX_TEXT) return `Maximum ${MAX_TEXT} caractères.`;
+  if (NULL_BYTE.test(s)) return "Caractère non autorisé.";
+  return null;
+}
+
+function validateEmail(v: string): string | null {
+  const s = v.trim();
+  if (!s) return "L'adresse email est requise.";
+  if (s.length > MAX_TEXT) return `Maximum ${MAX_TEXT} caractères.`;
+  if (!EMAIL_RE.test(s)) return "Format d'adresse email invalide.";
+  return null;
+}
+
+function validateB58(v: string): string | null {
+  const s = v.trim();
+  if (!s) return "La clé secrète est requise.";
+  if (s.length < 32 || s.length > 512) return "Longueur de clé invalide (32–512 caractères attendus).";
+  if (!B58_ALPHABET.test(s)) return "La clé contient des caractères non Base58.";
+  return null;
+}
+
+interface RestoreFromBackupProps {
+  onSuccess: (id: IdentityInfo) => void;
+  onError: (msg: string) => void;
+}
+
+function RestoreFromBackup({ onSuccess, onError }: RestoreFromBackupProps) {
+  const [password, setPassword] = useState("");
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [fileB64, setFileB64] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // result = "data:<mime>;base64,<data>"
+      const b64 = result.split(",")[1] ?? "";
+      setFileB64(b64);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function restore() {
+    if (!fileB64) { onError("Aucun fichier sélectionné."); return; }
+    if (!password) { onError("Le mot de passe est requis."); return; }
+    setLoading(true);
+    try {
+      const id = await tauriInvoke<IdentityInfo>("identity_backup_import", {
+        backupB64: fileB64,
+        password,
+      });
+      onSuccess(id);
+    } catch (e) {
+      onError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <label className="block">
+        <span className="sr-only">Choisir un fichier .civium-backup</span>
+        <input
+          type="file"
+          accept=".civium-backup"
+          onChange={handleFile}
+          className="block w-full text-xs text-gray-600
+                     file:mr-3 file:py-1.5 file:px-3
+                     file:rounded-lg file:border-0
+                     file:text-xs file:font-medium
+                     file:bg-amber-100 file:text-amber-800
+                     hover:file:bg-amber-200 cursor-pointer"
+        />
+      </label>
+      {fileName && (
+        <p className="text-xs text-amber-700 font-mono truncate">{fileName}</p>
+      )}
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") restore(); }}
+        placeholder="Mot de passe du fichier de sauvegarde"
+        className="w-full border border-amber-200 bg-white rounded-lg px-3 py-2 text-sm
+                   focus:outline-none focus:ring-2 focus:ring-amber-400"
+      />
+      <button
+        onClick={restore}
+        disabled={loading || !fileB64 || !password}
+        className="w-full py-2 bg-amber-600 text-white rounded-lg text-sm font-medium
+                   hover:bg-amber-700 disabled:opacity-50 transition-colors"
+      >
+        {loading ? "Déchiffrement…" : "Restaurer depuis ce fichier"}
+      </button>
+    </div>
+  );
+}
+
+type Step = "welcome" | "identity" | "restore" | "email" | "choice" | "create" | "join" | "done";
+
+const STEP_NUMBER: Record<Step, number> = {
+  welcome:  0,
+  identity: 1,
+  restore:  1,
+  email:    2,
+  choice:   3,
+  create:   4,
+  join:     4,
+  done:     5,
+};
+const TOTAL_STEPS = 5;
 type Mode = "create" | "join";
 
 interface Props {
@@ -14,12 +137,13 @@ export default function Onboarding({ onComplete }: Props) {
   const [mode, setMode] = useState<Mode>("create");
   const [identity, setIdentity] = useState<IdentityInfo | null>(null);
   const [network, setNetwork] = useState<NetworkInfo | null>(null);
+  const [adminEmail, setAdminEmail] = useState("");
   const [networkName, setNetworkName] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [networkPrivacy, setNetworkPrivacy] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [joinInviteLink, setJoinInviteLink] = useState("");
   const [peerAddr, setPeerAddr] = useState("");
+  const [restoreSecret, setRestoreSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -29,6 +153,39 @@ export default function Onboarding({ onComplete }: Props) {
     try {
       const id = await tauriInvoke<IdentityInfo>("identity_init");
       setIdentity(id);
+      setStep("email");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function restoreIdentity() {
+    const err = validateB58(restoreSecret);
+    if (err) { setError(err); return; }
+    setLoading(true);
+    setError(null);
+    try {
+      const id = await tauriInvoke<IdentityInfo>("identity_restore_from_secret", {
+        secretB58: restoreSecret.trim(),
+      });
+      setIdentity(id);
+      setStep("email");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveEmail() {
+    const err = validateEmail(adminEmail);
+    if (err) { setError(err); return; }
+    setLoading(true);
+    setError(null);
+    try {
+      await tauriInvoke("profile_email_set", { email: adminEmail.trim() });
       setStep("choice");
     } catch (e) {
       setError(String(e));
@@ -38,16 +195,26 @@ export default function Onboarding({ onComplete }: Props) {
   }
 
   async function createNetwork() {
-    if (!networkName.trim() || !displayName.trim()) return;
+    const errName = validateName(networkName) ?? validateName(displayName);
+    if (errName) { setError(errName); return; }
     setLoading(true);
     setError(null);
     try {
       const net = await tauriInvoke<NetworkInfo>("network_create", {
         name: networkName.trim(),
         displayName: displayName.trim(),
-        privacy: networkPrivacy,
+        privacy: false,
       });
       setNetwork(net);
+
+      // Enregistrement automatique au RCC
+      if (adminEmail.trim()) {
+        tauriInvoke("rcc_register", {
+          networkCid: net.cid_short,
+          adminEmail: adminEmail.trim(),
+        }).catch(() => {});
+      }
+
       const link = await tauriInvoke<string>("network_invite", {
         networkCid: net.cid_short,
         expiresIn: 0,
@@ -62,20 +229,21 @@ export default function Onboarding({ onComplete }: Props) {
   }
 
   async function joinNetwork() {
-    if (!joinInviteLink.trim() || !displayName.trim()) return;
+    const errDisplay = validateName(displayName);
+    if (errDisplay) { setError(errDisplay); return; }
+    if (!joinInviteLink.trim()) { setError("Le lien d'invitation est requis."); return; }
+    if (joinInviteLink.trim().length > 2048) { setError("Lien d'invitation trop long."); return; }
     setLoading(true);
     setError(null);
     try {
       let net: NetworkInfo;
       if (peerAddr.trim()) {
-        // Phase 1: real P2P join via a live peer
         net = await tauriInvoke<NetworkInfo>("network_join_p2p", {
           inviteLink: joinInviteLink.trim(),
           displayName: displayName.trim(),
           peerAddr: peerAddr.trim(),
         });
       } else {
-        // Phase 0 fallback: requires the network already in local DB
         net = await tauriInvoke<NetworkInfo>("network_join", {
           inviteLink: joinInviteLink.trim(),
           displayName: displayName.trim(),
@@ -101,9 +269,27 @@ export default function Onboarding({ onComplete }: Props) {
     ? "Connexion P2P… (jusqu'à 30 s)"
     : "Rejoindre…";
 
+  const stepNum = STEP_NUMBER[step];
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-civium-50 to-civium-100 p-6">
+    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-civium-50 to-civium-100 p-6" aria-label="Configuration initiale de Civium">
       <div className="bg-white rounded-2xl shadow-lg max-w-md w-full p-8">
+
+        {/* Progress indicator — hidden on welcome and done */}
+        {stepNum > 0 && stepNum < TOTAL_STEPS && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs text-gray-400">Configuration</span>
+              <span className="text-xs font-medium text-civium-600">{stepNum} / {TOTAL_STEPS}</span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-1.5">
+              <div
+                className="bg-civium-600 h-1.5 rounded-full transition-all duration-300"
+                style={{ width: `${(stepNum / TOTAL_STEPS) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Welcome */}
         {step === "welcome" && (
@@ -121,8 +307,69 @@ export default function Onboarding({ onComplete }: Props) {
               className="w-full py-3 bg-civium-600 text-white rounded-xl font-semibold
                          hover:bg-civium-700 transition-colors"
             >
-              Commencer
+              Créer une nouvelle identité
             </button>
+            <button
+              onClick={() => setStep("restore")}
+              className="w-full py-2 text-sm text-civium-600 hover:text-civium-800 transition-colors"
+            >
+              J'ai déjà un compte — restaurer mon identité
+            </button>
+          </div>
+        )}
+
+        {/* Restore identity */}
+        {step === "restore" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Restaurer mon identité</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Saisissez votre clé secrète ou importez un fichier de sauvegarde chiffré.
+              </p>
+            </div>
+
+            {/* Option 1 : fichier de backup chiffré */}
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+              <p className="text-sm font-medium text-amber-900">Option 1 — Fichier de sauvegarde chiffré (.civium-backup)</p>
+              <RestoreFromBackup onSuccess={(id) => { setIdentity(id); setStep("email"); }} onError={setError} />
+            </div>
+
+            {/* Option 2 : clé secrète brute */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-gray-700">Option 2 — Clé secrète (secret_b58)</p>
+              <textarea
+                value={restoreSecret}
+                onChange={(e) => setRestoreSecret(e.target.value)}
+                placeholder="Collez ici votre clé secrète (secret_b58)…"
+                rows={3}
+                maxLength={512}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono
+                           focus:outline-none focus:ring-2 focus:ring-civium-500 resize-none"
+              />
+              <p className="text-xs text-gray-400">
+                Disponible dans Paramètres → Identité → Clé secrète de votre autre appareil.
+              </p>
+            </div>
+
+            {error && (
+              <div role="alert" aria-live="assertive" className="bg-red-50 text-red-700 text-sm rounded-lg px-4 py-3">{error}</div>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setStep("welcome"); setError(null); }}
+                className="px-4 py-3 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                ← Retour
+              </button>
+              <button
+                onClick={restoreIdentity}
+                disabled={loading || !restoreSecret.trim()}
+                className="flex-1 py-3 bg-civium-600 text-white rounded-xl font-semibold
+                           hover:bg-civium-700 disabled:opacity-50 transition-colors"
+              >
+                {loading ? "Restauration…" : "Restaurer depuis la clé secrète"}
+              </button>
+            </div>
           </div>
         )}
 
@@ -146,10 +393,51 @@ export default function Onboarding({ onComplete }: Props) {
             <button
               onClick={createIdentity}
               disabled={loading}
+              aria-busy={loading}
               className="w-full py-3 bg-civium-600 text-white rounded-xl font-semibold
                          hover:bg-civium-700 disabled:opacity-50 transition-colors"
             >
               {loading ? "Génération…" : "Générer mon identité"}
+            </button>
+          </div>
+        )}
+
+        {/* Email */}
+        {step === "email" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Votre email de contact</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Requis pour enregistrer vos réseaux au Registre Central Civium (RCC — registre légal).
+                Il ne sera jamais partagé publiquement.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Adresse email <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="email"
+                value={adminEmail}
+                onChange={(e) => setAdminEmail(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") saveEmail(); }}
+                placeholder="votre@email.com"
+                maxLength={MAX_TEXT}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm
+                           focus:outline-none focus:ring-2 focus:ring-civium-500"
+                autoFocus
+              />
+            </div>
+            {error && (
+              <div className="bg-red-50 text-red-700 text-sm rounded-lg px-4 py-3">{error}</div>
+            )}
+            <button
+              onClick={saveEmail}
+              disabled={loading || !adminEmail.trim()}
+              className="w-full py-3 bg-civium-600 text-white rounded-xl font-semibold
+                         hover:bg-civium-700 disabled:opacity-50 transition-colors"
+            >
+              {loading ? "Enregistrement…" : "Continuer"}
             </button>
           </div>
         )}
@@ -213,6 +501,7 @@ export default function Onboarding({ onComplete }: Props) {
                   value={networkName}
                   onChange={(e) => setNetworkName(e.target.value)}
                   placeholder="ex. Famille Dupont, Asso Voisins…"
+                  maxLength={MAX_TEXT}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
@@ -226,25 +515,10 @@ export default function Onboarding({ onComplete }: Props) {
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="ex. Marie, Admin…"
+                  maxLength={MAX_TEXT}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
-              </div>
-              <div className="flex items-start gap-3 pt-1">
-                <input
-                  id="privacy-check"
-                  type="checkbox"
-                  checked={networkPrivacy}
-                  onChange={(e) => setNetworkPrivacy(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-civium-600
-                             focus:ring-civium-500"
-                />
-                <label htmlFor="privacy-check" className="text-sm text-gray-600 cursor-pointer">
-                  <span className="font-medium text-gray-800">Mode privé</span>
-                  <span className="block text-xs text-gray-500 mt-0.5">
-                    Inscrit dans l'annuaire Civium mais non visible des autres réseaux.
-                  </span>
-                </label>
               </div>
             </div>
             {error && (
@@ -305,6 +579,7 @@ export default function Onboarding({ onComplete }: Props) {
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
                   placeholder="ex. Pierre, Alice…"
+                  maxLength={MAX_TEXT}
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm
                              focus:outline-none focus:ring-2 focus:ring-civium-500"
                 />
@@ -369,15 +644,16 @@ export default function Onboarding({ onComplete }: Props) {
                 <p className="text-xs font-medium text-gray-600 mb-1">
                   Lien d'invitation (à transmettre) :
                 </p>
-                <div
-                  className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs
+                <button
+                  type="button"
+                  aria-label="Copier le lien d'invitation dans le presse-papiers"
+                  className="w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs
                              font-mono break-all text-gray-700 cursor-pointer
                              hover:bg-gray-100 transition-colors"
                   onClick={() => navigator.clipboard.writeText(inviteLink!)}
-                  title="Cliquer pour copier"
                 >
                   {inviteLink}
-                </div>
+                </button>
                 <p className="text-xs text-gray-400 mt-1">
                   Cliquer pour copier dans le presse-papiers
                 </p>
@@ -408,6 +684,6 @@ export default function Onboarding({ onComplete }: Props) {
           </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }
