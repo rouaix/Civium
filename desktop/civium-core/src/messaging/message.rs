@@ -50,4 +50,7 @@ pub struct Message {
     pub ciphertext_b58: String,
     /// Unix timestamp in seconds.
     pub sent_at: u64,
+    /// ID of the message being replied to (for threaded conversations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_id: Option<String>,
 }

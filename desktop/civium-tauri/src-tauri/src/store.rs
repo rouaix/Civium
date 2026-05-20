@@ -646,10 +646,14 @@ pub fn save_proposal(conn: &Connection, network_cid_short: &str, proposal: &Prop
 }
 
 pub fn list_proposals(conn: &Connection, network_cid_short: &str) -> Result<Vec<Proposal>> {
+    list_proposals_paged(conn, network_cid_short, 500, 0)
+}
+
+pub fn list_proposals_paged(conn: &Connection, network_cid_short: &str, limit: usize, offset: usize) -> Result<Vec<Proposal>> {
     let mut stmt = conn.prepare(
-        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid",
+        "SELECT proposal_json FROM proposals WHERE network_cid = ?1 ORDER BY rowid LIMIT ?2 OFFSET ?3",
     )?;
-    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut rows = stmt.query(params![network_cid_short, limit as i64, offset as i64])?;
     let mut proposals = Vec::new();
     while let Some(row) = rows.next()? {
         let json: String = row.get(0)?;
@@ -1135,10 +1139,14 @@ pub fn save_agenda_event(conn: &Connection, event: &AgendaEvent) -> Result<()> {
 }
 
 pub fn list_agenda_events(conn: &Connection, network_cid_short: &str) -> Result<Vec<AgendaEvent>> {
+    list_agenda_events_paged(conn, network_cid_short, 500, 0)
+}
+
+pub fn list_agenda_events_paged(conn: &Connection, network_cid_short: &str, limit: usize, offset: usize) -> Result<Vec<AgendaEvent>> {
     let mut stmt = conn.prepare(
-        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY rowid ASC",
+        "SELECT event_json FROM agenda_events WHERE network_cid = ?1 ORDER BY rowid ASC LIMIT ?2 OFFSET ?3",
     )?;
-    let mut rows = stmt.query(params![network_cid_short])?;
+    let mut rows = stmt.query(params![network_cid_short, limit as i64, offset as i64])?;
     let mut events = Vec::new();
     while let Some(row) = rows.next()? {
         let json: String = row.get(0)?;
@@ -1180,11 +1188,15 @@ pub fn save_document(conn: &Connection, doc: &Document) -> Result<()> {
 }
 
 pub fn list_documents(conn: &Connection, network_cid_short: &str) -> Result<Vec<Document>> {
+    list_documents_paged(conn, network_cid_short, 500, 0)
+}
+
+pub fn list_documents_paged(conn: &Connection, network_cid_short: &str, limit: usize, offset: usize) -> Result<Vec<Document>> {
     let mut stmt = conn.prepare(
-        "SELECT doc_json FROM documents WHERE network_cid = ?1 ORDER BY rowid ASC",
+        "SELECT doc_json FROM documents WHERE network_cid = ?1 ORDER BY rowid ASC LIMIT ?2 OFFSET ?3",
     )?;
     let docs = stmt
-        .query_map(params![network_cid_short], |row| row.get::<_, String>(0))?
+        .query_map(params![network_cid_short, limit as i64, offset as i64], |row| row.get::<_, String>(0))?
         .map(|r| r.map_err(anyhow::Error::from))
         .map(|r| r.and_then(|json| serde_json::from_str(&json).context("invalid document")))
         .collect::<Result<Vec<Document>>>()?;

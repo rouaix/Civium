@@ -101,7 +101,7 @@
 - **Accusé de réception** : ajouter un statut "envoyé / livré / lu" sur les messages directs — le type `MessageDisplay` n'a pas de champ `read` ou `receipt` (actuellement aucun feedback visuel sur la réception)
 - **Indicateur de frappe** : ajouter un "en train d'écrire..." visible par le destinataire lors de la saisie d'un message direct (typing indicator via événement P2P éphémère non persisté)
 - **Réactions** : ajouter la possibilité de réagir à un message avec un emoji (persisté en CRDT G-Set pour éviter les conflits)
-- **Réponse à un message** : ajouter un système de fil de réponse (`reply_to_id`) permettant de citer et répondre à un message spécifique
+- ~~**Réponse à un message**~~ : **Fait** — champ `reply_to_id: Option<String>` sur `Message` (serde-compatible, ancien messages = None) ; bouton ↩ sur chaque message du fil, bandeau "En réponse à…" dans le composer, citation inline sous le nom de l'auteur. Commande `message_send` accepte `reply_to_id`.
 
 
 ## Agenda — fonctionnalités manquantes — Priorité moyenne
@@ -332,10 +332,9 @@
 
 ## Dashboard — chargement mémoire non borné — Priorité haute
 
-- `desktop/civium-tauri/src/screens/Dashboard.tsx` : les listes de messages, membres, propositions, événements et documents sont chargées en entier dans le state React sans pagination ni virtualisation
-- Sur un nœud actif depuis longtemps (milliers de messages), tous les éléments sont montés dans le DOM — risque OOM et freezes UI
-- Les notifications sont limitées à 30 (`.slice(0,30)`) et les messages récents à 5 (`.slice(-5)`) mais les autres listes n'ont aucune limite
-- Implémenter une pagination côté backend (paramètre `limit`/`offset`) sur les commandes Tauri `message_list`, `agenda_list`, `document_list`, `proposal_list` et une virtualisation de liste côté frontend (ex. `@tanstack/react-virtual`)
+- ~~`message_list_paged`~~ : **Fait** — déjà implémenté (cursor rowid, limit 50 par défaut).
+- ~~`agenda_list_paged`, `document_list_paged`, `proposal_list_paged`~~ : **Fait** — nouvelles commandes Tauri avec paramètres `limit`/`offset` (max 500) ; `list_*` existantes délèguent à `list_*_paged` avec limit=500.
+- **Reste** : virtualisation DOM côté frontend (`@tanstack/react-virtual`) pour les listes très longues — actuellement tous les éléments sont montés dans le DOM même si la majorité est hors-écran.
 
 
 ## Agenda — fonctionnalités manquantes — Priorité moyenne

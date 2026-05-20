@@ -113,6 +113,16 @@ export interface MessageDisplay {
   event_start: number | null;
   event_end: number | null;
   event_location: string | null;
+  reply_to_id: string | null;
+}
+
+export interface IdentityItem {
+  id: number;
+  cid_short: string;
+  cid_full: string;
+  display_name: string;
+  active: boolean;
+  created_at: number;
 }
 
 export interface MessageListPage {

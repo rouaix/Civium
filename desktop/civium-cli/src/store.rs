@@ -330,7 +330,7 @@ pub fn load_mailbox_page(data_dir: &Path, network_cid_short: &str, limit: u32, o
             messages.push(msg);
         }
     }
-    Ok(Mailbox { messages, outbox })
+    Ok(Mailbox::from_parts(messages, outbox))
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────

@@ -47,6 +47,10 @@ impl Mailbox {
         Self::default()
     }
 
+    pub fn from_parts(messages: Vec<Message>, outbox: Vec<Message>) -> Self {
+        Self { messages, outbox, rate_buckets: HashMap::new() }
+    }
+
     /// Encrypt `body` with the network group key and append to `messages`.
     pub fn post(
         &mut self,
@@ -65,6 +69,7 @@ impl Mailbox {
             nonce_b58,
             ciphertext_b58,
             sent_at: now,
+            reply_to_id: None,
         };
         self.messages.push(msg);
         Ok(self.messages.last().unwrap())
@@ -103,6 +108,7 @@ impl Mailbox {
             nonce_b58: String::new(),
             ciphertext_b58: String::new(),
             sent_at: unix_now(),
+            reply_to_id: None,
         };
         self.messages.push(msg);
         Ok(self.messages.last().unwrap())

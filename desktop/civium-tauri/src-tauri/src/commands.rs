@@ -1029,6 +1029,7 @@ pub struct MessageDisplay {
     pub event_start: Option<u64>,
     pub event_end: Option<u64>,
     pub event_location: Option<String>,
+    pub reply_to_id: Option<String>,
 }
 
 /// Return decrypted thread messages for a network, ordered by sent_at.
@@ -1083,6 +1084,7 @@ pub fn message_list(app: AppHandle, network_cid: String) -> Result<Vec<MessageDi
             event_start: None,
             event_end: None,
             event_location: None,
+            reply_to_id: msg.reply_to_id.clone(),
         };
 
         match &msg.kind {
@@ -1220,6 +1222,7 @@ pub fn message_list_paged(
             event_start: None,
             event_end: None,
             event_location: None,
+            reply_to_id: msg.reply_to_id.clone(),
         };
 
         match &msg.kind {
@@ -1347,6 +1350,7 @@ pub fn message_send(
     app: AppHandle,
     network_cid: String,
     body: String,
+    reply_to_id: Option<String>,
 ) -> Result<MessageDisplay, String> {
     if body.len() > MAX_MESSAGE_BYTES {
         return Err(format!("Message trop long ({} octets, max {})", body.len(), MAX_MESSAGE_BYTES));
@@ -1371,6 +1375,7 @@ pub fn message_send(
         nonce_b58,
         ciphertext_b58,
         sent_at,
+        reply_to_id: reply_to_id.clone(),
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
     if network.data.members.len() > 1 {
@@ -1402,6 +1407,7 @@ pub fn message_send(
         is_e2e: false,
         is_file: false, filename: None, mime_type: None, size_bytes: None,
         is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+        reply_to_id,
     })
 }
 
@@ -1446,6 +1452,7 @@ pub fn message_send_direct(
         nonce_b58,
         ciphertext_b58,
         sent_at,
+        reply_to_id: None,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
     if network.data.members.len() > 1 {
@@ -1470,6 +1477,7 @@ pub fn message_send_direct(
         is_e2e: false,
         is_file: false, filename: None, mime_type: None, size_bytes: None,
         is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+        reply_to_id: None,
     })
 }
 
@@ -1522,6 +1530,7 @@ pub fn message_send_e2e(
         nonce_b58,
         ciphertext_b58,
         sent_at,
+        reply_to_id: None,
     };
     store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
     if network.data.members.len() > 1 {
@@ -1546,6 +1555,7 @@ pub fn message_send_e2e(
         is_e2e: true,
         is_file: false, filename: None, mime_type: None, size_bytes: None,
         is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+        reply_to_id: None,
     })
 }
 
@@ -1598,6 +1608,7 @@ pub async fn message_send_file(
             nonce_b58: String::new(),
             ciphertext_b58: String::new(),
             sent_at,
+            reply_to_id: None,
         };
         store::save_message(&conn, &network_cid, &msg).map_err(|e| e.to_string())?;
 
@@ -1632,6 +1643,7 @@ pub async fn message_send_file(
             mime_type: Some(mime_type),
             size_bytes: Some(size_bytes),
             is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+            reply_to_id: None,
         })
     })
     .await
@@ -1750,6 +1762,7 @@ pub async fn message_send_file_path(
             nonce_b58: String::new(),
             ciphertext_b58: String::new(),
             sent_at,
+            reply_to_id: None,
         };
         store::save_message(&conn, &network_cid2, &msg).map_err(|e| e.to_string())?;
 
@@ -1784,6 +1797,7 @@ pub async fn message_send_file_path(
             mime_type: Some(mime_type),
             size_bytes: Some(size_bytes),
             is_calendar_event: false, event_title: None, event_start: None, event_end: None, event_location: None,
+            reply_to_id: None,
         })
     })
     .await
@@ -1838,6 +1852,27 @@ pub struct VoteResultInfo {
     pub quorum_reached: bool,
     pub options: Vec<OptionResult>,
     pub winner: Option<usize>,
+}
+
+/// List all proposals for a network (paginated).
+#[tauri::command]
+pub fn proposal_list_paged(app: AppHandle, network_cid: String, limit: usize, offset: usize) -> Result<Vec<ProposalInfo>, String> {
+    let conn = open(&app)?;
+    let proposals = store::list_proposals_paged(&conn, &network_cid, limit.min(500), offset).map_err(|e| e.to_string())?;
+    Ok(proposals
+        .into_iter()
+        .map(|p| ProposalInfo {
+            id: p.id,
+            title: p.title,
+            description: p.description,
+            options: p.options,
+            created_by: p.created_by,
+            created_at: p.created_at,
+            closes_at: p.closes_at,
+            quorum_percent: p.quorum_percent,
+            status: p.status.to_string(),
+        })
+        .collect())
 }
 
 /// List all proposals for a network.
@@ -2922,6 +2957,15 @@ pub fn agenda_list(app: AppHandle, network_cid_short: String) -> Result<Vec<Agen
     Ok(events.into_iter().map(event_to_info).collect())
 }
 
+/// List agenda events with pagination.
+#[tauri::command]
+pub fn agenda_list_paged(app: AppHandle, network_cid_short: String, limit: usize, offset: usize) -> Result<Vec<AgendaEventInfo>, String> {
+    let conn = open(&app)?;
+    let events = store::list_agenda_events_paged(&conn, &network_cid_short, limit.min(500), offset)
+        .map_err(|e| e.to_string())?;
+    Ok(events.into_iter().map(event_to_info).collect())
+}
+
 /// Update an existing agenda event (title, description, start_at, end_at, location).
 #[tauri::command]
 pub fn agenda_update(
@@ -3178,6 +3222,16 @@ pub fn document_list(app: AppHandle, network_cid_short: String) -> Result<Vec<Do
     let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
     let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
     let docs = store::list_documents(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    Ok(docs.into_iter().map(|d| doc_to_info(d, &group_key)).collect())
+}
+
+/// List documents with pagination.
+#[tauri::command]
+pub fn document_list_paged(app: AppHandle, network_cid_short: String, limit: usize, offset: usize) -> Result<Vec<DocumentInfo>, String> {
+    let conn = open(&app)?;
+    let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
+    let group_key = GroupKey::from_b58(&network.data.group_key_b58).map_err(|e| e.to_string())?;
+    let docs = store::list_documents_paged(&conn, &network_cid_short, limit.min(500), offset).map_err(|e| e.to_string())?;
     Ok(docs.into_iter().map(|d| doc_to_info(d, &group_key)).collect())
 }
 

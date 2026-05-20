@@ -170,6 +170,7 @@ pub fn message_send(
         nonce_b58,
         ciphertext_b58,
         sent_at,
+        reply_to_id:      None,
     };
     store::save_message(&conn, &network_cid, &msg)?;
     Ok(MessageInfo {

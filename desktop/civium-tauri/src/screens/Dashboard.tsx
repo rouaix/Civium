@@ -114,6 +114,7 @@ export default function Dashboard() {
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [msgBody, setMsgBody] = useState("");
   const [sending, setSending] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<MessageDisplay | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [loadingInvite, setLoadingInvite] = useState(false);
   const [invitations, setInvitations] = useState<InvitationInfo[]>([]);
@@ -633,6 +634,7 @@ export default function Dashboard() {
     setMessages([]);
     setHasMoreMessages(false);
     setOldestRowid(null);
+    setReplyingTo(null);
     setProposals([]);
     setVoteResults({});
     setShowProposalForm(false);
@@ -1600,9 +1602,11 @@ export default function Dashboard() {
       const msg = await tauriInvoke<MessageDisplay>("message_send", {
         networkCid: selected.cid_short,
         body: msgBody.trim(),
+        replyToId: replyingTo?.id ?? null,
       });
       setMessages((prev) => [...prev, msg]);
       setMsgBody("");
+      setReplyingTo(null);
       refreshActivity(selected.cid_short);
       refreshOutboxCounts();
     } catch (e) {
@@ -4212,10 +4216,30 @@ export default function Dashboard() {
                           {msg.author_name[0]?.toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
+                          {msg.reply_to_id && (() => {
+                            const parent = messages.find((m) => m.id === msg.reply_to_id);
+                            return (
+                              <div className="mb-1 pl-2 border-l-2 border-civium-300 text-xs text-gray-500 italic truncate">
+                                ↩ {parent
+                                  ? `${parent.author_name} : ${parent.body.slice(0, 60)}${parent.body.length > 60 ? "…" : ""}`
+                                  : "Message d'origine"}
+                              </div>
+                            );
+                          })()}
                           <div className="flex items-baseline gap-2 flex-wrap">
                             <span className="text-sm font-medium text-gray-900">{msg.author_name}</span>
                             <span className="text-xs text-civium-400 font-medium">{msg.network_name}</span>
                             <span className="text-xs text-gray-400">{formatTime(msg.sent_at)}</span>
+                            {!msg.is_direct && (
+                              <button
+                                onClick={() => setReplyingTo(msg)}
+                                className="opacity-0 group-hover:opacity-100 text-xs text-gray-400 hover:text-civium-600 transition-opacity ml-auto"
+                                title="Répondre à ce message"
+                                aria-label="Répondre"
+                              >
+                                ↩
+                              </button>
+                            )}
                             <button
                               onClick={async () => {
                                 const reason = prompt("Raison du signalement (facultatif) :") ?? "";
@@ -4224,7 +4248,7 @@ export default function Dashboard() {
                                   showToast("Message signalé aux administrateurs.", "ok");
                                 } catch (e) { showToast(String(e)); }
                               }}
-                              className="opacity-0 group-hover:opacity-100 text-xs text-orange-400 hover:text-orange-600 transition-opacity ml-auto"
+                              className="opacity-0 group-hover:opacity-100 text-xs text-orange-400 hover:text-orange-600 transition-opacity"
                               title="Signaler ce message"
                               aria-label="Signaler ce message"
                             >
@@ -4371,6 +4395,18 @@ export default function Dashboard() {
 
               {/* Send form */}
               <div className="bg-white border border-gray-200 rounded-b-xl">
+                {/* Reply context banner */}
+                {replyingTo && (
+                  <div className="flex items-center gap-2 px-3 pt-2 pb-1 bg-civium-50 border-b border-civium-100 text-xs text-civium-700">
+                    <span className="font-medium">↩ En réponse à {replyingTo.author_name} :</span>
+                    <span className="flex-1 truncate text-gray-500 italic">{replyingTo.body.slice(0, 80)}{replyingTo.body.length > 80 ? "…" : ""}</span>
+                    <button
+                      onClick={() => setReplyingTo(null)}
+                      className="text-gray-400 hover:text-gray-600 text-base leading-none"
+                      title="Annuler la réponse"
+                    >✕</button>
+                  </div>
+                )}
                 {/* Markdown toolbar */}
                 <div className="flex items-center gap-1 px-3 pt-2 pb-1 border-b border-gray-100">
                   {[

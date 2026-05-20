@@ -2042,7 +2042,8 @@ fn run_msg(cmd: MsgCmd, data: &PathBuf) -> Result<()> {
                 Some(peer) => mailbox.direct_messages(local_cid.short(), peer).collect(),
                 None => mailbox.thread_messages().collect(),
             };
-            let messages_to_show = paginate(&all_messages.iter().collect::<Vec<_>>(), limit, page);
+            let all_refs: Vec<_> = all_messages.iter().collect();
+            let messages_to_show = paginate(&all_refs, limit, page);
 
             if json {
                 let mut out = Vec::new();
