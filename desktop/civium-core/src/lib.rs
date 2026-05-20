@@ -21,6 +21,7 @@ pub mod node;
 pub mod plugin;
 pub mod bootstrap;
 pub mod rcc;
+pub mod revocation;
 
 #[cfg(feature = "wasm")]
 pub mod wasm;
@@ -53,6 +54,7 @@ pub use bootstrap::{
     CIVIUM_ROOT_NETWORK_NAME, CIVIUM_ROOT_NODE_ADDR, root_configured,
 };
 pub use rcc::{FraudAlert, RccPayload, RCC_PUBLIC_KEY_B58, RCC_URL, verify_rcc_alert};
+pub use revocation::RevocationRecord;
 pub use activitypub::{ApFollower, ApPost, ApPostResult, ApStatus};
 
 // Node module and P2P types: native only (TCP/QUIC/mDNS do not compile to wasm32).

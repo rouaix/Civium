@@ -268,12 +268,12 @@
 - Envoyer une notification push lors d'un nouveau message, invitation, ou alerte fraude
 
 
-## Révocation de clé publique (CID compromis) — Priorité haute
+## ~~Révocation de clé publique (CID compromis)~~ — **Partiellement fait** — Priorité haute
 
-- Il n'existe aucun mécanisme pour annoncer qu'un CID est compromis — une clé Ed25519 volée reste valide indéfiniment dans tous les réseaux où le membre est inscrit (`identity/cid.rs` : CID immuable, aucun champ `revoked`)
-- Implémenter un message de révocation signé par la clé compromise elle-même (ou par un admin réseau) : `RevocationRecord { cid_full, reason, revoked_at, signature }`
-- Propager la révocation via P2P et DHT ; les nœuds qui reçoivent une révocation valide bloquent les messages signés par ce CID
-- Lier à la rotation de la clé de groupe (section Forward secrecy) : révocation d'un membre → nouvelle clé groupe
+- ~~Implémenter `RevocationRecord { cid_full, pub_key_b58, reason, revoked_at, signature_b58 }`~~ **Fait** : struct + vérification Ed25519 dans `civium-core/src/revocation.rs`. Export depuis `lib.rs`.
+- ~~Store SQLite~~ **Fait** : migration 006, `save_revocation` / `list_revocations` / `is_revoked` dans `civium-tauri/src/store.rs`.
+- ~~Commandes Tauri~~ **Fait** : `revocation_add` (valide + stocke), `revocation_list`, `revocation_check` enregistrées dans `lib.rs`.
+- **Reste** : propagation P2P/DHT ; filtrage des messages des CID révoqués à la réception ; UI dans Dashboard ; lien avec rotation de clé de groupe (Forward secrecy)
 
 
 ## Synchronisation des cercles de confiance — Priorité moyenne

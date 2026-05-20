@@ -283,6 +283,9 @@ pub fn run() {
             member_mute,
             member_unmute,
             member_muted_list,
+            revocation_add,
+            revocation_list,
+            revocation_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Civium");

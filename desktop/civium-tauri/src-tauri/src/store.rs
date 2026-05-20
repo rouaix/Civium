@@ -2,7 +2,7 @@
 //! Both apps share the same civium.db file under the data directory.
 
 use anyhow::{Context, Result};
-use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, Notification, PairedDevice, PluginManifest, PluginRecord, PluginState, Proposal, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
+use civium_core::{network::Network, ActivityEvent, ActivityKind, AdminAction, AgendaEvent, CiviumKeypair, DirectoryEntry, Document, FederatedDirectory, GuardianLink, MemberRecord, Message, MinorRestrictions, Notification, PairedDevice, PluginManifest, PluginRecord, PluginState, Proposal, RevocationRecord, RrmEntry, TrustedRrm, Vote, VoteDelegation, preinstalled_plugins};
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -216,7 +216,15 @@ INSERT OR IGNORE INTO identities (secret_b58, cid_short, cid_full, active)
 SELECT secret_b58, cid_short, cid_full, 1 FROM identity WHERE id = 1;
 ";
 
-// Add new migrations here as MIGRATION_006, MIGRATION_007, etc.
+const MIGRATION_006: &str = "
+CREATE TABLE IF NOT EXISTS revocations (
+    cid_full        TEXT PRIMARY KEY,
+    record_json     TEXT NOT NULL,
+    revoked_at      INTEGER NOT NULL
+);
+";
+
+// Add new migrations here as MIGRATION_007, MIGRATION_008, etc.
 // Each migration runs exactly once per database, in order.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_initial", MIGRATION_001),
@@ -224,6 +232,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("003_invitations", MIGRATION_003),
     ("004_muted_members", MIGRATION_004),
     ("005_multi_identity", MIGRATION_005),
+    ("006_revocations", MIGRATION_006),
 ];
 
 fn apply_migrations(conn: &Connection) -> Result<()> {
@@ -1856,4 +1865,39 @@ pub fn list_muted_members(conn: &Connection, network_cid_short: &str) -> Result<
         row.get::<_, String>(0)
     })?.filter_map(|r| r.ok()).collect();
     Ok(cids)
+}
+
+// ── Revocations ───────────────────────────────────────────────────────────────
+
+pub fn save_revocation(conn: &Connection, record: &RevocationRecord) -> Result<()> {
+    let json = serde_json::to_string(record)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO revocations (cid_full, record_json, revoked_at)
+         VALUES (?1, ?2, ?3)",
+        params![&record.cid_full, json, record.revoked_at as i64],
+    )?;
+    Ok(())
+}
+
+pub fn list_revocations(conn: &Connection) -> Result<Vec<RevocationRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT record_json FROM revocations ORDER BY revoked_at DESC",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut records = Vec::new();
+    while let Some(row) = rows.next()? {
+        let json: String = row.get(0)?;
+        let r: RevocationRecord = serde_json::from_str(&json)?;
+        records.push(r);
+    }
+    Ok(records)
+}
+
+pub fn is_revoked(conn: &Connection, cid_full: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM revocations WHERE cid_full = ?1",
+        params![cid_full],
+        |r| r.get(0),
+    )?;
+    Ok(count > 0)
 }

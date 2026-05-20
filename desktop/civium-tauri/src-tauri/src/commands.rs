@@ -11,7 +11,7 @@ use civium_core::{
     CiviumKeypair, CiviumNode, CiviumRequest, CiviumResponse,
     DirectoryEntry, Document, EncryptedChunk, EntryKind, FederatedDirectory, GroupKey, GuardianLink, MemberRole, Message, MessageKind,
     MinorRestrictions, Multiaddr, NetworkKind, NodeCommand, NodeConfig, NodeEvent, PairedDevice, PairKey, PluginState, Proposal, ProposalStatus,
-    RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
+    RevocationRecord, RrmEntry, TrustedRrm, TrustCircle, Vote, VoteDelegation, complete_pairing, init_pairing, peer_id_from_multiaddr,
     RCC_URL,
 };
 
@@ -4559,4 +4559,57 @@ pub fn logs_get(app: AppHandle) -> Result<String, String> {
     };
 
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+// ── Revocations ───────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RevocationInfo {
+    pub cid_full: String,
+    pub pub_key_b58: String,
+    pub reason: String,
+    pub revoked_at: u64,
+    pub signature_b58: String,
+}
+
+/// Validate and store a revocation record. Returns error if signature is invalid.
+#[tauri::command]
+pub fn revocation_add(
+    app: AppHandle,
+    cid_full: String,
+    pub_key_b58: String,
+    reason: String,
+    revoked_at: u64,
+    signature_b58: String,
+) -> Result<(), String> {
+    let record = RevocationRecord { cid_full, pub_key_b58, reason, revoked_at, signature_b58 };
+    if !record.verify() {
+        return Err("signature de révocation invalide".into());
+    }
+    let conn = open(&app)?;
+    store::save_revocation(&conn, &record).map_err(|e| e.to_string())
+}
+
+/// List all stored revocations (most recent first).
+#[tauri::command]
+pub fn revocation_list(app: AppHandle) -> Result<Vec<RevocationInfo>, String> {
+    let conn = open(&app)?;
+    let records = store::list_revocations(&conn).map_err(|e| e.to_string())?;
+    Ok(records
+        .into_iter()
+        .map(|r| RevocationInfo {
+            cid_full: r.cid_full,
+            pub_key_b58: r.pub_key_b58,
+            reason: r.reason,
+            revoked_at: r.revoked_at,
+            signature_b58: r.signature_b58,
+        })
+        .collect())
+}
+
+/// Check whether a CID is revoked.
+#[tauri::command]
+pub fn revocation_check(app: AppHandle, cid_full: String) -> Result<bool, String> {
+    let conn = open(&app)?;
+    store::is_revoked(&conn, &cid_full).map_err(|e| e.to_string())
 }
