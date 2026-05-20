@@ -3204,6 +3204,8 @@ fn doc_to_info(doc: Document, group_key: &GroupKey) -> DocumentInfo {
     }
 }
 
+const MAX_DOCUMENT_BODY_BYTES: usize = 1_048_576; // 1 MiB
+
 /// Encrypt and store a new document in the network.
 #[tauri::command]
 pub fn document_create(
@@ -3212,6 +3214,9 @@ pub fn document_create(
     title: String,
     body: String,
 ) -> Result<DocumentInfo, String> {
+    if body.len() > MAX_DOCUMENT_BODY_BYTES {
+        return Err(format!("corps du document trop grand (max {} octets)", MAX_DOCUMENT_BODY_BYTES));
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;
@@ -3260,6 +3265,9 @@ pub fn document_update(
     title: String,
     body: String,
 ) -> Result<DocumentInfo, String> {
+    if body.len() > MAX_DOCUMENT_BODY_BYTES {
+        return Err(format!("corps du document trop grand (max {} octets)", MAX_DOCUMENT_BODY_BYTES));
+    }
     let conn = open(&app)?;
     let keypair = store::load_identity(&conn).map_err(|e| e.to_string())?;
     let network = store::load_network(&conn, &network_cid_short).map_err(|e| e.to_string())?;

@@ -57,6 +57,19 @@ pub async fn start_node(app_handle: AppHandle, keypair: CiviumKeypair, data_dir:
         *state.node_tx.lock().unwrap() = Some(handle.commands.clone());
     }
 
+    // Reconnect to peers seen in previous sessions (best-effort, no backoff).
+    if let Ok(conn) = store::open_db(&data_dir) {
+        if let Ok(addrs) = store::list_known_peers(&conn) {
+            for addr_str in addrs {
+                if let Ok(addr) = addr_str.parse::<civium_core::Multiaddr>() {
+                    let _ = handle.commands
+                        .send(NodeCommand::Dial { addr })
+                        .await;
+                }
+            }
+        }
+    }
+
     // Clone command sender for the event loop before handle is moved into it.
     let cmd_tx_event = handle.commands.clone();
 
@@ -127,6 +140,10 @@ async fn run_event_loop(
                     }
                 }
                 for addr in peer_addrs {
+                    // Persist DHT-discovered addresses so we can reconnect across restarts.
+                    if let Ok(conn) = store::open_db(&data_dir) {
+                        let _ = store::upsert_known_peer(&conn, &addr.to_string(), true);
+                    }
                     let _ = cmd_tx.send(NodeCommand::Dial { addr }).await;
                 }
             }

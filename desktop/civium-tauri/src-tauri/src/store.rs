@@ -224,7 +224,15 @@ CREATE TABLE IF NOT EXISTS revocations (
 );
 ";
 
-// Add new migrations here as MIGRATION_007, MIGRATION_008, etc.
+const MIGRATION_007: &str = "
+CREATE TABLE IF NOT EXISTS known_peers (
+    addr            TEXT PRIMARY KEY,
+    last_seen       INTEGER NOT NULL DEFAULT 0,
+    connected_ok    INTEGER NOT NULL DEFAULT 0
+);
+";
+
+// Add new migrations here as MIGRATION_008, MIGRATION_009, etc.
 // Each migration runs exactly once per database, in order.
 const MIGRATIONS: &[(&str, &str)] = &[
     ("001_initial", MIGRATION_001),
@@ -233,6 +241,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("004_muted_members", MIGRATION_004),
     ("005_multi_identity", MIGRATION_005),
     ("006_revocations", MIGRATION_006),
+    ("007_known_peers", MIGRATION_007),
 ];
 
 fn apply_migrations(conn: &Connection) -> Result<()> {
@@ -1900,4 +1909,31 @@ pub fn is_revoked(conn: &Connection, cid_full: &str) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(count > 0)
+}
+
+// ── Known peers ───────────────────────────────────────────────────────────────
+
+/// Upsert a peer address (seen during discovery or successful connect).
+pub fn upsert_known_peer(conn: &Connection, addr: &str, connected_ok: bool) -> Result<()> {
+    let now = unix_now_store() as i64;
+    conn.execute(
+        "INSERT INTO known_peers (addr, last_seen, connected_ok)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(addr) DO UPDATE SET last_seen = ?2, connected_ok = MAX(connected_ok, ?3)",
+        params![addr, now, connected_ok as i64],
+    )?;
+    Ok(())
+}
+
+/// Return addresses of peers successfully connected to in the past, most recent first.
+/// Limited to 50 to avoid dialing too many stale peers at startup.
+pub fn list_known_peers(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT addr FROM known_peers WHERE connected_ok = 1
+         ORDER BY last_seen DESC LIMIT 50",
+    )?;
+    let addrs = stmt.query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(addrs)
 }

@@ -221,11 +221,10 @@
 - Exposer le changement de rôle dans le Dashboard (actuellement seul `Admin`/`Member` via `member_set_role`)
 
 
-## Reconnexion automatique P2P — Priorité moyenne
+## ~~Reconnexion automatique P2P~~ — **Partiellement fait** — Priorité moyenne
 
-- Implémenter une boucle de reconnexion avec backoff exponentiel vers les pairs connus qui viennent de se déconnecter (actuellement libp2p utilise un timeout idle de 60 s sans logique de retry custom)
-- Persister la liste des pairs de confiance connus entre redémarrages (actuellement `MemoryStore` Kademlia = perdu à l'arrêt) dans une table `known_peers` SQLite
-- Afficher dans le Dashboard un indicateur "Reconnexion en cours..." quand le nœud tente de rejoindre un pair connu
+- ~~Persister les pairs connus dans une table `known_peers` SQLite~~ **Fait** : migration 007, `upsert_known_peer` / `list_known_peers` dans `store.rs`; les adresses DHT-découvertes sont persistées dans `PeersDiscovered`; au démarrage du nœud, les 50 pairs les plus récents sont redialés immédiatement.
+- **Reste** : backoff exponentiel sur déconnexion (nécessite `PeerDisconnected` dans `NodeEvent`) ; indicateur "Reconnexion en cours..." dans le Dashboard.
 
 ## Plugin Tâches — Priorité moyenne
 
@@ -327,7 +326,7 @@
 - ~~LWW-Register~~ : champ `lamport_clock: u64` ajouté à `Document` ; méthode `Document::merge()` (clock plus élevé gagne, tiebreak par id lexicographique) ; `Document::update()` incrémente le clock.
 - ~~`last_edited_by`~~ : nouveau champ exposé dans `DocumentInfo`.
 - `document_update` utilise maintenant `doc.update(...)` au lieu de mutation directe.
-- Limite de taille : non encore implémentée (document complet en mémoire).
+- ~~Limite de taille~~ **Fait** : `document_create` et `document_update` rejettent les corps > 1 MiB.
 
 
 ## Dashboard — chargement mémoire non borné — Priorité haute
